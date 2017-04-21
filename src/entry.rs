@@ -57,6 +57,14 @@ impl EntryHeader{
         };
 
         entry_header.signature = reader.read_u32::<LittleEndian>()?;
+        if entry_header.signature != 1162627398 {
+            return Err(
+                MftError::invalid_entry_signature(
+                    format!("Bad signature: {:04X}",entry_header.signature)
+                )
+            );
+        }
+
         entry_header.usa_offset = reader.read_u16::<LittleEndian>()?;
         entry_header.usa_size = reader.read_u16::<LittleEndian>()?;
         entry_header.logfile_sequence_number = reader.read_u64::<LittleEndian>()?;

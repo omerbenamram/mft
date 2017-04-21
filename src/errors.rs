@@ -6,6 +6,7 @@ use std::io;
 pub enum ErrorKind {
     IoError,
     InvalidFileSignature,
+    InvalidEntrySignature,
     Utf16Error
 }
 
@@ -22,6 +23,14 @@ pub struct MftError {
 impl MftError{
     #[allow(dead_code)]
     pub fn invalid_file_signature(err: String)->Self{
+        MftError {
+            message: format!("{}",err),
+            kind: ErrorKind::InvalidFileSignature,
+            info: Some(vec![]),
+        }
+    }
+    #[allow(dead_code)]
+    pub fn invalid_entry_signature(err: String)->Self{
         MftError {
             message: format!("{}",err),
             kind: ErrorKind::InvalidFileSignature,

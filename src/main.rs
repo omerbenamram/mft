@@ -4,7 +4,6 @@ extern crate rwinstructs;
 extern crate serde_json;
 extern crate serde;
 extern crate clap;
-use log::LogLevel::Debug;
 use clap::{App, Arg};
 use rustymft::mft::{MftHandler};
 use rwinstructs::reference;
@@ -40,7 +39,13 @@ fn process_file<S: serde::ser::SerializeSeq>(filename: &str, serializer: &mut S)
     };
 
     for i in 0 .. mft_handler.get_entry_count() {
-        let mft_entry = mft_handler.entry(i).unwrap();
+        let mft_entry = match mft_handler.entry(i) {
+            Ok(mft_entry) => mft_entry,
+            Err(error) => {
+                warn!("Could not parse file: {} [error: {}]", filename, error);
+                continue;
+            }
+        };
         serializer.serialize_element(&mft_entry).unwrap();
     }
 
