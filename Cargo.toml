@@ -1,0 +1,28 @@
+[package]
+name = "RustyMft"
+version = "0.1.0"
+authors = ["matthew seyer <matthew.seyer@gmail.com>"]
+
+[lib]
+name = "rustymft"
+crate-type = ["cdylib","lib"]
+
+[dependencies]
+log = "*"
+clap = "*"
+encoding = "0.2"
+byteorder = "*"
+bitflags = "0.7"
+serde = "0.9"
+serde_derive = "0.9"
+serde_json = "0.9"
+seek_bufread = "~1.2"
+
+[dependencies.r-winstructs]
+version = "*"
+branch = "master"
+git = "https://github.com/forensicmatt/r-winstructs"
+
+[dependencies.chrono]
+version = "*"
+features = ["serde", "rustc-serialize"]
