@@ -1,4 +1,6 @@
 use errors::{MftError};
+use enumerator::{PathEnumerator,PathMapping};
+use mft::{MftHandler};
 use attribute;
 use utils;
 use attr_x10;
@@ -48,7 +50,8 @@ pub struct EntryHeader{
     #[serde(skip_serializing)]
     pub padding: Option<u16>,
     pub record_number: Option<u32>,
-    pub update_sequence_value: u32
+    pub update_sequence_value: u32,
+    pub entry_reference: Option<MftReference>
 }
 impl EntryHeader{
     pub fn new<R: Read>(mut reader: R, entry: Option<u64>) -> Result<EntryHeader,MftError> {
@@ -89,6 +92,15 @@ impl EntryHeader{
             )
         }
 
+        if entry_header.record_number.is_some(){
+            entry_header.entry_reference = Some(
+                MftReference::get_from_entry_and_seq(
+                    entry_header.record_number.unwrap() as u64,
+                    entry_header.sequence
+                )
+            );
+        }
+
         Ok(entry_header)
     }
 }
@@ -123,12 +135,43 @@ impl MftEntry{
         Ok(mft_entry)
     }
 
-    pub fn buffer_fixup(&self, mut buffer: &mut[u8]){
-        // start offset (skip the first value (+2))
-        let so = (self.header.usa_offset + 2) as usize;
-        // array length
-        let al = (self.header.usa_size - 1 * 2) as usize;
+    pub fn is_allocated(&self) -> bool {
+        if self.header.flags.bits() & 0x01 != 0 {
+            true
+        } else {
+            false
+        }
+    }
 
+    pub fn is_dir(&self) -> bool {
+        if self.header.flags.bits() & 0x02 != 0 {
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn get_pathmap(&self) -> Option<PathMapping> {
+        match self.attr_filename {
+            Some(ref attributes) => {
+                for attribute in attributes {
+                    if attribute.namespace != 2 {
+                        return Some(
+                            PathMapping {
+                                name: attribute.name.clone(),
+                                parent: MftReference(attribute.parent.0)
+                            }
+                        );
+                    }
+                }
+            },
+            _ => {}
+        }
+
+        None
+    }
+
+    pub fn buffer_fixup(&self, mut buffer: &mut[u8]){
         let fixup_values = &buffer[
             (self.header.usa_offset + 2) as usize..
             ((self.header.usa_offset + 2)+((self.header.usa_size - 1) * 2)) as usize
@@ -147,7 +190,7 @@ impl MftEntry{
         )?;
         let attr_count: u32 = 0;
 
-        while true {
+        loop {
             let attribute_header = attribute::AttributeHeader::new(
                 &mut buffer
             )?;
@@ -188,6 +231,21 @@ impl MftEntry{
             )?;
         }
         Ok(attr_count)
+    }
+
+    pub fn set_fullnames(&mut self, mft_handler: &mut MftHandler){
+        match self.attr_filename {
+            Some(ref mut attributes) => {
+                for attribute in attributes {
+                    let fullpath = mft_handler.get_fullpath(
+                        attribute.parent
+                    );
+                    let fullname = fullpath + "/" + attribute.name.as_str();
+                    attribute.fullname = Some(fullname);
+                }
+            },
+            _ => {}
+        }
     }
 }
 

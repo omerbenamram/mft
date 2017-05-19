@@ -1,7 +1,5 @@
 #[macro_use] extern crate serde_derive;
-#[macro_use] extern crate serde_json;
 #[macro_use] extern crate bitflags;
-#[macro_use] extern crate log;
 extern crate seek_bufread;
 extern crate byteorder;
 extern crate rwinstructs;
@@ -12,5 +10,6 @@ pub mod utils;
 pub mod mft;
 pub mod entry;
 pub mod attribute;
+pub mod enumerator;
 pub mod attr_x10;
 pub mod attr_x30;

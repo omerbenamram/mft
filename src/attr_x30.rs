@@ -23,7 +23,8 @@ pub struct FileNameAttribute {
     pub reparse_value: u32,
     pub name_length: u8,
     pub namespace: u8,
-    pub name: String
+    pub name: String,
+    pub fullname: Option<String>
 }
 impl FileNameAttribute {
     pub fn new<R: Read>(mut reader: R) -> Result<FileNameAttribute,MftError> {
