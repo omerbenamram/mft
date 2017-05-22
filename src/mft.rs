@@ -151,14 +151,14 @@ impl MftHandler{
     fn get_mapping_from_entry(&mut self, entry: u64) -> Option<PathMapping>{
         self.filehandle.seek(
             SeekFrom::Start(entry * self._entry_size as u64)
-        );
+        ).unwrap();
 
         let mut entry_buffer = vec![0; self._entry_size as usize];
         self.filehandle.read_exact(
             &mut entry_buffer
-        );
+        ).unwrap();
 
-        let mut mft_entry = self.entry_from_buffer(
+        let mft_entry = self.entry_from_buffer(
             entry_buffer,
             entry
         );

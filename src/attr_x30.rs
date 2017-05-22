@@ -8,8 +8,8 @@ use encoding::all::UTF_16LE;
 use std::io::Read;
 use std::mem;
 
-#[derive(Serialize, Debug)]
-pub struct FileNameAttribute {
+#[derive(Serialize, Clone, Debug)]
+pub struct FileNameAttr {
     pub parent: MftReference,
     pub created: WinTimestamp,
     pub modified: WinTimestamp,
@@ -26,9 +26,9 @@ pub struct FileNameAttribute {
     pub name: String,
     pub fullname: Option<String>
 }
-impl FileNameAttribute {
-    pub fn new<R: Read>(mut reader: R) -> Result<FileNameAttribute,MftError> {
-        let mut attribute: FileNameAttribute = unsafe {
+impl FileNameAttr {
+    pub fn new<R: Read>(mut reader: R) -> Result<FileNameAttr,MftError> {
+        let mut attribute: FileNameAttr = unsafe {
             mem::zeroed()
         };
 
@@ -62,7 +62,7 @@ impl FileNameAttribute {
 
 #[cfg(test)]
 mod tests {
-    use super::FileNameAttribute;
+    use super::FileNameAttr;
 
     #[test]
     fn fn_attribute_test_01() {
@@ -75,7 +75,7 @@ mod tests {
             0x65,0x00,0x00,0x00,0x00,0x00,0x00,0x00
         ];
 
-        let attribute = match FileNameAttribute::new(attribute_buffer) {
+        let attribute = match FileNameAttr::new(attribute_buffer) {
             Ok(attribute) => attribute,
             Err(error) => panic!(error)
         };

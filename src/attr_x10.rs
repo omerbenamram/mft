@@ -5,8 +5,8 @@ use byteorder::{ReadBytesExt, LittleEndian};
 use std::io::Read;
 use std::mem;
 
-#[derive(Serialize, Debug)]
-pub struct StandardInformationAttribute {
+#[derive(Serialize, Clone, Debug)]
+pub struct StandardInfoAttr {
     pub created: WinTimestamp,
     pub modified: WinTimestamp,
     pub mft_modified: WinTimestamp,
@@ -22,9 +22,9 @@ pub struct StandardInformationAttribute {
     #[serde(serialize_with = "serialize_u64")]
     pub usn: u64
 }
-impl StandardInformationAttribute {
-    pub fn new<R: Read>(mut reader: R) -> Result<StandardInformationAttribute,MftError> {
-        let mut attribute: StandardInformationAttribute = unsafe {
+impl StandardInfoAttr {
+    pub fn new<R: Read>(mut reader: R) -> Result<StandardInfoAttr,MftError> {
+        let mut attribute: StandardInfoAttr = unsafe {
             mem::zeroed()
         };
 
@@ -47,7 +47,7 @@ impl StandardInformationAttribute {
 
 #[cfg(test)]
 mod tests {
-    use super::StandardInformationAttribute;
+    use super::StandardInfoAttr;
 
     #[test]
     fn si_attribute_test_01() {
@@ -59,7 +59,7 @@ mod tests {
             0x68,0x58,0xA0,0x0A,0x02,0x00,0x00,0x00
         ];
 
-        let attribute = match StandardInformationAttribute::new(attribute_buffer) {
+        let attribute = match StandardInfoAttr::new(attribute_buffer) {
             Ok(attribute) => attribute,
             Err(error) => panic!(error)
         };

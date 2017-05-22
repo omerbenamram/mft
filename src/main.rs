@@ -29,7 +29,6 @@ fn process_directory<S>(directory: &str, serializer: S) where S: serde::Serializ
 }
 
 fn process_file<S: serde::ser::SerializeSeq>(filename: &str, serializer: &mut S) -> bool {
-    // Check if file is a prefetch file
     let mut mft_handler = match MftHandler::new(filename) {
         Ok(mft_handler) => mft_handler,
         Err(error) => {

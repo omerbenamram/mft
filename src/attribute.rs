@@ -1,4 +1,7 @@
 use errors::{MftError};
+use utils;
+use attr_x10::{StandardInfoAttr};
+use attr_x30::{FileNameAttr};
 use rwinstructs::serialize::{serialize_u64};
 use byteorder::{ReadBytesExt, LittleEndian};
 use encoding::{Encoding, DecoderTrap};
@@ -8,6 +11,30 @@ use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::mem;
+
+#[derive(Clone, Debug)]
+pub struct RawAttribute(
+    pub Vec<u8>
+);
+impl ser::Serialize for RawAttribute {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where S: ser::Serializer
+    {
+        serializer.serialize_str(
+            &format!("{}",
+            utils::to_hex_string(&self.0))
+        )
+    }
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(untagged)]
+pub enum AttributeContent {
+    Raw(RawAttribute),
+    AttrX10(StandardInfoAttr),
+    AttrX30(FileNameAttr),
+    None
+}
 
 bitflags! {
     pub flags AttributeDataFlags: u16 {
@@ -24,7 +51,7 @@ pub fn serialize_attr_data_flags<S>(&item: &AttributeDataFlags, serializer: S)
     serializer.serialize_str(&format!("{:?}", item))
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Clone, Debug)]
 pub struct AttributeHeader {
     pub attribute_type: u32,
     pub attribute_size: u32,
@@ -73,7 +100,11 @@ impl AttributeHeader {
                 )?
             );
         } else {
-            panic!("Unhandled resident flag: {}",attribute_header.resident_flag);
+            panic!(
+                "Unhandled resident flag: {} (offet: {})",
+                attribute_header.resident_flag,
+                current_offset
+            );
         }
 
         if attribute_header.name_size > 0 {
@@ -101,7 +132,7 @@ impl AttributeHeader {
     }
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Clone, Debug)]
 #[serde(untagged)]
 pub enum ResidentialHeader{
     None,
@@ -109,7 +140,7 @@ pub enum ResidentialHeader{
     NonResident(NonResidentHeader)
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Clone, Debug)]
 pub struct ResidentHeader{
     pub data_size: u32,
     pub data_offset: u16,
@@ -131,7 +162,7 @@ impl ResidentHeader {
     }
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Clone, Debug)]
 pub struct NonResidentHeader{
     #[serde(serialize_with = "serialize_u64")]
     pub vnc_first: u64,
@@ -169,6 +200,12 @@ impl NonResidentHeader {
 
         Ok(residential_header)
     }
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct MftAttribute{
+    pub header: AttributeHeader,
+    pub content: AttributeContent
 }
 
 #[cfg(test)]

@@ -1,10 +1,10 @@
 use errors::{MftError};
-use enumerator::{PathEnumerator,PathMapping};
+use enumerator::{PathMapping};
 use mft::{MftHandler};
 use attribute;
+use attr_x10::{StandardInfoAttr};
+use attr_x30::{FileNameAttr};
 use utils;
-use attr_x10;
-use attr_x30;
 use rwinstructs::reference::{MftReference};
 use rwinstructs::serialize::{serialize_u64};
 use byteorder::{ReadBytesExt, LittleEndian};
@@ -108,8 +108,7 @@ impl EntryHeader{
 #[derive(Serialize, Debug)]
 pub struct MftEntry{
     pub header: EntryHeader,
-    pub attr_standard_info: Option<Vec<attr_x10::StandardInformationAttribute>>,
-    pub attr_filename: Option<Vec<attr_x30::FileNameAttribute>>
+    pub attributes: Vec<attribute::MftAttribute>
 }
 impl MftEntry{
     pub fn new(mut buffer: Vec<u8>, entry: Option<u64>) -> Result<MftEntry,MftError> {
@@ -152,20 +151,22 @@ impl MftEntry{
     }
 
     pub fn get_pathmap(&self) -> Option<PathMapping> {
-        match self.attr_filename {
-            Some(ref attributes) => {
-                for attribute in attributes {
-                    if attribute.namespace != 2 {
-                        return Some(
-                            PathMapping {
-                                name: attribute.name.clone(),
-                                parent: MftReference(attribute.parent.0)
-                            }
-                        );
+        for attribute in self.attributes.iter() {
+            if attribute.header.attribute_type == 0x30 {
+                match attribute.content {
+                    attribute::AttributeContent::AttrX30(ref attrib) => {
+                        if attrib.namespace != 2 {
+                            return Some(
+                                PathMapping {
+                                    name: attrib.name.clone(),
+                                    parent: MftReference(attrib.parent.0)
+                                }
+                            );
+                        }
                     }
+                    _ => {}
                 }
-            },
-            _ => {}
+            }
         }
 
         None
@@ -188,6 +189,7 @@ impl MftEntry{
         let mut current_offset = buffer.seek(
             SeekFrom::Start(self.header.fst_attr_offset as u64)
         )?;
+
         let attr_count: u32 = 0;
 
         loop {
@@ -195,34 +197,73 @@ impl MftEntry{
                 &mut buffer
             )?;
 
-            match attribute_header.attribute_type {
-                0x10 => {
-                    let si_attr = attr_x10::StandardInformationAttribute::new(&mut buffer)?;
+            if attribute_header.attribute_type == 0xFFFFFFFF {
+                break;
+            }
 
-                    if self.attr_standard_info.is_none(){
-                        self.attr_standard_info = Some(Vec::new());
+            match attribute_header.residential_header {
+                attribute::ResidentialHeader::Resident(ref header) => {
+                    // Create buffer for raw attribute content
+                    let mut content_buffer = vec![0;header.data_size as usize];
+
+                    // read into content buffer
+                    buffer.read_exact(
+                        &mut content_buffer
+                    ).unwrap();
+
+                    // Create attribute content to parse buffer into
+                    let mut attr_content: attribute::AttributeContent = unsafe {
+                        mem::zeroed()
+                    };
+
+                    // Get attribute contents
+                    match attribute_header.attribute_type {
+                        0x10 => {
+                            let attr = StandardInfoAttr::new(
+                                content_buffer.as_slice()
+                            )?;
+
+                            attr_content = attribute::AttributeContent::AttrX10(
+                                attr
+                            );
+                        },
+                        0x30 => {
+                            let attr = FileNameAttr::new(
+                                content_buffer.as_slice()
+                            )?;
+
+                            attr_content = attribute::AttributeContent::AttrX30(
+                                attr
+                            );
+                        },
+                        _ => {
+                            attr_content = attribute::AttributeContent::Raw(
+                                attribute::RawAttribute(
+                                    content_buffer
+                                )
+                            );
+                        }
                     }
 
-                    self.attr_standard_info.as_mut().unwrap().push(si_attr);
+                    // push attribute into attributes
+                    self.attributes.push(
+                        attribute::MftAttribute {
+                            header: attribute_header.clone(),
+                            content: attr_content
+                        }
+                    );
                 },
-                0x30 => {
-                    let fn_attr = attr_x30::FileNameAttribute::new(&mut buffer)?;
-                    if self.attr_filename.is_none(){
-                        self.attr_filename = Some(Vec::new());
-                    }
-
-                    self.attr_filename.as_mut().unwrap().push(fn_attr);
+                attribute::ResidentialHeader::NonResident(_) => {
+                    // No content, so push header into attributes
+                    self.attributes.push(
+                        attribute::MftAttribute {
+                            header: attribute_header.clone(),
+                            content: attribute::AttributeContent::None
+                        }
+                    );
                 },
-                0xFFFFFFFF => {
-                    // println!("END OF ATTRIBUTES");
-                    break;
-                },
-                _ => {
-                    // println!(
-                    //     "UNHANDLED ATTRIBUTE: 0x{:04X} at offset {}",
-                    //     attribute_header.attribute_type,
-                    //     current_offset
-                    // );
+                attribute::ResidentialHeader::None => {
+                    // Not sure about this...
                 }
             }
 
@@ -230,21 +271,30 @@ impl MftEntry{
                 SeekFrom::Start(current_offset + attribute_header.attribute_size as u64)
             )?;
         }
+
         Ok(attr_count)
     }
 
     pub fn set_fullnames(&mut self, mft_handler: &mut MftHandler){
-        match self.attr_filename {
-            Some(ref mut attributes) => {
-                for attribute in attributes {
-                    let fullpath = mft_handler.get_fullpath(
-                        attribute.parent
-                    );
-                    let fullname = fullpath + "/" + attribute.name.as_str();
-                    attribute.fullname = Some(fullname);
+        // Iterate through each MFT attribute with mutable reference
+        for attribute in self.attributes.iter_mut() {
+            // If attribute is type 0x30
+            if attribute.header.attribute_type == 0x30 {
+                // Check if resident content
+                match attribute.content {
+                    attribute::AttributeContent::AttrX30(ref mut attrib) => {
+                        // Get fullpath
+                        let fullpath = mft_handler.get_fullpath(
+                            attrib.parent
+                        );
+                        // Set fullname
+                        let fullname = fullpath + "/" + attrib.name.as_str();
+                        // Set attribute to fullname
+                        attrib.fullname = Some(fullname);
+                    }
+                    _ => {}
                 }
-            },
-            _ => {}
+            }
         }
     }
 }
