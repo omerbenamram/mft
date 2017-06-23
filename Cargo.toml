@@ -18,6 +18,9 @@ serde_derive = "0.9"
 serde_json = "0.9"
 seek_bufread = "~1.2"
 
+[dependencies.jmespath]
+version = "^0.1.1"
+
 [dependencies.r-winstructs]
 version = "*"
 branch = "master"
