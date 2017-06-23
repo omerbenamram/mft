@@ -18,10 +18,6 @@ pub struct MftHandler {
 }
 impl MftHandler{
     pub fn new(filename: &str) -> Result<MftHandler,MftError> {
-        let mut mft_handler: MftHandler = unsafe {
-            mem::zeroed()
-        };
-
         let mut mft_fh = match File::open(filename) {
             Ok(usn_fh) => usn_fh,
             // Handle error here
@@ -29,19 +25,25 @@ impl MftHandler{
         };
 
         // get file size
-        mft_handler._size = match mft_fh.seek(SeekFrom::End(0)){
+        let size = match mft_fh.seek(SeekFrom::End(0)){
             Err(e) => panic!("Error: {}",e),
             Ok(size) => size
         };
 
-        mft_handler.filehandle = BufReader::with_capacity(
+        let filehandle = BufReader::with_capacity(
             4096,
             mft_fh
         );
 
-        mft_handler.set_entry_size(1024);
-
-        Ok(mft_handler)
+        Ok(
+            MftHandler {
+                filehandle: filehandle,
+                path_enumerator: PathEnumerator::new(),
+                _entry_size: 1024,
+                _offset: 0,
+                _size: size
+            }
+        )
     }
 
     pub fn set_entry_size(&mut self, entry_size: u32){
