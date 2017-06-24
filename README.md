@@ -1,4 +1,4 @@
-A fast and cross platform MFT Parser written in Rust that gives you the ability to query the records via JMES Query. Output is JSONL (http://jsonlines.org/).
+A fast and cross platform MFT Parser written in Rust that gives you the ability to query the records via [JMESPath](http://jmespath.org/) queries. Output is [JSONL](http://jsonlines.org/).
 
 ```
 RustyMft 0.1.0
