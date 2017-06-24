@@ -117,7 +117,7 @@ fn main() {
         .help("JMES Query as bool only. (Prints whole record if true.)");
 
     let options = App::new("RustyMft")
-        .version("0.0.0")
+        .version("0.1.0")
         .author("Matthew Seyer <https://github.com/forensicmatt/RustyMft>")
         .about("Parse $MFT.")
         .arg(source_arg)
