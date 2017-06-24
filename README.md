@@ -17,7 +17,3 @@ OPTIONS:
     -q, --query <QUERY>    JMES Query
     -s, --source <FILE>    The source path. Can be a file or a directory.
 ```
-
-## Output
-The output is written to stdout as a json list of records.
-
