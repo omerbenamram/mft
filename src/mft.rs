@@ -133,38 +133,51 @@ impl MftHandler{
                     let entry = reference.get_entry_number();
                     // Gat mapping for it
                     match self.get_mapping_from_entry(entry) {
-                        Some(mapping) => {
-                            self.path_enumerator.set_mapping(
-                                reference,
-                                mapping.clone()
-                            );
-                            self.enumerate_path_stack(
-                                name_stack,
-                                reference
-                            );
+                        Ok(mapping) => {
+                            match mapping {
+                                Some(map) => {
+                                    self.path_enumerator.set_mapping(
+                                        reference,
+                                        map.clone()
+                                    );
+                                    self.enumerate_path_stack(
+                                        name_stack,
+                                        reference
+                                    );
+                                },
+                                None => {
+                                    name_stack.push(
+                                        String::from("[UNKNOWN]")
+                                    );
+                                }
+                            }
                         },
-                        None => {}
+                        Err(error) => {
+                            name_stack.push(
+                                String::from("[UNKNOWN]")
+                            );
+                        }
                     }
                 }
             }
         }
     }
 
-    fn get_mapping_from_entry(&mut self, entry: u64) -> Option<PathMapping>{
+    fn get_mapping_from_entry(&mut self, entry: u64) -> Result<Option<PathMapping>,MftError>{
         self.filehandle.seek(
             SeekFrom::Start(entry * self._entry_size as u64)
-        ).unwrap();
+        )?;
 
         let mut entry_buffer = vec![0; self._entry_size as usize];
         self.filehandle.read_exact(
             &mut entry_buffer
-        ).unwrap();
+        )?;
 
         let mft_entry = self.entry_from_buffer(
             entry_buffer,
             entry
-        );
+        )?;
 
-        mft_entry.unwrap().get_pathmap()
+        Ok(mft_entry.get_pathmap())
     }
 }
