@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use errors::{MftError};
 use enumerator::{PathMapping};
 use mft::{MftHandler};
@@ -34,27 +35,35 @@ pub fn serialize_entry_flags<S>(&item: &EntryFlags, serializer: S) -> Result<S::
 #[derive(Serialize, Debug)]
 pub struct EntryHeader{
     pub signature: u32,
+    #[serde(skip_serializing)]
     pub usa_offset: u16,
+    #[serde(skip_serializing)]
     pub usa_size: u16,
     #[serde(serialize_with = "serialize_u64")]
     pub logfile_sequence_number: u64,
+    #[serde(skip_serializing)]
     pub sequence: u16,
     pub hard_link_count: u16,
+    #[serde(skip_serializing)]
     pub fst_attr_offset: u16,
     #[serde(serialize_with = "serialize_entry_flags")]
     pub flags: EntryFlags,
+    #[serde(skip_serializing)]
     pub entry_size_real: u32,
+    #[serde(skip_serializing)]
     pub entry_size_allocated: u32,
     pub base_reference: MftReference,
+    #[serde(skip_serializing)]
     pub next_attribute_id: u16,
     #[serde(skip_serializing)]
     pub padding: Option<u16>,
-    pub record_number: Option<u32>,
+    #[serde(skip_serializing)]
+    pub record_number: u64,
     pub update_sequence_value: u32,
-    pub entry_reference: Option<MftReference>
+    pub entry_reference: MftReference
 }
 impl EntryHeader{
-    pub fn new<R: Read>(mut reader: R, entry: Option<u64>) -> Result<EntryHeader,MftError> {
+    pub fn new<R: Read>(mut reader: R, entry: u64) -> Result<EntryHeader,MftError> {
         let mut entry_header: EntryHeader = unsafe {
             mem::zeroed()
         };
@@ -84,22 +93,19 @@ impl EntryHeader{
 
         if entry_header.usa_offset == 48 {
             entry_header.padding = Some(reader.read_u16::<LittleEndian>()?);
-            entry_header.record_number = Some(reader.read_u32::<LittleEndian>()?);
+            entry_header.record_number = reader.read_u32::<LittleEndian>()? as u64;
         } else {
+            entry_header.record_number = entry as u64;
             panic!(
                 "Unhandled update sequence array offset: {}",
                 entry_header.usa_offset
             )
         }
 
-        if entry_header.record_number.is_some(){
-            entry_header.entry_reference = Some(
-                MftReference::get_from_entry_and_seq(
-                    entry_header.record_number.unwrap() as u64,
-                    entry_header.sequence
-                )
-            );
-        }
+        entry_header.entry_reference = MftReference::get_from_entry_and_seq(
+            entry_header.record_number as u64,
+            entry_header.sequence
+        );
 
         Ok(entry_header)
     }
@@ -108,19 +114,20 @@ impl EntryHeader{
 #[derive(Serialize, Debug)]
 pub struct MftEntry{
     pub header: EntryHeader,
-    pub attributes: Vec<attribute::MftAttribute>
+    pub attributes: BTreeMap<String,Vec<attribute::MftAttribute>>
 }
 impl MftEntry{
-    pub fn new(mut buffer: Vec<u8>, entry: Option<u64>) -> Result<MftEntry,MftError> {
-        let mut mft_entry: MftEntry = unsafe {
-            mem::zeroed()
-        };
-
+    pub fn new(mut buffer: Vec<u8>, entry: u64) -> Result<MftEntry,MftError> {
         // Get Header
-        mft_entry.header = EntryHeader::new(
+        let entry_header = EntryHeader::new(
             buffer.as_slice(),
             entry
         )?;
+
+        let mut mft_entry = MftEntry{
+            header: entry_header,
+            attributes: BTreeMap::new()
+        };
 
         // Fixup buffer
         mft_entry.buffer_fixup(
@@ -151,22 +158,25 @@ impl MftEntry{
     }
 
     pub fn get_pathmap(&self) -> Option<PathMapping> {
-        for attribute in self.attributes.iter() {
-            if attribute.header.attribute_type == 0x30 {
-                match attribute.content {
-                    attribute::AttributeContent::AttrX30(ref attrib) => {
-                        if attrib.namespace != 2 {
-                            return Some(
-                                PathMapping {
-                                    name: attrib.name.clone(),
-                                    parent: MftReference(attrib.parent.0)
-                                }
-                            );
+        match self.attributes.get("0x0030"){
+            Some(fn_attr_list) => {
+                for attribute in fn_attr_list {
+                    match attribute.content {
+                        attribute::AttributeContent::AttrX30(ref attrib) => {
+                            if attrib.namespace != 2 {
+                                return Some(
+                                    PathMapping {
+                                        name: attrib.name.clone(),
+                                        parent: MftReference(attrib.parent.0)
+                                    }
+                                );
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
+            None => {}
         }
 
         None
@@ -245,8 +255,7 @@ impl MftEntry{
                         }
                     }
 
-                    // push attribute into attributes
-                    self.attributes.push(
+                    self.set_attribute(
                         attribute::MftAttribute {
                             header: attribute_header.clone(),
                             content: attr_content
@@ -255,7 +264,7 @@ impl MftEntry{
                 },
                 attribute::ResidentialHeader::NonResident(_) => {
                     // No content, so push header into attributes
-                    self.attributes.push(
+                    self.set_attribute(
                         attribute::MftAttribute {
                             header: attribute_header.clone(),
                             content: attribute::AttributeContent::None
@@ -275,24 +284,47 @@ impl MftEntry{
         Ok(attr_count)
     }
 
+    pub fn set_attribute(&mut self, attribute: attribute::MftAttribute){
+        // This could maybe use some refactoring??
+        // Check if attribute type is already in mapping
+        let attr_type = format!("0x{:04X}",attribute.header.attribute_type);
+        if self.attributes.contains_key(&attr_type) {
+            // We already have a list for this attribute, get mut ref
+            if let Some(attr_list) = self.attributes.get_mut(&attr_type) {
+                // append the attribute to list
+                attr_list.push(attribute);
+            }
+        } else {
+            // Create new attribute list
+            let mut attr_list: Vec<attribute::MftAttribute> = Vec::new();
+            // Insert value into list
+            attr_list.push(attribute);
+            // Set attribute list to key of attrib type
+            self.attributes.insert(
+                attr_type,
+                attr_list
+            );
+        }
+    }
+
     pub fn set_fullnames(&mut self, mft_handler: &mut MftHandler){
-        // Iterate through each MFT attribute with mutable reference
-        for attribute in self.attributes.iter_mut() {
-            // If attribute is type 0x30
-            if attribute.header.attribute_type == 0x30 {
-                // Check if resident content
-                match attribute.content {
-                    attribute::AttributeContent::AttrX30(ref mut attrib) => {
-                        // Get fullpath
-                        let fullpath = mft_handler.get_fullpath(
-                            attrib.parent
-                        );
-                        // Set fullname
-                        let fullname = fullpath + "/" + attrib.name.as_str();
-                        // Set attribute to fullname
-                        attrib.fullname = Some(fullname);
+        if self.attributes.contains_key("0x0030") {
+            if let Some(attr_list) = self.attributes.get_mut("0x0030") {
+                for attribute in attr_list.iter_mut() {
+                    // Check if resident content
+                    match attribute.content {
+                        attribute::AttributeContent::AttrX30(ref mut attrib) => {
+                            // Get fullpath
+                            let fullpath = mft_handler.get_fullpath(
+                                attrib.parent
+                            );
+                            // Set fullname
+                            let fullname = fullpath + "/" + attrib.name.as_str();
+                            // Set attribute to fullname
+                            attrib.fullname = Some(fullname);
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
         }

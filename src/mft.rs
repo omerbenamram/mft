@@ -74,7 +74,7 @@ impl MftHandler{
             Some(mapping) => {
                 if mft_entry.is_dir() {
                     &self.path_enumerator.set_mapping(
-                        mft_entry.header.entry_reference.clone().unwrap(),
+                        mft_entry.header.entry_reference.clone(),
                         mapping.clone()
                     );
                 }
@@ -96,7 +96,7 @@ impl MftHandler{
     pub fn entry_from_buffer(&mut self, buffer: Vec<u8>, entry: u64) -> Result<MftEntry,MftError> {
         let mft_entry = MftEntry::new(
             buffer,
-            Some(entry)
+            entry
         )?;
 
         Ok(mft_entry)

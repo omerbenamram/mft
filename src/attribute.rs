@@ -54,9 +54,12 @@ pub fn serialize_attr_data_flags<S>(&item: &AttributeDataFlags, serializer: S)
 #[derive(Serialize, Clone, Debug)]
 pub struct AttributeHeader {
     pub attribute_type: u32,
+    #[serde(skip_serializing)]
     pub attribute_size: u32,
     pub resident_flag: u8, // 0 -> resident; 1 -> non-resident
+    #[serde(skip_serializing)]
     pub name_size: u8,
+    #[serde(skip_serializing)]
     pub name_offset: u16,
     #[serde(serialize_with = "serialize_attr_data_flags")]
     pub data_flags: AttributeDataFlags,
@@ -142,9 +145,12 @@ pub enum ResidentialHeader{
 
 #[derive(Serialize, Clone, Debug)]
 pub struct ResidentHeader{
+    #[serde(skip_serializing)]
     pub data_size: u32,
+    #[serde(skip_serializing)]
     pub data_offset: u16,
     pub index_flag: u8,
+    #[serde(skip_serializing)]
     pub padding: u8,
 }
 impl ResidentHeader {
@@ -168,8 +174,10 @@ pub struct NonResidentHeader{
     pub vnc_first: u64,
     #[serde(serialize_with = "serialize_u64")]
     pub vnc_last: u64,
+    #[serde(skip_serializing)]
     pub datarun_offset: u16,
     pub unit_compression_size: u16,
+    #[serde(skip_serializing)]
     pub padding: u32,
     #[serde(serialize_with = "serialize_u64")]
     pub size_allocated: u64,
