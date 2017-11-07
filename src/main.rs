@@ -1,4 +1,5 @@
 #[macro_use] extern crate log;
+extern crate env_logger;
 extern crate rustymft;
 extern crate rwinstructs;
 extern crate serde_json;
@@ -82,7 +83,7 @@ fn process_file(filename: &str,options: ArgMatches) -> bool {
                 }
             },
             Err(error) => {
-                warn!("Could not parse file: {} [error: {}]", filename, error);
+                error!("Could not mft_entry: {} [error: {}]", i, error);
                 continue;
             }
         };
@@ -96,6 +97,7 @@ fn is_directory(source: &str)->bool{
 }
 
 fn main() {
+    env_logger::init().unwrap();
     let source_arg = Arg::with_name("source")
         .short("s")
         .long("source")

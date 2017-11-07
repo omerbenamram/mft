@@ -17,6 +17,7 @@ serde = "0.9"
 serde_derive = "0.9"
 serde_json = "0.9"
 seek_bufread = "~1.2"
+env_logger = "0.3"
 
 [dependencies.jmespath]
 version = "^0.1.1"
