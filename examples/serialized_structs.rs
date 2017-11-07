@@ -14,7 +14,7 @@ fn print_entry_header(){
         0x53,0x57,0x81,0x37,0x00,0x00,0x00,0x00
     ];
 
-    let entry_header = match entry::EntryHeader::new(header_buffer,None) {
+    let entry_header = match entry::EntryHeader::new(header_buffer,0) {
         Ok(entry_header) => entry_header,
         Err(error) => panic!(error)
     };

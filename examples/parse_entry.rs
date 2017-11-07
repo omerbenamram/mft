@@ -72,7 +72,7 @@ fn print_entry_01(){
         0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x05,0x00
     ];
 
-    let mft_entry = entry::MftEntry::new(entry_buffer.to_vec(),None).unwrap();
+    let mft_entry = entry::MftEntry::new(entry_buffer.to_vec(),0).unwrap();
 
     println!("{}",serde_json::to_string_pretty(&mft_entry).unwrap());
 }
