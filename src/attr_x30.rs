@@ -1,4 +1,4 @@
-use crate::errors::MftError;
+use crate::err::{self, Result};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use encoding::all::UTF_16LE;
@@ -8,6 +8,7 @@ use std::io::Read;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use snafu::ResultExt;
 use winstructs::reference::MftReference;
 use winstructs::timestamp::WinTimestamp;
 
@@ -67,7 +68,7 @@ impl FileNameAttr {
     /// assert_eq!(attribute.name, "$LogFile");
     /// # }
     /// ```
-    pub fn from_reader<R: Read>(mut reader: &mut R) -> Result<FileNameAttr, MftError> {
+    pub fn from_reader<R: Read>(reader: &mut R) -> Result<FileNameAttr> {
         let parent = MftReference(reader.read_u64::<LittleEndian>()?);
         let created = WinTimestamp::from_reader(reader)?.to_datetime();
         let modified = WinTimestamp::from_reader(reader)?.to_datetime();
@@ -84,13 +85,8 @@ impl FileNameAttr {
         reader.read_exact(&mut name_buffer)?;
 
         let name = match UTF_16LE.decode(&name_buffer, DecoderTrap::Ignore) {
-            Ok(filename) => filename,
-            Err(error) => {
-                return Err(MftError::decode_error(format!(
-                    "Error decoding name in filename attribute. [{}]",
-                    error
-                )))
-            }
+            Ok(s) => s,
+            Err(e) => return err::InvalidFilename {}.fail(),
         };
 
         let fullname = None;

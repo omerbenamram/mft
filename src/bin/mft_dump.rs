@@ -1,11 +1,11 @@
-use clap::{App, Arg, ArgMatches};
+use clap::{App, Arg};
 use log::{error, warn};
-use rustymft::mft::MftHandler;
+use mft::mft::MftHandler;
 
 use std::fs;
 
-fn process_file(filename: &str, options: ArgMatches) -> bool {
-    let mut mft_handler = match MftHandler::new(filename) {
+fn process_file(filename: &str) -> bool {
+    let mut mft_handler = match MftHandler::from_path(filename) {
         Ok(mft_handler) => mft_handler,
         Err(error) => {
             warn!("Could not parse file: {} [error: {}]", filename, error);
@@ -27,10 +27,6 @@ fn process_file(filename: &str, options: ArgMatches) -> bool {
     }
 
     true
-}
-
-fn is_directory(source: &str) -> bool {
-    fs::metadata(source).unwrap().file_type().is_dir()
 }
 
 fn main() {

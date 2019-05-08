@@ -1,8 +1,12 @@
+use crate::err::{self, Result};
+
 use crate::attr_x10::StandardInfoAttr;
 use crate::attr_x30::FileNameAttr;
 use crate::attribute;
 use crate::enumerator::PathMapping;
 use crate::mft::MftHandler;
+use snafu::ensure;
+
 use std::collections::BTreeMap;
 
 use winstructs::reference::MftReference;
@@ -11,7 +15,7 @@ use byteorder::{LittleEndian, ReadBytesExt};
 
 use bitflags::bitflags;
 use serde::{ser, Serialize};
-use std::error::Error;
+
 use std::io::Cursor;
 use std::io::Read;
 use std::io::Seek;
@@ -28,7 +32,10 @@ bitflags! {
         const UNKNOWN_2     = 0x08;
     }
 }
-pub fn serialize_entry_flags<S>(item: &EntryFlags, serializer: S) -> Result<S::Ok, S::Error>
+pub fn serialize_entry_flags<S>(
+    item: &EntryFlags,
+    serializer: S,
+) -> ::std::result::Result<S::Ok, S::Error>
 where
     S: ser::Serializer,
 {
@@ -62,12 +69,15 @@ pub struct EntryHeader {
     pub update_sequence_value: u32,
     pub entry_reference: MftReference,
 }
+
 impl EntryHeader {
-    pub fn from_reader<R: Read>(reader: &mut R, entry: u64) -> Result<EntryHeader, Box<dyn Error>> {
+    pub fn from_reader<R: Read>(reader: &mut R, entry: u64) -> Result<EntryHeader> {
         let signature = reader.read_u32::<LittleEndian>()?;
-        if signature != 1_162_627_398 {
-            return Err(format!("Bad signature: {:04X}", signature));
-        }
+
+        ensure!(
+            signature != 1_162_627_398,
+            err::InvalidEntrySignature { bad_sig: signature }
+        );
 
         let usa_offset = reader.read_u16::<LittleEndian>()?;
         let usa_size = reader.read_u16::<LittleEndian>()?;
@@ -81,16 +91,13 @@ impl EntryHeader {
         let base_reference = MftReference(reader.read_u64::<LittleEndian>()?);
         let next_attribute_id = reader.read_u16::<LittleEndian>()?;
 
-        // TODO: what is this offset?
-        let record_number = if usa_offset == 48 {
-            let _padding = Some(reader.read_u16::<LittleEndian>()?);
-            reader.read_u32::<LittleEndian>()? as u64
-        } else {
-            return Err(format!(
-                "Unhandled update sequence array offset: {}",
-                usa_offset
-            ));
-        };
+        ensure!(
+            usa_offset == 48,
+            err::InvalidUsaOffset { offset: usa_offset }
+        );
+
+        let _padding = reader.read_u16::<LittleEndian>()?;
+        let record_number = reader.read_u32::<LittleEndian>()? as u64;
 
         let entry_reference = MftReference::get_from_entry_and_seq(record_number as u64, sequence);
 
@@ -120,7 +127,7 @@ pub struct MftEntry {
     pub attributes: BTreeMap<String, Vec<attribute::MftAttribute>>,
 }
 impl MftEntry {
-    pub fn new(mut buffer: Vec<u8>, entry: u64) -> Result<MftEntry, Box<dyn Error>> {
+    pub fn new(buffer: Vec<u8>, entry: u64) -> Result<MftEntry> {
         let mut cursor = Cursor::new(&buffer);
         // Get Header
         let entry_header = EntryHeader::from_reader(&mut cursor, entry)?;
@@ -173,14 +180,14 @@ impl MftEntry {
     //        }
     //    }
 
-    fn read_attributes<S: Read + Seek>(&mut self, buffer: &mut S) -> Result<u32, Box<dyn Error>> {
+    fn read_attributes<S: Read + Seek>(&mut self, buffer: &mut S) -> Result<u32> {
         let mut current_offset =
             buffer.seek(SeekFrom::Start(self.header.fst_attr_offset as u64))?;
 
         let attr_count: u32 = 0;
 
         loop {
-            let attribute_header = attribute::AttributeHeader::new(&mut buffer)?;
+            let attribute_header = attribute::AttributeHeader::from_stream(buffer)?;
 
             if attribute_header.attribute_type == 0xFFFF_FFFF {
                 break;
@@ -188,33 +195,24 @@ impl MftEntry {
 
             match attribute_header.residential_header {
                 attribute::ResidentialHeader::Resident(ref header) => {
-                    // Create buffer for raw attribute content
-                    let mut content_buffer = vec![0; header.data_size as usize];
-
-                    // read into content buffer
-                    buffer.read_exact(&mut content_buffer).unwrap();
-
                     // Create attribute content to parse buffer into
-                    let mut attr_content: attribute::AttributeContent = unsafe { mem::zeroed() };
-
                     // Get attribute contents
-                    match attribute_header.attribute_type {
-                        0x10 => {
-                            let attr = StandardInfoAttr::from_reader(content_buffer.as_slice())?;
-
-                            attr_content = attribute::AttributeContent::AttrX10(attr);
-                        }
+                    let attr_content = match attribute_header.attribute_type {
+                        0x10 => attribute::AttributeContent::AttrX10(
+                            StandardInfoAttr::from_reader(buffer)?,
+                        ),
                         0x30 => {
-                            let attr = FileNameAttr::from_reader(content_buffer.as_slice())?;
-
-                            attr_content = attribute::AttributeContent::AttrX30(attr);
+                            attribute::AttributeContent::AttrX30(FileNameAttr::from_reader(buffer)?)
                         }
                         _ => {
-                            attr_content = attribute::AttributeContent::Raw(
-                                attribute::RawAttribute(content_buffer),
-                            );
+                            let mut content_buffer = vec![0; header.data_size as usize];
+                            buffer.read_exact(&mut content_buffer)?;
+
+                            attribute::AttributeContent::Raw(attribute::RawAttribute(
+                                content_buffer,
+                            ))
                         }
-                    }
+                    };
 
                     self.set_attribute(attribute::MftAttribute {
                         header: attribute_header.clone(),
@@ -251,7 +249,7 @@ impl MftEntry {
             .push(attribute);
     }
 
-    pub fn set_fullnames(&mut self, mft_handler: &mut MftHandler) {
+    pub fn set_full_names(&mut self, mft_handler: &mut MftHandler) {
         if self.attributes.contains_key("0x0030") {
             if let Some(attr_list) = self.attributes.get_mut("0x0030") {
                 for attribute in attr_list.iter_mut() {

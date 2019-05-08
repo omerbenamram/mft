@@ -1,16 +1,17 @@
-use crate::errors::MftError;
+use crate::err::{self, Result};
 
-use serde::Serialize;
 use byteorder::{LittleEndian, ReadBytesExt};
+use chrono::{DateTime, Utc};
+use serde::Serialize;
 use std::io::Read;
 use winstructs::timestamp::WinTimestamp;
 
 #[derive(Serialize, Debug, Clone)]
 pub struct StandardInfoAttr {
-    pub created: WinTimestamp,
-    pub modified: WinTimestamp,
-    pub mft_modified: WinTimestamp,
-    pub accessed: WinTimestamp,
+    pub created: DateTime<Utc>,
+    pub modified: DateTime<Utc>,
+    pub mft_modified: DateTime<Utc>,
+    pub accessed: DateTime<Utc>,
     pub file_flags: u32,
     pub max_version: u32,
     pub version: u32,
@@ -20,6 +21,7 @@ pub struct StandardInfoAttr {
     pub quota: u64,
     pub usn: u64,
 }
+
 impl StandardInfoAttr {
     /// Parse a Standard Information attrbiute buffer.
     ///
@@ -53,11 +55,11 @@ impl StandardInfoAttr {
     /// assert_eq!(attribute.usn, 8768215144);
     /// # }
     /// ```
-    pub fn from_reader<R: Read>(reader: &mut R) -> Result<StandardInfoAttr, MftError> {
-        let created = WinTimestamp::from_reader(reader)?;
-        let modified = WinTimestamp::from_reader(reader)?;
-        let mft_modified = WinTimestamp::from_reader(reader)?;
-        let accessed = WinTimestamp::from_reader(reader)?;
+    pub fn from_reader<R: Read>(reader: &mut R) -> Result<StandardInfoAttr> {
+        let created = WinTimestamp::from_reader(reader)?.to_datetime();
+        let modified = WinTimestamp::from_reader(reader)?.to_datetime();
+        let mft_modified = WinTimestamp::from_reader(reader)?.to_datetime();
+        let accessed = WinTimestamp::from_reader(reader)?.to_datetime();
         let file_flags = reader.read_u32::<LittleEndian>()?;
         let max_version = reader.read_u32::<LittleEndian>()?;
         let version = reader.read_u32::<LittleEndian>()?;

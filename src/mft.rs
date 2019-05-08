@@ -1,8 +1,10 @@
 use crate::entry::MftEntry;
 use crate::enumerator::{PathEnumerator, PathMapping};
-use crate::errors::MftError;
+use crate::err::{self, Result};
+use snafu::ResultExt;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::path::Path;
 use winstructs::reference::MftReference;
 
 pub struct MftHandler {
@@ -14,14 +16,13 @@ pub struct MftHandler {
 }
 
 impl MftHandler {
-    pub fn new(filename: &str) -> Result<MftHandler, MftError> {
-        let mut mft_fh = match File::open(filename) {
-            Ok(usn_fh) => usn_fh,
-            // Handle error here
-            Err(error) => panic!("Error: {}", error),
-        };
+    pub fn from_path(filename: impl AsRef<Path>) -> Result<MftHandler> {
+        let f = filename.as_ref();
+
+        let mut mft_fh = File::open(f).context(err::FailedToOpenFile { path: f.to_owned() })?;
 
         // get file size
+        // TODO: remove this, and find a better way
         let size = match mft_fh.seek(SeekFrom::End(0)) {
             Err(e) => panic!("Error: {}", e),
             Ok(size) => size,
@@ -46,10 +47,9 @@ impl MftHandler {
         self._size / u64::from(self._entry_size)
     }
 
-    pub fn entry(&mut self, entry: u64) -> Result<MftEntry, MftError> {
+    pub fn entry(&mut self, entry: u64) -> Result<MftEntry> {
         self.file
-            .seek(SeekFrom::Start(entry * self._entry_size as u64))
-            .unwrap();
+            .seek(SeekFrom::Start(entry * self._entry_size as u64))?;
 
         let mut entry_buffer = vec![0; self._entry_size as usize];
         self.file.read_exact(&mut entry_buffer)?;
@@ -64,7 +64,7 @@ impl MftHandler {
             }
         }
 
-        mft_entry.set_fullnames(self);
+        mft_entry.set_full_names(self);
 
         Ok(mft_entry)
     }
@@ -73,7 +73,7 @@ impl MftHandler {
         self.path_enumerator.print_mapping();
     }
 
-    pub fn entry_from_buffer(&mut self, buffer: Vec<u8>, entry: u64) -> Result<MftEntry, MftError> {
+    pub fn entry_from_buffer(&mut self, buffer: Vec<u8>, entry: u64) -> Result<MftEntry> {
         let mft_entry = MftEntry::new(buffer, entry)?;
 
         Ok(mft_entry)
@@ -119,7 +119,7 @@ impl MftHandler {
         }
     }
 
-    fn get_mapping_from_entry(&mut self, entry: u64) -> Result<Option<PathMapping>, MftError> {
+    fn get_mapping_from_entry(&mut self, entry: u64) -> Result<Option<PathMapping>> {
         self.file
             .seek(SeekFrom::Start(entry * self._entry_size as u64))?;
 
