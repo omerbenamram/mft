@@ -21,7 +21,6 @@ use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 
-
 //https://github.com/libyal/libfsntfs/blob/master/documentation/New%20Technologies%20File%20System%20(NTFS).asciidoc#5-the-master-file-table-mft
 
 bitflags! {
@@ -75,7 +74,7 @@ impl EntryHeader {
         let signature = reader.read_u32::<LittleEndian>()?;
 
         ensure!(
-            signature != 1_162_627_398,
+            signature == 1_162_627_398,
             err::InvalidEntrySignature { bad_sig: signature }
         );
 
@@ -97,7 +96,7 @@ impl EntryHeader {
         );
 
         let _padding = reader.read_u16::<LittleEndian>()?;
-        let record_number = reader.read_u32::<LittleEndian>()? as u64;
+        let record_number = u64::from(reader.read_u32::<LittleEndian>()?);
 
         let entry_reference = MftReference::get_from_entry_and_seq(record_number as u64, sequence);
 
