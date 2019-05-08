@@ -1,13 +1,13 @@
 use seek_bufread::BufReader;
-use enumerator::{PathEnumerator,PathMapping};
+use crate::enumerator::{PathEnumerator,PathMapping};
 use rwinstructs::reference::{MftReference};
-use errors::{MftError};
-use entry::{MftEntry};
+use crate::errors::{MftError};
+use crate::entry::{MftEntry};
 use std::fs::File;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
-use std::mem;
+
 
 pub struct MftHandler {
     filehandle: BufReader<File>,
@@ -152,7 +152,7 @@ impl MftHandler{
                                 }
                             }
                         },
-                        Err(error) => {
+                        Err(_error) => {
                             name_stack.push(
                                 String::from("[UNKNOWN]")
                             );

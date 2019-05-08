@@ -11,10 +11,10 @@ use rustymft::mft::{MftHandler};
 use jmespath::{Expression};
 use rwinstructs::reference;
 use rwinstructs::serialize;
-use serde::Serializer;
-use serde::ser::SerializeSeq;
+
+
 use std::fs;
-use std::io;
+
 
 fn process_directory(directory: &str, options: ArgMatches) {
     for entry in fs::read_dir(directory).unwrap() {
@@ -53,7 +53,7 @@ fn process_file(filename: &str,options: ArgMatches) -> bool {
     };
 
     for i in 0 .. mft_handler.get_entry_count() {
-        let mft_entry = match mft_handler.entry(i) {
+        let _mft_entry = match mft_handler.entry(i) {
             Ok(mft_entry) => {
                 let json_str = serde_json::to_string(&mft_entry).unwrap();
 

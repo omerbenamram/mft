@@ -1,11 +1,11 @@
 [package]
 name = "RustyMft"
 version = "0.1.0"
-authors = ["matthew seyer <matthew.seyer@gmail.com>"]
+authors = ["matthew seyer <matthew.seyer@gmail.com>", "Omer Ben-Amram <omerbenamram@gmail.com>"]
+edition = "2018"
 
 [lib]
 name = "rustymft"
-crate-type = ["cdylib","lib"]
 
 [dependencies]
 log = "*"
@@ -28,5 +28,5 @@ branch = "master"
 git = "https://github.com/forensicmatt/r-winstructs"
 
 [dependencies.chrono]
-version = "*"
-features = ["serde", "rustc-serialize"]
+version = "0.4.6"
+features = ["serde"]

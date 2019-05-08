@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
-use errors::{MftError};
-use enumerator::{PathMapping};
-use mft::{MftHandler};
-use attribute;
-use attr_x10::{StandardInfoAttr};
-use attr_x30::{FileNameAttr};
-use utils;
+use crate::errors::{MftError};
+use crate::enumerator::{PathMapping};
+use crate::mft::{MftHandler};
+use crate::attribute;
+use crate::attr_x10::{StandardInfoAttr};
+use crate::attr_x30::{FileNameAttr};
+
 use rwinstructs::reference::{MftReference};
 use rwinstructs::serialize::{serialize_u64};
 use byteorder::{ReadBytesExt, LittleEndian};
@@ -182,7 +182,7 @@ impl MftEntry{
         None
     }
 
-    pub fn buffer_fixup(&self, mut buffer: &mut[u8]){
+    pub fn buffer_fixup(&self, buffer: &mut[u8]){
         let fixup_values = &buffer[
             (self.header.usa_offset + 2) as usize..
             ((self.header.usa_offset + 2)+((self.header.usa_size - 1) * 2)) as usize
@@ -362,6 +362,6 @@ mod tests {
         assert_eq!(entry_header.base_reference.0, 0);
         assert_eq!(entry_header.next_attribute_id, 6);
         assert_eq!(entry_header.padding, Some(0));
-        assert_eq!(entry_header.record_number, Some(38357));
+        assert_eq!(entry_header.record_number, 38357);
     }
 }

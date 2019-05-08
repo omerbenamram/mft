@@ -1,11 +1,11 @@
-use errors::{MftError};
+use crate::errors::{MftError};
 use rwinstructs::timestamp::{WinTimestamp};
 use rwinstructs::reference::{MftReference};
 use byteorder::{ReadBytesExt, LittleEndian};
 use encoding::{Encoding, DecoderTrap};
 use encoding::all::UTF_16LE;
 use std::io::Read;
-use std::mem;
+
 use serde::ser::SerializeStruct;
 use serde::ser;
 

@@ -1,7 +1,7 @@
-use errors::{MftError};
-use utils;
-use attr_x10::{StandardInfoAttr};
-use attr_x30::{FileNameAttr};
+use crate::errors::{MftError};
+use crate::utils;
+use crate::attr_x10::{StandardInfoAttr};
+use crate::attr_x30::{FileNameAttr};
 use rwinstructs::serialize::{serialize_u64};
 use byteorder::{ReadBytesExt, LittleEndian};
 use encoding::{Encoding, DecoderTrap};

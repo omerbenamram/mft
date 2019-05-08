@@ -1,4 +1,4 @@
-use errors::{MftError};
+use crate::errors::{MftError};
 use rwinstructs::timestamp::{WinTimestamp};
 use byteorder::{ReadBytesExt,LittleEndian};
 use serde::ser::SerializeStruct;
