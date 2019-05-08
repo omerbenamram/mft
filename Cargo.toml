@@ -2,6 +2,10 @@
 name = "mft"
 description = "A Fast (and safe) parser for the Windows Master File Table (MFT) format"
 homepage = "https://github.com/omerbenamram/mft"
+repository = "https://github.com/omerbenamram/mft"
+license = "MIT/Apache-2.0"
+readme = "README.md"
+
 version = "0.1.0"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>", "matthew seyer <matthew.seyer@gmail.com>"]
 edition = "2018"
