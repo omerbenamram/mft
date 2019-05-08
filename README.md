@@ -1,19 +1,4 @@
-A fast and cross platform MFT Parser written in Rust that gives you the ability to query the records via [JMESPath](http://jmespath.org/) queries. Output is [JSONL](http://jsonlines.org/).
+A work-in-progress cross platform MFT (master file table) parser.
 
-```
-RustyMft 0.1.0
-Matthew Seyer <https://github.com/forensicmatt/RustyMft>
-Parse $MFT.
 
-USAGE:
-    RustyMft.exe [FLAGS] [OPTIONS] --source <FILE>
-
-FLAGS:
-    -b, --bool_expr    JMES Query as bool only. (Prints whole record if true.)
-    -h, --help         Prints help information
-    -V, --version      Prints version information
-
-OPTIONS:
-    -q, --query <QUERY>    JMES Query
-    -s, --source <FILE>    The source path. Can be a file or a directory.
-```
+Inspired by the work at: https://github.com/forensicmatt/RustyMft, but is not API compatible.
