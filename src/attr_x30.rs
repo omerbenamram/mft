@@ -8,7 +8,7 @@ use std::io::Read;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use snafu::ResultExt;
+
 use winstructs::reference::MftReference;
 use winstructs::timestamp::WinTimestamp;
 
@@ -86,7 +86,7 @@ impl FileNameAttr {
 
         let name = match UTF_16LE.decode(&name_buffer, DecoderTrap::Ignore) {
             Ok(s) => s,
-            Err(e) => return err::InvalidFilename {}.fail(),
+            Err(_e) => return err::InvalidFilename {}.fail(),
         };
 
         let fullname = None;

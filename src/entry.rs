@@ -20,7 +20,7 @@ use std::io::Cursor;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
-use std::mem;
+
 
 //https://github.com/libyal/libfsntfs/blob/master/documentation/New%20Technologies%20File%20System%20(NTFS).asciidoc#5-the-master-file-table-mft
 
@@ -71,7 +71,7 @@ pub struct EntryHeader {
 }
 
 impl EntryHeader {
-    pub fn from_reader<R: Read>(reader: &mut R, entry: u64) -> Result<EntryHeader> {
+    pub fn from_reader<R: Read>(reader: &mut R, _entry: u64) -> Result<EntryHeader> {
         let signature = reader.read_u32::<LittleEndian>()?;
 
         ensure!(
