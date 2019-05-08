@@ -1,9 +1,9 @@
 use clap::{App, Arg};
-use log::{info, error, warn, debug};
-use mft::mft::MftHandler;
 use env_logger;
+use log::{debug, error, info, warn};
+use mft::mft::MftHandler;
 
-fn process_file(filename: &str) -> bool {
+fn process_file(filename: &str, indent: bool) -> bool {
     info!("Opening file {}", filename);
     let mut mft_handler = match MftHandler::from_path(filename) {
         Ok(mft_handler) => mft_handler,
@@ -16,7 +16,12 @@ fn process_file(filename: &str) -> bool {
     for i in 0..mft_handler.get_entry_count() {
         match mft_handler.entry(i) {
             Ok(mft_entry) => {
-                let json_str = serde_json::to_string(&mft_entry).unwrap();
+                let json_str = if indent {
+                    serde_json::to_string_pretty(&mft_entry).unwrap()
+                } else {
+                    serde_json::to_string(&mft_entry).unwrap()
+                };
+
                 println!("{}", json_str);
             }
             Err(error) => {
@@ -37,7 +42,17 @@ fn main() {
         .author("Omer B. <omerbenamram@gmail.com>")
         .about("Utility for parsing MFT snapshots")
         .arg(Arg::with_name("INPUT").required(true))
+        .arg(
+            Arg::with_name("no-indent")
+                .long("--no-indent")
+                .takes_value(false)
+                .help("When set, output will not be indented."),
+        )
         .get_matches();
 
-    process_file(matches.value_of("INPUT").expect("Required argument"));
+    let indent = !matches.is_present("no-indent");
+    process_file(
+        matches.value_of("INPUT").expect("Required argument"),
+        indent,
+    );
 }
