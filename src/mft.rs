@@ -1,17 +1,18 @@
 use crate::entry::MftEntry;
 use crate::enumerator::{PathEnumerator, PathMapping};
 use crate::errors::MftError;
-use rwinstructs::reference::MftReference;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
+use winstructs::reference::MftReference;
 
 pub struct MftHandler {
-    filehandle: BufReader<File>,
+    file: BufReader<File>,
     path_enumerator: PathEnumerator,
     _entry_size: u32,
     _offset: u64,
     _size: u64,
 }
+
 impl MftHandler {
     pub fn new(filename: &str) -> Result<MftHandler, MftError> {
         let mut mft_fh = match File::open(filename) {
@@ -29,7 +30,7 @@ impl MftHandler {
         let filehandle = BufReader::with_capacity(4096, mft_fh);
 
         Ok(MftHandler {
-            filehandle,
+            file: filehandle,
             path_enumerator: PathEnumerator::new(),
             _entry_size: 1024,
             _offset: 0,
@@ -46,12 +47,12 @@ impl MftHandler {
     }
 
     pub fn entry(&mut self, entry: u64) -> Result<MftEntry, MftError> {
-        self.filehandle
+        self.file
             .seek(SeekFrom::Start(entry * self._entry_size as u64))
             .unwrap();
 
         let mut entry_buffer = vec![0; self._entry_size as usize];
-        self.filehandle.read_exact(&mut entry_buffer)?;
+        self.file.read_exact(&mut entry_buffer)?;
 
         let mut mft_entry = self.entry_from_buffer(entry_buffer, entry)?;
 
@@ -119,11 +120,11 @@ impl MftHandler {
     }
 
     fn get_mapping_from_entry(&mut self, entry: u64) -> Result<Option<PathMapping>, MftError> {
-        self.filehandle
+        self.file
             .seek(SeekFrom::Start(entry * self._entry_size as u64))?;
 
         let mut entry_buffer = vec![0; self._entry_size as usize];
-        self.filehandle.read_exact(&mut entry_buffer)?;
+        self.file.read_exact(&mut entry_buffer)?;
 
         let mft_entry = self.entry_from_buffer(entry_buffer, entry)?;
 

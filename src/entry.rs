@@ -2,16 +2,16 @@ use crate::attr_x10::StandardInfoAttr;
 use crate::attr_x30::FileNameAttr;
 use crate::attribute;
 use crate::enumerator::PathMapping;
-use crate::errors::MftError;
 use crate::mft::MftHandler;
 use std::collections::BTreeMap;
 
-use rwinstructs::reference::MftReference;
+use winstructs::reference::MftReference;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
 use bitflags::bitflags;
 use serde::{ser, Serialize};
+use std::error::Error;
 use std::io::Cursor;
 use std::io::Read;
 use std::io::Seek;
@@ -58,53 +58,59 @@ pub struct EntryHeader {
     #[serde(skip_serializing)]
     pub next_attribute_id: u16,
     #[serde(skip_serializing)]
-    pub padding: Option<u16>,
-    #[serde(skip_serializing)]
     pub record_number: u64,
     pub update_sequence_value: u32,
     pub entry_reference: MftReference,
 }
 impl EntryHeader {
-    pub fn new<R: Read>(mut reader: R, entry: u64) -> Result<EntryHeader, MftError> {
-        let mut entry_header: EntryHeader = unsafe { mem::zeroed() };
-
-        entry_header.signature = reader.read_u32::<LittleEndian>()?;
-        if entry_header.signature != 1_162_627_398 {
-            return Err(MftError::invalid_entry_signature(format!(
-                "Bad signature: {:04X}",
-                entry_header.signature
-            )));
+    pub fn from_reader<R: Read>(reader: &mut R, entry: u64) -> Result<EntryHeader, Box<dyn Error>> {
+        let signature = reader.read_u32::<LittleEndian>()?;
+        if signature != 1_162_627_398 {
+            return Err(format!("Bad signature: {:04X}", signature));
         }
 
-        entry_header.usa_offset = reader.read_u16::<LittleEndian>()?;
-        entry_header.usa_size = reader.read_u16::<LittleEndian>()?;
-        entry_header.logfile_sequence_number = reader.read_u64::<LittleEndian>()?;
-        entry_header.sequence = reader.read_u16::<LittleEndian>()?;
-        entry_header.hard_link_count = reader.read_u16::<LittleEndian>()?;
-        entry_header.fst_attr_offset = reader.read_u16::<LittleEndian>()?;
-        entry_header.flags = EntryFlags::from_bits_truncate(reader.read_u16::<LittleEndian>()?);
-        entry_header.entry_size_real = reader.read_u32::<LittleEndian>()?;
-        entry_header.entry_size_allocated = reader.read_u32::<LittleEndian>()?;
-        entry_header.base_reference = MftReference(reader.read_u64::<LittleEndian>()?);
-        entry_header.next_attribute_id = reader.read_u16::<LittleEndian>()?;
+        let usa_offset = reader.read_u16::<LittleEndian>()?;
+        let usa_size = reader.read_u16::<LittleEndian>()?;
+        let logfile_sequence_number = reader.read_u64::<LittleEndian>()?;
+        let sequence = reader.read_u16::<LittleEndian>()?;
+        let hard_link_count = reader.read_u16::<LittleEndian>()?;
+        let fst_attr_offset = reader.read_u16::<LittleEndian>()?;
+        let flags = EntryFlags::from_bits_truncate(reader.read_u16::<LittleEndian>()?);
+        let entry_size_real = reader.read_u32::<LittleEndian>()?;
+        let entry_size_allocated = reader.read_u32::<LittleEndian>()?;
+        let base_reference = MftReference(reader.read_u64::<LittleEndian>()?);
+        let next_attribute_id = reader.read_u16::<LittleEndian>()?;
 
-        if entry_header.usa_offset == 48 {
-            entry_header.padding = Some(reader.read_u16::<LittleEndian>()?);
-            entry_header.record_number = reader.read_u32::<LittleEndian>()? as u64;
+        // TODO: what is this offset?
+        let record_number = if usa_offset == 48 {
+            let _padding = Some(reader.read_u16::<LittleEndian>()?);
+            reader.read_u32::<LittleEndian>()? as u64
         } else {
-            entry_header.record_number = entry as u64;
-            panic!(
+            return Err(format!(
                 "Unhandled update sequence array offset: {}",
-                entry_header.usa_offset
-            )
-        }
+                usa_offset
+            ));
+        };
 
-        entry_header.entry_reference = MftReference::get_from_entry_and_seq(
-            entry_header.record_number as u64,
-            entry_header.sequence,
-        );
+        let entry_reference = MftReference::get_from_entry_and_seq(record_number as u64, sequence);
 
-        Ok(entry_header)
+        Ok(EntryHeader {
+            signature,
+            usa_offset,
+            usa_size,
+            logfile_sequence_number,
+            sequence,
+            hard_link_count,
+            fst_attr_offset,
+            flags,
+            entry_size_real,
+            entry_size_allocated,
+            base_reference,
+            next_attribute_id,
+            record_number,
+            update_sequence_value: 0,
+            entry_reference,
+        })
     }
 }
 
@@ -114,19 +120,17 @@ pub struct MftEntry {
     pub attributes: BTreeMap<String, Vec<attribute::MftAttribute>>,
 }
 impl MftEntry {
-    pub fn new(mut buffer: Vec<u8>, entry: u64) -> Result<MftEntry, MftError> {
+    pub fn new(mut buffer: Vec<u8>, entry: u64) -> Result<MftEntry, Box<dyn Error>> {
+        let mut cursor = Cursor::new(&buffer);
         // Get Header
-        let entry_header = EntryHeader::new(buffer.as_slice(), entry)?;
+        let entry_header = EntryHeader::from_reader(&mut cursor, entry)?;
 
         let mut mft_entry = MftEntry {
             header: entry_header,
             attributes: BTreeMap::new(),
         };
 
-        // Fixup buffer
-        mft_entry.buffer_fixup(&mut buffer);
-
-        mft_entry.read_attributes(Cursor::new(buffer.as_slice()))?;
+        mft_entry.read_attributes(&mut cursor)?;
 
         Ok(mft_entry)
     }
@@ -156,19 +160,20 @@ impl MftEntry {
         None
     }
 
-    pub fn buffer_fixup(&self, buffer: &mut [u8]) {
-        let fixup_values = &buffer[(self.header.usa_offset + 2) as usize
-            ..((self.header.usa_offset + 2) + ((self.header.usa_size - 1) * 2)) as usize]
-            .to_vec();
+    //    // TODO: what is this function?
+    //    pub fn buffer_fixup(&self, buffer: &mut [u8]) {
+    //        let fixup_values = &buffer[(self.header.usa_offset + 2) as usize
+    //            ..((self.header.usa_offset + 2) + ((self.header.usa_size - 1) * 2)) as usize]
+    //            .to_vec();
+    //
+    //        for i in 0..(self.header.usa_size - 1) {
+    //            let ofs = (i * 512) as usize;
+    //            *buffer.get_mut(ofs + 510).unwrap() = fixup_values[i as usize];
+    //            *buffer.get_mut(ofs + 511).unwrap() = fixup_values[(i + 1) as usize];
+    //        }
+    //    }
 
-        for i in 0..(self.header.usa_size - 1) {
-            let ofs = (i * 512) as usize;
-            *buffer.get_mut(ofs + 510).unwrap() = fixup_values[i as usize];
-            *buffer.get_mut(ofs + 511).unwrap() = fixup_values[(i + 1) as usize];
-        }
-    }
-
-    fn read_attributes<Rs: Read + Seek>(&mut self, mut buffer: Rs) -> Result<u32, MftError> {
+    fn read_attributes<S: Read + Seek>(&mut self, buffer: &mut S) -> Result<u32, Box<dyn Error>> {
         let mut current_offset =
             buffer.seek(SeekFrom::Start(self.header.fst_attr_offset as u64))?;
 
@@ -195,12 +200,12 @@ impl MftEntry {
                     // Get attribute contents
                     match attribute_header.attribute_type {
                         0x10 => {
-                            let attr = StandardInfoAttr::new(content_buffer.as_slice())?;
+                            let attr = StandardInfoAttr::from_reader(content_buffer.as_slice())?;
 
                             attr_content = attribute::AttributeContent::AttrX10(attr);
                         }
                         0x30 => {
-                            let attr = FileNameAttr::new(content_buffer.as_slice())?;
+                            let attr = FileNameAttr::from_reader(content_buffer.as_slice())?;
 
                             attr_content = attribute::AttributeContent::AttrX30(attr);
                         }
@@ -269,6 +274,7 @@ impl MftEntry {
 #[cfg(test)]
 mod tests {
     use super::EntryHeader;
+    use std::io::Cursor;
 
     #[test]
     fn mft_header_test_01() {
@@ -279,15 +285,12 @@ mod tests {
             0x00, 0x00, 0xD5, 0x95, 0x00, 0x00, 0x53, 0x57, 0x81, 0x37, 0x00, 0x00, 0x00, 0x00,
         ];
 
-        let entry_header = match EntryHeader::new(header_buffer, 0) {
-            Ok(entry_header) => entry_header,
-            Err(error) => panic!(error),
-        };
+        let entry_header = EntryHeader::from_reader(&mut Cursor::new(header_buffer), 0).unwrap();
 
-        assert_eq!(entry_header.signature, 1162627398);
+        assert_eq!(entry_header.signature, 1_162_627_398);
         assert_eq!(entry_header.usa_offset, 48);
         assert_eq!(entry_header.usa_size, 3);
-        assert_eq!(entry_header.logfile_sequence_number, 53762438092);
+        assert_eq!(entry_header.logfile_sequence_number, 53_762_438_092);
         assert_eq!(entry_header.sequence, 5);
         assert_eq!(entry_header.hard_link_count, 1);
         assert_eq!(entry_header.fst_attr_offset, 56);
@@ -296,7 +299,6 @@ mod tests {
         assert_eq!(entry_header.entry_size_allocated, 1024);
         assert_eq!(entry_header.base_reference.0, 0);
         assert_eq!(entry_header.next_attribute_id, 6);
-        assert_eq!(entry_header.padding, Some(0));
         assert_eq!(entry_header.record_number, 38357);
     }
 }

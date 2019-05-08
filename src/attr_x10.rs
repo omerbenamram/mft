@@ -1,10 +1,11 @@
 use crate::errors::MftError;
-use byteorder::{LittleEndian, ReadBytesExt};
-use rwinstructs::timestamp::WinTimestamp;
-use serde::ser;
-use serde::ser::SerializeStruct;
 
-#[derive(Debug, Clone)]
+use serde::Serialize;
+use byteorder::{LittleEndian, ReadBytesExt};
+use std::io::Read;
+use winstructs::timestamp::WinTimestamp;
+
+#[derive(Serialize, Debug, Clone)]
 pub struct StandardInfoAttr {
     pub created: WinTimestamp,
     pub modified: WinTimestamp,
@@ -52,19 +53,19 @@ impl StandardInfoAttr {
     /// assert_eq!(attribute.usn, 8768215144);
     /// # }
     /// ```
-    pub fn new(mut buffer: &[u8]) -> Result<StandardInfoAttr, MftError> {
-        let created = WinTimestamp(buffer.read_u64::<LittleEndian>()?);
-        let modified = WinTimestamp(buffer.read_u64::<LittleEndian>()?);
-        let mft_modified = WinTimestamp(buffer.read_u64::<LittleEndian>()?);
-        let accessed = WinTimestamp(buffer.read_u64::<LittleEndian>()?);
-        let file_flags = buffer.read_u32::<LittleEndian>()?;
-        let max_version = buffer.read_u32::<LittleEndian>()?;
-        let version = buffer.read_u32::<LittleEndian>()?;
-        let class_id = buffer.read_u32::<LittleEndian>()?;
-        let owner_id = buffer.read_u32::<LittleEndian>()?;
-        let security_id = buffer.read_u32::<LittleEndian>()?;
-        let quota = buffer.read_u64::<LittleEndian>()?;
-        let usn = buffer.read_u64::<LittleEndian>()?;
+    pub fn from_reader<R: Read>(reader: &mut R) -> Result<StandardInfoAttr, MftError> {
+        let created = WinTimestamp::from_reader(reader)?;
+        let modified = WinTimestamp::from_reader(reader)?;
+        let mft_modified = WinTimestamp::from_reader(reader)?;
+        let accessed = WinTimestamp::from_reader(reader)?;
+        let file_flags = reader.read_u32::<LittleEndian>()?;
+        let max_version = reader.read_u32::<LittleEndian>()?;
+        let version = reader.read_u32::<LittleEndian>()?;
+        let class_id = reader.read_u32::<LittleEndian>()?;
+        let owner_id = reader.read_u32::<LittleEndian>()?;
+        let security_id = reader.read_u32::<LittleEndian>()?;
+        let quota = reader.read_u64::<LittleEndian>()?;
+        let usn = reader.read_u64::<LittleEndian>()?;
 
         Ok(StandardInfoAttr {
             created,
@@ -80,26 +81,5 @@ impl StandardInfoAttr {
             quota,
             usn,
         })
-    }
-}
-
-impl ser::Serialize for StandardInfoAttr {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: ser::Serializer,
-    {
-        let mut state = serializer.serialize_struct("StandardInfoAttr", 5)?;
-        state.serialize_field("created", &format!("{}", &self.created))?;
-        state.serialize_field("modified", &format!("{}", &self.created))?;
-        state.serialize_field("mft_modified", &format!("{}", &self.created))?;
-        state.serialize_field("accessed", &format!("{}", &self.created))?;
-        state.serialize_field("file_flags", &self.file_flags)?;
-        state.serialize_field("max_version", &self.max_version)?;
-        state.serialize_field("class_id", &self.class_id)?;
-        state.serialize_field("owner_id", &self.owner_id)?;
-        state.serialize_field("security_id", &self.security_id)?;
-        state.serialize_field("quota", &format!("{}", &self.quota))?;
-        state.serialize_field("usn", &format!("{}", &self.usn))?;
-        state.end()
     }
 }

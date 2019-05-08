@@ -1,5 +1,5 @@
-use rwinstructs::reference::MftReference;
 use std::collections::HashMap;
+use winstructs::reference::MftReference;
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone)]
 pub struct PathMapping {

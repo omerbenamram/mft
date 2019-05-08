@@ -3,19 +3,21 @@ use crate::errors::MftError;
 use byteorder::{LittleEndian, ReadBytesExt};
 use encoding::all::UTF_16LE;
 use encoding::{DecoderTrap, Encoding};
-use rwinstructs::reference::MftReference;
-use rwinstructs::timestamp::WinTimestamp;
+
 use std::io::Read;
 
+use chrono::{DateTime, Utc};
 use serde::Serialize;
+use winstructs::reference::MftReference;
+use winstructs::timestamp::WinTimestamp;
 
 #[derive(Serialize, Clone, Debug)]
 pub struct FileNameAttr {
     pub parent: MftReference,
-    pub created: WinTimestamp,
-    pub modified: WinTimestamp,
-    pub mft_modified: WinTimestamp,
-    pub accessed: WinTimestamp,
+    pub created: DateTime<Utc>,
+    pub modified: DateTime<Utc>,
+    pub mft_modified: DateTime<Utc>,
+    pub accessed: DateTime<Utc>,
     pub logical_size: u64,
     pub physical_size: u64,
     pub flags: u32,
@@ -25,6 +27,8 @@ pub struct FileNameAttr {
     pub name: String,
     pub fullname: Option<String>,
 }
+
+// TODO: fix docs (use correct idioms)
 impl FileNameAttr {
     /// Parse a Filename attrbiute buffer.
     ///
@@ -63,21 +67,21 @@ impl FileNameAttr {
     /// assert_eq!(attribute.name, "$LogFile");
     /// # }
     /// ```
-    pub fn new(mut buffer: &[u8]) -> Result<FileNameAttr, MftError> {
-        let parent = MftReference(buffer.read_u64::<LittleEndian>()?);
-        let created = WinTimestamp(buffer.read_u64::<LittleEndian>()?);
-        let modified = WinTimestamp(buffer.read_u64::<LittleEndian>()?);
-        let mft_modified = WinTimestamp(buffer.read_u64::<LittleEndian>()?);
-        let accessed = WinTimestamp(buffer.read_u64::<LittleEndian>()?);
-        let logical_size = buffer.read_u64::<LittleEndian>()?;
-        let physical_size = buffer.read_u64::<LittleEndian>()?;
-        let flags = buffer.read_u32::<LittleEndian>()?;
-        let reparse_value = buffer.read_u32::<LittleEndian>()?;
-        let name_length = buffer.read_u8()?;
-        let namespace = buffer.read_u8()?;
+    pub fn from_reader<R: Read>(mut reader: &mut R) -> Result<FileNameAttr, MftError> {
+        let parent = MftReference(reader.read_u64::<LittleEndian>()?);
+        let created = WinTimestamp::from_reader(reader)?.to_datetime();
+        let modified = WinTimestamp::from_reader(reader)?.to_datetime();
+        let mft_modified = WinTimestamp::from_reader(reader)?.to_datetime();
+        let accessed = WinTimestamp::from_reader(reader)?.to_datetime();
+        let logical_size = reader.read_u64::<LittleEndian>()?;
+        let physical_size = reader.read_u64::<LittleEndian>()?;
+        let flags = reader.read_u32::<LittleEndian>()?;
+        let reparse_value = reader.read_u32::<LittleEndian>()?;
+        let name_length = reader.read_u8()?;
+        let namespace = reader.read_u8()?;
 
         let mut name_buffer = vec![0; (name_length as usize * 2) as usize];
-        buffer.read_exact(&mut name_buffer)?;
+        reader.read_exact(&mut name_buffer)?;
 
         let name = match UTF_16LE.decode(&name_buffer, DecoderTrap::Ignore) {
             Ok(filename) => filename,
