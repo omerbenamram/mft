@@ -1,5 +1,6 @@
 use crate::err::{Result};
 
+use log::trace;
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -56,6 +57,7 @@ impl StandardInfoAttr {
     /// # }
     /// ```
     pub fn from_reader<R: Read>(reader: &mut R) -> Result<StandardInfoAttr> {
+        trace!("StandardInfoAttr");
         let created = WinTimestamp::from_reader(reader)?.to_datetime();
         let modified = WinTimestamp::from_reader(reader)?.to_datetime();
         let mft_modified = WinTimestamp::from_reader(reader)?.to_datetime();

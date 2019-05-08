@@ -1,6 +1,8 @@
+use crate::ReadSeek;
 use crate::entry::MftEntry;
 use crate::enumerator::{PathEnumerator, PathMapping};
 use crate::err::{self, Result};
+use log::debug;
 use snafu::ResultExt;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
@@ -21,12 +23,13 @@ impl MftHandler {
 
         let mut mft_fh = File::open(f).context(err::FailedToOpenFile { path: f.to_owned() })?;
 
-        // get file size
+        debug!("Seek!");
         // TODO: remove this, and find a better way
         let size = match mft_fh.seek(SeekFrom::End(0)) {
             Err(e) => panic!("Error: {}", e),
             Ok(size) => size,
         };
+        debug!("After Seek!");
 
         let filehandle = BufReader::with_capacity(4096, mft_fh);
 
@@ -48,6 +51,7 @@ impl MftHandler {
     }
 
     pub fn entry(&mut self, entry: u64) -> Result<MftEntry> {
+        debug!("Reading entry {}", entry);
         self.file
             .seek(SeekFrom::Start(entry * u64::from(self._entry_size)))?;
 
@@ -64,7 +68,8 @@ impl MftHandler {
             }
         }
 
-        mft_entry.set_full_names(self);
+        // TODO: don't do this mutably from here.
+//        mft_entry.set_full_names(self);
 
         Ok(mft_entry)
     }

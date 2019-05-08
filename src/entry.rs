@@ -2,9 +2,10 @@ use crate::err::{self, Result};
 
 use crate::attr_x10::StandardInfoAttr;
 use crate::attr_x30::FileNameAttr;
-use crate::attribute;
 use crate::enumerator::PathMapping;
 use crate::mft::MftHandler;
+use crate::{attribute, ReadSeek};
+use log::debug;
 use snafu::ensure;
 
 use std::collections::BTreeMap;
@@ -16,6 +17,7 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use bitflags::bitflags;
 use serde::{ser, Serialize};
 
+use crate::attribute::MftAttribute;
 use std::io::Cursor;
 use std::io::Read;
 use std::io::Seek;
@@ -123,22 +125,22 @@ impl EntryHeader {
 #[derive(Serialize, Debug)]
 pub struct MftEntry {
     pub header: EntryHeader,
-    pub attributes: BTreeMap<String, Vec<attribute::MftAttribute>>,
+    pub attributes: Vec<MftAttribute>,
 }
+
 impl MftEntry {
     pub fn new(buffer: Vec<u8>, entry: u64) -> Result<MftEntry> {
+        debug!("MftEntry `{}` from buffer", entry);
         let mut cursor = Cursor::new(&buffer);
         // Get Header
         let entry_header = EntryHeader::from_reader(&mut cursor, entry)?;
 
-        let mut mft_entry = MftEntry {
+        let attributes = Self::read_attributes(&entry_header, &mut cursor)?;
+
+        Ok(MftEntry {
             header: entry_header,
-            attributes: BTreeMap::new(),
-        };
-
-        mft_entry.read_attributes(&mut cursor)?;
-
-        Ok(mft_entry)
+            attributes,
+        })
     }
 
     pub fn is_allocated(&self) -> bool {
@@ -150,21 +152,38 @@ impl MftEntry {
     }
 
     pub fn get_pathmap(&self) -> Option<PathMapping> {
-        if let Some(fn_attr_list) = self.attributes.get("0x0030") {
-            for attribute in fn_attr_list {
-                if let attribute::AttributeContent::AttrX30(ref attrib) = attribute.content {
-                    if attrib.namespace != 2 {
-                        return Some(PathMapping {
-                            name: attrib.name.clone(),
-                            parent: MftReference(attrib.parent.0),
-                        });
-                    }
+        for attribute in self.attributes.iter() {
+            if let attribute::AttributeContent::AttrX30(ref attrib) = attribute.content {
+                if attrib.namespace != 2 {
+                    return Some(PathMapping {
+                        name: attrib.name.clone(),
+                        parent: MftReference(attrib.parent.0),
+                    });
                 }
             }
         }
 
         None
     }
+
+    //    pub fn set_full_names(&mut self, mft_handler: &mut MftHandler) {
+    //        if self.attributes.contains_key("0x0030") {
+    //            if let Some(attr_list) = self.attributes.get_mut("0x0030") {
+    //                for attribute in attr_list.iter_mut() {
+    //                    // Check if resident content
+    //                    if let attribute::AttributeContent::AttrX30(ref mut attrib) = attribute.content
+    //                    {
+    //                        // Get fullpath
+    //                        let fullpath = mft_handler.get_fullpath(attrib.parent);
+    //                        // Set fullname
+    //                        let fullname = fullpath + "/" + attrib.name.as_str();
+    //                        // Set attribute to fullname
+    //                        attrib.fullname = Some(fullname);
+    //                    }
+    //                }
+    //            }
+    //        }
+    //    }
 
     //    // TODO: what is this function?
     //    pub fn buffer_fixup(&self, buffer: &mut [u8]) {
@@ -179,16 +198,18 @@ impl MftEntry {
     //        }
     //    }
 
-    fn read_attributes<S: Read + Seek>(&mut self, buffer: &mut S) -> Result<u32> {
-        let mut current_offset =
-            buffer.seek(SeekFrom::Start(u64::from(self.header.fst_attr_offset)))?;
+    fn read_attributes<S: ReadSeek>(
+        header: &EntryHeader,
+        buffer: &mut S,
+    ) -> Result<Vec<MftAttribute>> {
+        let mut current_offset = buffer.seek(SeekFrom::Start(u64::from(header.fst_attr_offset)))?;
 
-        let attr_count: u32 = 0;
+        let mut attributes = vec![];
 
         loop {
             let attribute_header = attribute::AttributeHeader::from_stream(buffer)?;
 
-            if attribute_header.attribute_type == 0xFFFF_FFFF {
+            if attribute_header.attribute_type == 0x00 {
                 break;
             }
 
@@ -213,14 +234,14 @@ impl MftEntry {
                         }
                     };
 
-                    self.set_attribute(attribute::MftAttribute {
+                    attributes.push(attribute::MftAttribute {
                         header: attribute_header.clone(),
                         content: attr_content,
                     });
                 }
                 attribute::ResidentialHeader::NonResident(_) => {
                     // No content, so push header into attributes
-                    self.set_attribute(attribute::MftAttribute {
+                    attributes.push(attribute::MftAttribute {
                         header: attribute_header.clone(),
                         content: attribute::AttributeContent::None,
                     });
@@ -235,36 +256,7 @@ impl MftEntry {
             ))?;
         }
 
-        Ok(attr_count)
-    }
-
-    pub fn set_attribute(&mut self, attribute: attribute::MftAttribute) {
-        // This could maybe use some refactoring??
-        // Check if attribute type is already in mapping
-        let attr_type = format!("0x{:04X}", attribute.header.attribute_type);
-        self.attributes
-            .entry(attr_type)
-            .or_insert_with(Vec::new)
-            .push(attribute);
-    }
-
-    pub fn set_full_names(&mut self, mft_handler: &mut MftHandler) {
-        if self.attributes.contains_key("0x0030") {
-            if let Some(attr_list) = self.attributes.get_mut("0x0030") {
-                for attribute in attr_list.iter_mut() {
-                    // Check if resident content
-                    if let attribute::AttributeContent::AttrX30(ref mut attrib) = attribute.content
-                    {
-                        // Get fullpath
-                        let fullpath = mft_handler.get_fullpath(attrib.parent);
-                        // Set fullname
-                        let fullname = fullpath + "/" + attrib.name.as_str();
-                        // Set attribute to fullname
-                        attrib.fullname = Some(fullname);
-                    }
-                }
-            }
-        }
+        Ok(attributes)
     }
 }
 

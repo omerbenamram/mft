@@ -1,10 +1,10 @@
 use clap::{App, Arg};
-use log::{error, warn};
+use log::{info, error, warn, debug};
 use mft::mft::MftHandler;
-
-
+use env_logger;
 
 fn process_file(filename: &str) -> bool {
+    info!("Opening file {}", filename);
     let mut mft_handler = match MftHandler::from_path(filename) {
         Ok(mft_handler) => mft_handler,
         Err(error) => {
@@ -20,7 +20,7 @@ fn process_file(filename: &str) -> bool {
                 println!("{}", json_str);
             }
             Err(error) => {
-                error!("Could not mft_entry: {} [error: {}]", i, error);
+                println!("Could not mft_entry: {} [error: {}]", i, error);
                 continue;
             }
         };
@@ -30,6 +30,8 @@ fn process_file(filename: &str) -> bool {
 }
 
 fn main() {
+    env_logger::init();
+
     let matches = App::new("MFT Parser")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Omer B. <omerbenamram@gmail.com>")

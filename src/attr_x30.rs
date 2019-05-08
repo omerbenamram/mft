@@ -1,4 +1,5 @@
 use crate::err::{self, Result};
+use log::trace;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use encoding::all::UTF_16LE;
@@ -69,6 +70,7 @@ impl FileNameAttr {
     /// # }
     /// ```
     pub fn from_reader<R: Read>(reader: &mut R) -> Result<FileNameAttr> {
+        trace!("FileNameAttr");
         let parent = MftReference(reader.read_u64::<LittleEndian>()?);
         let created = WinTimestamp::from_reader(reader)?.to_datetime();
         let modified = WinTimestamp::from_reader(reader)?.to_datetime();
