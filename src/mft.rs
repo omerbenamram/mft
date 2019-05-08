@@ -49,7 +49,7 @@ impl MftHandler {
 
     pub fn entry(&mut self, entry: u64) -> Result<MftEntry> {
         self.file
-            .seek(SeekFrom::Start(entry * self._entry_size as u64))?;
+            .seek(SeekFrom::Start(entry * u64::from(self._entry_size)))?;
 
         let mut entry_buffer = vec![0; self._entry_size as usize];
         self.file.read_exact(&mut entry_buffer)?;

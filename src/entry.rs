@@ -181,7 +181,7 @@ impl MftEntry {
 
     fn read_attributes<S: Read + Seek>(&mut self, buffer: &mut S) -> Result<u32> {
         let mut current_offset =
-            buffer.seek(SeekFrom::Start(self.header.fst_attr_offset as u64))?;
+            buffer.seek(SeekFrom::Start(u64::from(self.header.fst_attr_offset)))?;
 
         let attr_count: u32 = 0;
 
