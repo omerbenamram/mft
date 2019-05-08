@@ -20,7 +20,7 @@ serde = {version = "1.0.91", features = ["derive"]}
 serde_json = "1.0.39"
 env_logger = "0.6.1"
 snafu = "0.2.3"
-winstructs = "0.1.0"
+winstructs = {git = "https://github.com/omerbenamram/winstructs.git", branch = "master"}
 
 [dependencies.jmespath]
 version = "^0.1.1"

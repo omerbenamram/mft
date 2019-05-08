@@ -1,20 +1,20 @@
-use crate::ReadSeek;
 use crate::entry::MftEntry;
 use crate::enumerator::{PathEnumerator, PathMapping};
 use crate::err::{self, Result};
+
 use log::debug;
 use snafu::ResultExt;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
-use winstructs::reference::MftReference;
+use winstructs::ntfs::mft_reference::MftReference;
 
 pub struct MftHandler {
     file: BufReader<File>,
     path_enumerator: PathEnumerator,
-    _entry_size: u32,
-    _offset: u64,
-    _size: u64,
+    entry_size: u32,
+    offset: u64,
+    size: u64,
 }
 
 impl MftHandler {
@@ -23,42 +23,40 @@ impl MftHandler {
 
         let mut mft_fh = File::open(f).context(err::FailedToOpenFile { path: f.to_owned() })?;
 
-        debug!("Seek!");
         // TODO: remove this, and find a better way
         let size = match mft_fh.seek(SeekFrom::End(0)) {
             Err(e) => panic!("Error: {}", e),
             Ok(size) => size,
         };
-        debug!("After Seek!");
 
         let filehandle = BufReader::with_capacity(4096, mft_fh);
 
         Ok(MftHandler {
             file: filehandle,
             path_enumerator: PathEnumerator::new(),
-            _entry_size: 1024,
-            _offset: 0,
-            _size: size,
+            entry_size: 1024,
+            offset: 0,
+            size,
         })
     }
 
     pub fn set_entry_size(&mut self, entry_size: u32) {
-        self._entry_size = entry_size
+        self.entry_size = entry_size
     }
 
     pub fn get_entry_count(&self) -> u64 {
-        self._size / u64::from(self._entry_size)
+        self.size / u64::from(self.entry_size)
     }
 
     pub fn entry(&mut self, entry: u64) -> Result<MftEntry> {
         debug!("Reading entry {}", entry);
         self.file
-            .seek(SeekFrom::Start(entry * u64::from(self._entry_size)))?;
+            .seek(SeekFrom::Start(entry * u64::from(self.entry_size)))?;
 
-        let mut entry_buffer = vec![0; self._entry_size as usize];
+        let mut entry_buffer = vec![0; self.entry_size as usize];
         self.file.read_exact(&mut entry_buffer)?;
 
-        let mut mft_entry = self.entry_from_buffer(entry_buffer, entry)?;
+        let mft_entry = self.entry_from_buffer(entry_buffer, entry)?;
 
         // We need to set the path if dir
         if let Some(mapping) = mft_entry.get_pathmap() {
@@ -69,7 +67,7 @@ impl MftHandler {
         }
 
         // TODO: don't do this mutably from here.
-//        mft_entry.set_full_names(self);
+        //        mft_entry.set_full_names(self);
 
         Ok(mft_entry)
     }
@@ -92,18 +90,18 @@ impl MftHandler {
 
     fn enumerate_path_stack(&mut self, name_stack: &mut Vec<String>, reference: MftReference) {
         // 1407374883553285 (5-5)
-        if reference.0 == 1_407_374_883_553_285 {
+        if reference.entry == 1_407_374_883_553_285 {
 
         } else {
             match self.path_enumerator.get_mapping(reference) {
                 Some(mapping) => {
-                    self.enumerate_path_stack(name_stack, mapping.parent.clone());
+                    self.enumerate_path_stack(name_stack, mapping.parent);
                     name_stack.push(mapping.name.clone());
                 }
                 None => {
                     // Mapping not exists
                     // Get entry number for this reference that does not exist
-                    let entry = reference.get_entry_number();
+                    let entry = reference.entry;
                     // Gat mapping for it
                     match self.get_mapping_from_entry(entry) {
                         Ok(mapping) => match mapping {
@@ -126,9 +124,9 @@ impl MftHandler {
 
     fn get_mapping_from_entry(&mut self, entry: u64) -> Result<Option<PathMapping>> {
         self.file
-            .seek(SeekFrom::Start(entry * self._entry_size as u64))?;
+            .seek(SeekFrom::Start(entry * u64::from(self.entry_size)))?;
 
-        let mut entry_buffer = vec![0; self._entry_size as usize];
+        let mut entry_buffer = vec![0; self.entry_size as usize];
         self.file.read_exact(&mut entry_buffer)?;
 
         let mft_entry = self.entry_from_buffer(entry_buffer, entry)?;

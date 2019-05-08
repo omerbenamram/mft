@@ -1,6 +1,6 @@
 use clap::{App, Arg};
 use env_logger;
-use log::{debug, error, info, warn};
+use log::{info, warn};
 use mft::mft::MftHandler;
 
 fn process_file(filename: &str, indent: bool) -> bool {

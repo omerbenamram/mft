@@ -1,11 +1,12 @@
-use crate::err::{Result};
+use crate::err::{self, Result};
 
-use log::trace;
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::{DateTime, Utc};
+use log::trace;
 use serde::Serialize;
 use std::io::Read;
 use winstructs::timestamp::WinTimestamp;
+use snafu::ResultExt;
 
 #[derive(Serialize, Debug, Clone)]
 pub struct StandardInfoAttr {
@@ -31,7 +32,8 @@ impl StandardInfoAttr {
     /// Parse a raw buffer.
     ///
     /// ```
-    /// use rustymft::attr_x10::StandardInfoAttr;
+    /// use mft::attr_x10::StandardInfoAttr;
+    /// # use std::io::Cursor;
     /// # fn test_standard_information() {
     /// let attribute_buffer: &[u8] = &[
     /// 	0x2F,0x6D,0xB6,0x6F,0x0C,0x97,0xCE,0x01,0x56,0xCD,0x1A,0x75,0x73,0xB5,0xCE,0x01,
@@ -41,12 +43,12 @@ impl StandardInfoAttr {
     /// 	0x68,0x58,0xA0,0x0A,0x02,0x00,0x00,0x00
     /// ];
     ///
-    /// let attribute = StandardInfoAttr::new(attribute_buffer).unwrap();
+    /// let attribute = StandardInfoAttr::from_reader(&mut Cursor::new(attribute_buffer)).unwrap();
     ///
-    /// assert_eq!(attribute.created.0, 130207518909951279);
-    /// assert_eq!(attribute.modified.0, 130240946730880342);
-    /// assert_eq!(attribute.mft_modified.0, 130240946730880342);
-    /// assert_eq!(attribute.accessed.0, 130240946730880342);
+    /// assert_eq!(attribute.created.timestamp(), 130207518909951279);
+    /// assert_eq!(attribute.modified.timestamp(), 130240946730880342);
+    /// assert_eq!(attribute.mft_modified.timestamp(), 130240946730880342);
+    /// assert_eq!(attribute.accessed.timestamp(), 130240946730880342);
     /// assert_eq!(attribute.file_flags, 32);
     /// assert_eq!(attribute.max_version, 0);
     /// assert_eq!(attribute.version, 0);
@@ -58,10 +60,19 @@ impl StandardInfoAttr {
     /// ```
     pub fn from_reader<R: Read>(reader: &mut R) -> Result<StandardInfoAttr> {
         trace!("StandardInfoAttr");
-        let created = WinTimestamp::from_reader(reader)?.to_datetime();
-        let modified = WinTimestamp::from_reader(reader)?.to_datetime();
-        let mft_modified = WinTimestamp::from_reader(reader)?.to_datetime();
-        let accessed = WinTimestamp::from_reader(reader)?.to_datetime();
+        let created = WinTimestamp::from_reader(reader)
+            .context(err::FailedToReadWindowsTime)?
+            .to_datetime();
+        let modified = WinTimestamp::from_reader(reader)
+            .context(err::FailedToReadWindowsTime)?
+            .to_datetime();
+        let mft_modified = WinTimestamp::from_reader(reader)
+            .context(err::FailedToReadWindowsTime)?
+            .to_datetime();
+        let accessed = WinTimestamp::from_reader(reader)
+            .context(err::FailedToReadWindowsTime)?
+            .to_datetime();
+
         let file_flags = reader.read_u32::<LittleEndian>()?;
         let max_version = reader.read_u32::<LittleEndian>()?;
         let version = reader.read_u32::<LittleEndian>()?;

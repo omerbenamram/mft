@@ -3,14 +3,12 @@ use crate::err::{self, Result};
 use crate::attr_x10::StandardInfoAttr;
 use crate::attr_x30::FileNameAttr;
 use crate::enumerator::PathMapping;
-use crate::mft::MftHandler;
+
 use crate::{attribute, ReadSeek};
 use log::debug;
-use snafu::ensure;
+use snafu::{ensure, ResultExt};
 
-use std::collections::BTreeMap;
-
-use winstructs::reference::MftReference;
+use winstructs::ntfs::mft_reference::MftReference;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -20,7 +18,6 @@ use serde::{ser, Serialize};
 use crate::attribute::MftAttribute;
 use std::io::Cursor;
 use std::io::Read;
-use std::io::Seek;
 use std::io::SeekFrom;
 
 //https://github.com/libyal/libfsntfs/blob/master/documentation/New%20Technologies%20File%20System%20(NTFS).asciidoc#5-the-master-file-table-mft
@@ -89,7 +86,8 @@ impl EntryHeader {
         let flags = EntryFlags::from_bits_truncate(reader.read_u16::<LittleEndian>()?);
         let entry_size_real = reader.read_u32::<LittleEndian>()?;
         let entry_size_allocated = reader.read_u32::<LittleEndian>()?;
-        let base_reference = MftReference(reader.read_u64::<LittleEndian>()?);
+        let base_reference =
+            MftReference::from_reader(reader).context(err::FailedToReadMftReference)?;
         let next_attribute_id = reader.read_u16::<LittleEndian>()?;
 
         ensure!(
@@ -100,7 +98,7 @@ impl EntryHeader {
         let _padding = reader.read_u16::<LittleEndian>()?;
         let record_number = u64::from(reader.read_u32::<LittleEndian>()?);
 
-        let entry_reference = MftReference::get_from_entry_and_seq(record_number as u64, sequence);
+        let entry_reference = MftReference::new(record_number as u64, sequence);
 
         Ok(EntryHeader {
             signature,
@@ -157,7 +155,7 @@ impl MftEntry {
                 if attrib.namespace != 2 {
                     return Some(PathMapping {
                         name: attrib.name.clone(),
-                        parent: MftReference(attrib.parent.0),
+                        parent: attrib.parent.clone(),
                     });
                 }
             }
@@ -287,7 +285,7 @@ mod tests {
         assert_eq!(entry_header.flags.bits(), 5);
         assert_eq!(entry_header.entry_size_real, 840);
         assert_eq!(entry_header.entry_size_allocated, 1024);
-        assert_eq!(entry_header.base_reference.0, 0);
+        assert_eq!(entry_header.base_reference.entry, 0);
         assert_eq!(entry_header.next_attribute_id, 6);
         assert_eq!(entry_header.record_number, 38357);
     }

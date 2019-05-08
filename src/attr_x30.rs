@@ -10,7 +10,8 @@ use std::io::Read;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use winstructs::reference::MftReference;
+use snafu::ResultExt;
+use winstructs::ntfs::mft_reference::MftReference;
 use winstructs::timestamp::WinTimestamp;
 
 #[derive(Serialize, Clone, Debug)]
@@ -30,7 +31,6 @@ pub struct FileNameAttr {
     pub fullname: Option<String>,
 }
 
-// TODO: fix docs (use correct idioms)
 impl FileNameAttr {
     /// Parse a Filename attrbiute buffer.
     ///
@@ -39,7 +39,8 @@ impl FileNameAttr {
     /// Parse a raw buffer.
     ///
     /// ```
-    /// use rustymft::attr_x30::FileNameAttr;
+    /// use mft::attr_x30::FileNameAttr;
+    /// # use std::io::Cursor;
     /// # fn test_filename_attribute() {
     /// let attribute_buffer: &[u8] = &[
     /// 	0x05,0x00,0x00,0x00,0x00,0x00,0x05,0x00,0xD5,0x2D,0x48,0x58,0x43,0x5F,0xCE,0x01,
@@ -50,16 +51,13 @@ impl FileNameAttr {
     /// 	0x65,0x00,0x00,0x00,0x00,0x00,0x00,0x00
     /// ];
     ///
-    /// let attribute = match FileNameAttr::new(attribute_buffer) {
-    /// 	Ok(attribute) => attribute,
-    /// 	Err(error) => panic!(error)
-    /// };
+    /// let attribute = FileNameAttr::from_reader(&mut Cursor::new(attribute_buffer)).unwrap();
     ///
-    /// assert_eq!(attribute.parent.0, 1407374883553285);
-    /// assert_eq!(attribute.created.0, 130146182088895957);
-    /// assert_eq!(attribute.modified.0, 130146182088895957);
-    /// assert_eq!(attribute.mft_modified.0, 130146182088895957);
-    /// assert_eq!(attribute.accessed.0, 130146182088895957);
+    /// assert_eq!(attribute.parent.entry, 1407374883553285);
+    /// assert_eq!(attribute.created.timestamp(), 130146182088895957);
+    /// assert_eq!(attribute.modified.timestamp(), 130146182088895957);
+    /// assert_eq!(attribute.mft_modified.timestamp(), 130146182088895957);
+    /// assert_eq!(attribute.accessed.timestamp(), 130146182088895957);
     /// assert_eq!(attribute.logical_size, 67108864);
     /// assert_eq!(attribute.physical_size, 67108864);
     /// assert_eq!(attribute.flags, 6);
@@ -71,11 +69,19 @@ impl FileNameAttr {
     /// ```
     pub fn from_reader<R: Read>(reader: &mut R) -> Result<FileNameAttr> {
         trace!("FileNameAttr");
-        let parent = MftReference(reader.read_u64::<LittleEndian>()?);
-        let created = WinTimestamp::from_reader(reader)?.to_datetime();
-        let modified = WinTimestamp::from_reader(reader)?.to_datetime();
-        let mft_modified = WinTimestamp::from_reader(reader)?.to_datetime();
-        let accessed = WinTimestamp::from_reader(reader)?.to_datetime();
+        let parent = MftReference::from_reader(reader).context(err::FailedToReadMftReference)?;
+        let created = WinTimestamp::from_reader(reader)
+            .context(err::FailedToReadWindowsTime)?
+            .to_datetime();
+        let modified = WinTimestamp::from_reader(reader)
+            .context(err::FailedToReadWindowsTime)?
+            .to_datetime();
+        let mft_modified = WinTimestamp::from_reader(reader)
+            .context(err::FailedToReadWindowsTime)?
+            .to_datetime();
+        let accessed = WinTimestamp::from_reader(reader)
+            .context(err::FailedToReadWindowsTime)?
+            .to_datetime();
         let logical_size = reader.read_u64::<LittleEndian>()?;
         let physical_size = reader.read_u64::<LittleEndian>()?;
         let flags = reader.read_u32::<LittleEndian>()?;

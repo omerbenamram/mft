@@ -22,6 +22,10 @@ pub enum Error {
     UnhandledResidentFlag { flag: u8, offset: u64 },
     #[snafu(display("Expected usa_offset `{}` to equal 48", offset))]
     InvalidUsaOffset { offset: u16 },
+    #[snafu(display("Failed to read MftReference: `{}`", "source"))]
+    FailedToReadMftReference { source: winstructs::err::Error },
+    #[snafu(display("Failed to read WindowsTime: `{}`", "source"))]
+    FailedToReadWindowsTime { source: winstructs::err::Error },
     #[snafu(display("An unexpected error has occurred: {}", detail))]
     Any { detail: String },
 }

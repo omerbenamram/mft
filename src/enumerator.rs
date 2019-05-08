@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use winstructs::reference::MftReference;
+use winstructs::ntfs::mft_reference::MftReference;
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone)]
 pub struct PathMapping {
