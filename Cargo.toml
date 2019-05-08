@@ -1,5 +1,7 @@
 [package]
 name = "mft"
+description = "A Fast (and safe) parser for the Windows Master File Table (MFT) format"
+homepage = "https://github.com/omerbenamram/mft"
 version = "0.1.0"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>", "matthew seyer <matthew.seyer@gmail.com>"]
 edition = "2018"
@@ -23,3 +25,6 @@ path = "r-winstructs"
 [dependencies.chrono]
 version = "0.4.6"
 features = ["serde"]
+
+[[bin]]
+name = "mft_dump"
