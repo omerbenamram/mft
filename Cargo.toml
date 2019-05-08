@@ -1,11 +1,8 @@
 [package]
-name = "RustyMft"
+name = "mft"
 version = "0.1.0"
-authors = ["matthew seyer <matthew.seyer@gmail.com>", "Omer Ben-Amram <omerbenamram@gmail.com>"]
+authors = ["Omer Ben-Amram <omerbenamram@gmail.com>", "matthew seyer <matthew.seyer@gmail.com>"]
 edition = "2018"
-
-[lib]
-name = "rustymft"
 
 [dependencies]
 log = "0.4.6"
@@ -20,7 +17,7 @@ env_logger = "0.6.1"
 [dependencies.jmespath]
 version = "^0.1.1"
 
-[dependencies.r-winstructs]
+[dependencies.winstructs]
 path = "r-winstructs"
 
 [dependencies.chrono]

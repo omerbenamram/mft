@@ -92,19 +92,19 @@ impl FileNameAttr {
         let fullname = None;
 
         Ok(FileNameAttr {
-            parent: parent,
-            created: created,
-            modified: modified,
-            mft_modified: mft_modified,
-            accessed: accessed,
-            logical_size: logical_size,
-            physical_size: physical_size,
-            flags: flags,
-            reparse_value: reparse_value,
-            name_length: name_length,
-            namespace: namespace,
-            name: name,
-            fullname: fullname,
+            parent,
+            created,
+            modified,
+            mft_modified,
+            accessed,
+            logical_size,
+            physical_size,
+            flags,
+            reparse_value,
+            name_length,
+            namespace,
+            name,
+            fullname,
         })
     }
 }
