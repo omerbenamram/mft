@@ -9,7 +9,7 @@ use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt};
 
 use serde::{ser, Serialize};
-use std::{io::Read};
+use std::io::Read;
 
 #[derive(Clone, Debug)]
 pub struct RawAttribute(pub Vec<u8>);
@@ -214,9 +214,9 @@ mod tests {
             0x10, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x48, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00,
         ];
-        let attribute_buffer = Cursor::new(raw);
+        let mut cursor = Cursor::new(raw);
 
-        let attribute_header = match AttributeHeader::from_stream(&mut attribute_buffer) {
+        let attribute_header = match AttributeHeader::from_stream(&mut cursor) {
             Ok(attribute_header) => attribute_header,
             Err(error) => panic!(error),
         };
@@ -239,9 +239,9 @@ mod tests {
             0x0C, 0x32, 0xA0, 0x56, 0xE3, 0xE6, 0x24, 0x00, 0xFF, 0xFF,
         ];
 
-        let attribute_buffer = Cursor::new(raw);
+        let mut cursor = Cursor::new(raw);
 
-        let attribute_header = match AttributeHeader::from_stream(&mut attribute_buffer) {
+        let attribute_header = match AttributeHeader::from_stream(&mut cursor) {
             Ok(attribute_header) => attribute_header,
             Err(error) => panic!(error),
         };
