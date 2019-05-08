@@ -75,9 +75,12 @@ impl AttributeHeader {
         let current_offset = stream.tell()?;
 
         let attribute_type = stream.read_u32::<LittleEndian>()?;
-        // TODO: explain why this should return default
+        // The attribute list is terminated with 0xFFFFFFFF ($END).
         if attribute_type == 0xFFFF_FFFF {
-            return Ok(AttributeHeader::default());
+            return Ok(AttributeHeader {
+                attribute_type: 0xFFFF_FFFF,
+                ..Default::default()
+            });
         }
 
         let attribute_size = stream.read_u32::<LittleEndian>()?;

@@ -209,7 +209,8 @@ impl MftEntry {
         loop {
             let attribute_header = attribute::AttributeHeader::from_stream(buffer)?;
 
-            if attribute_header.attribute_type == 0x00 {
+            // The attribute list is terminated with 0xFFFFFFFF ($END).
+            if attribute_header.attribute_type == 0xFFFF_FFFF {
                 break;
             }
 
