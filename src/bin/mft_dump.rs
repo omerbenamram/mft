@@ -2,7 +2,7 @@ use clap::{App, Arg};
 use log::{error, warn};
 use mft::mft::MftHandler;
 
-use std::fs;
+
 
 fn process_file(filename: &str) -> bool {
     let mut mft_handler = match MftHandler::from_path(filename) {

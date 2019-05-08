@@ -1,5 +1,5 @@
-use rustymft::attribute;
-use rustymft::entry;
+use mft::attribute;
+use mft::entry;
 use std::io::Cursor;
 
 fn print_entry_header() {
