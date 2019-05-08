@@ -1,9 +1,5 @@
-extern crate rustymft;
-extern crate rwinstructs;
-extern crate serde_json;
 use rustymft::attribute;
 use rustymft::entry;
-use rwinstructs::serialize;
 use std::io::Cursor;
 
 fn print_entry_header() {
@@ -85,7 +81,6 @@ fn print_attribute_header_03() {
 }
 
 fn main() {
-    unsafe { serialize::U64_SERIALIZATION = serialize::U64Serialization::AsString }
     print_entry_header();
     print_attribute_header_01();
     print_attribute_header_02();

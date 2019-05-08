@@ -19,7 +19,7 @@ impl ser::Serialize for RawAttribute {
     where
         S: ser::Serializer,
     {
-        serializer.serialize_str(&format!("{}", utils::to_hex_string(&self.0)))
+        serializer.serialize_str(&utils::to_hex_string(&self.0).to_string())
     }
 }
 
@@ -33,7 +33,7 @@ pub enum AttributeContent {
 }
 
 bitflags! {
-    struct AttributeDataFlags: u16 {
+    pub struct AttributeDataFlags: u16 {
         const IS_COMPRESSED     = 0x0001;
         const COMPRESSION_MASK  = 0x00FF;
         const ENCRYPTED         = 0x4000;
@@ -42,7 +42,7 @@ bitflags! {
 }
 
 pub fn serialize_attr_data_flags<S>(
-    &item: &AttributeDataFlags,
+    item: &AttributeDataFlags,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -76,7 +76,7 @@ impl AttributeHeader {
         // println!("at offset {}",current_offset);
 
         attribute_header.attribute_type = reader.read_u32::<LittleEndian>()?;
-        if attribute_header.attribute_type == 0xFFFFFFFF {
+        if attribute_header.attribute_type == 0xFFFF_FFFF {
             return Ok(attribute_header);
         }
         attribute_header.attribute_size = reader.read_u32::<LittleEndian>()?;
@@ -103,7 +103,7 @@ impl AttributeHeader {
         if attribute_header.name_size > 0 {
             // Seek to offset
             reader.seek(SeekFrom::Start(
-                current_offset + attribute_header.name_offset as u64,
+                current_offset + u64::from(attribute_header.name_offset),
             ))?;
 
             let mut name_buffer = vec![0; (attribute_header.name_size * 2) as usize];

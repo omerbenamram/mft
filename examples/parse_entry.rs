@@ -1,8 +1,4 @@
-extern crate rustymft;
-extern crate rwinstructs;
-extern crate serde_json;
 use rustymft::entry;
-use rwinstructs::serialize;
 
 fn print_entry_01() {
     let entry_buffer: &[u8] = &[
@@ -83,6 +79,5 @@ fn print_entry_01() {
 }
 
 fn main() {
-    unsafe { serialize::U64_SERIALIZATION = serialize::U64Serialization::AsString }
     print_entry_01()
 }

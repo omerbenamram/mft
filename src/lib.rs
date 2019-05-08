@@ -5,4 +5,5 @@ pub mod entry;
 pub mod enumerator;
 pub mod errors;
 pub mod mft;
-pub mod utils;
+
+pub(crate) mod utils;

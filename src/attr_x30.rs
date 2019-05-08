@@ -1,4 +1,5 @@
 use crate::errors::MftError;
+
 use byteorder::{LittleEndian, ReadBytesExt};
 use encoding::all::UTF_16LE;
 use encoding::{DecoderTrap, Encoding};
@@ -6,10 +7,9 @@ use rwinstructs::reference::MftReference;
 use rwinstructs::timestamp::WinTimestamp;
 use std::io::Read;
 
-use serde::ser;
-use serde::ser::SerializeStruct;
+use serde::Serialize;
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Clone, Debug)]
 pub struct FileNameAttr {
     pub parent: MftReference,
     pub created: WinTimestamp,
@@ -106,36 +106,5 @@ impl FileNameAttr {
             name: name,
             fullname: fullname,
         })
-    }
-}
-
-impl ser::Serialize for FileNameAttr {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: ser::Serializer,
-    {
-        let mut state = serializer.serialize_struct("FileNameAttr", 13)?;
-
-        state.serialize_field("parent", &self.parent)?;
-        state.serialize_field("created", &format!("{}", &self.created))?;
-        state.serialize_field("modified", &format!("{}", &self.modified))?;
-        state.serialize_field("mft_modified", &format!("{}", &self.mft_modified))?;
-        state.serialize_field("accessed", &self.accessed)?;
-        state.serialize_field("logical_size", &self.logical_size)?;
-        state.serialize_field("physical_size", &self.physical_size)?;
-        state.serialize_field("flags", &self.flags)?;
-        state.serialize_field("reparse_value", &self.reparse_value)?;
-        state.serialize_field("name_length", &self.name_length)?;
-        state.serialize_field("namespace", &self.namespace)?;
-        state.serialize_field("name", &format!("{}", &self.name))?;
-
-        match self.fullname {
-            Some(ref fullname) => {
-                state.serialize_field("fullname", &format!("{}", &fullname))?;
-            }
-            None => {}
-        }
-
-        state.end()
     }
 }

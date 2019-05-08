@@ -21,7 +21,7 @@ use std::mem;
 //https://github.com/libyal/libfsntfs/blob/master/documentation/New%20Technologies%20File%20System%20(NTFS).asciidoc#5-the-master-file-table-mft
 
 bitflags! {
-    struct EntryFlags: u16 {
+    pub struct EntryFlags: u16 {
         const ALLOCATED     = 0x01;
         const INDEX_PRESENT = 0x02;
         const UNKNOWN_1     = 0x04;
@@ -69,7 +69,7 @@ impl EntryHeader {
         let mut entry_header: EntryHeader = unsafe { mem::zeroed() };
 
         entry_header.signature = reader.read_u32::<LittleEndian>()?;
-        if entry_header.signature != 1162627398 {
+        if entry_header.signature != 1_162_627_398 {
             return Err(MftError::invalid_entry_signature(format!(
                 "Bad signature: {:04X}",
                 entry_header.signature
@@ -132,39 +132,25 @@ impl MftEntry {
     }
 
     pub fn is_allocated(&self) -> bool {
-        if self.header.flags.bits() & 0x01 != 0 {
-            true
-        } else {
-            false
-        }
+        self.header.flags.bits() & 0x01 != 0
     }
 
     pub fn is_dir(&self) -> bool {
-        if self.header.flags.bits() & 0x02 != 0 {
-            true
-        } else {
-            false
-        }
+        self.header.flags.bits() & 0x02 != 0
     }
 
     pub fn get_pathmap(&self) -> Option<PathMapping> {
-        match self.attributes.get("0x0030") {
-            Some(fn_attr_list) => {
-                for attribute in fn_attr_list {
-                    match attribute.content {
-                        attribute::AttributeContent::AttrX30(ref attrib) => {
-                            if attrib.namespace != 2 {
-                                return Some(PathMapping {
-                                    name: attrib.name.clone(),
-                                    parent: MftReference(attrib.parent.0),
-                                });
-                            }
-                        }
-                        _ => {}
+        if let Some(fn_attr_list) = self.attributes.get("0x0030") {
+            for attribute in fn_attr_list {
+                if let attribute::AttributeContent::AttrX30(ref attrib) = attribute.content {
+                    if attrib.namespace != 2 {
+                        return Some(PathMapping {
+                            name: attrib.name.clone(),
+                            parent: MftReference(attrib.parent.0),
+                        });
                     }
                 }
             }
-            None => {}
         }
 
         None
@@ -191,7 +177,7 @@ impl MftEntry {
         loop {
             let attribute_header = attribute::AttributeHeader::new(&mut buffer)?;
 
-            if attribute_header.attribute_type == 0xFFFFFFFF {
+            if attribute_header.attribute_type == 0xFFFF_FFFF {
                 break;
             }
 
@@ -243,7 +229,7 @@ impl MftEntry {
             }
 
             current_offset = buffer.seek(SeekFrom::Start(
-                current_offset + attribute_header.attribute_size as u64,
+                current_offset + u64::from(attribute_header.attribute_size),
             ))?;
         }
 
@@ -254,20 +240,10 @@ impl MftEntry {
         // This could maybe use some refactoring??
         // Check if attribute type is already in mapping
         let attr_type = format!("0x{:04X}", attribute.header.attribute_type);
-        if self.attributes.contains_key(&attr_type) {
-            // We already have a list for this attribute, get mut ref
-            if let Some(attr_list) = self.attributes.get_mut(&attr_type) {
-                // append the attribute to list
-                attr_list.push(attribute);
-            }
-        } else {
-            // Create new attribute list
-            let mut attr_list: Vec<attribute::MftAttribute> = Vec::new();
-            // Insert value into list
-            attr_list.push(attribute);
-            // Set attribute list to key of attrib type
-            self.attributes.insert(attr_type, attr_list);
-        }
+        self.attributes
+            .entry(attr_type)
+            .or_insert_with(Vec::new)
+            .push(attribute);
     }
 
     pub fn set_fullnames(&mut self, mft_handler: &mut MftHandler) {
@@ -275,16 +251,14 @@ impl MftEntry {
             if let Some(attr_list) = self.attributes.get_mut("0x0030") {
                 for attribute in attr_list.iter_mut() {
                     // Check if resident content
-                    match attribute.content {
-                        attribute::AttributeContent::AttrX30(ref mut attrib) => {
-                            // Get fullpath
-                            let fullpath = mft_handler.get_fullpath(attrib.parent);
-                            // Set fullname
-                            let fullname = fullpath + "/" + attrib.name.as_str();
-                            // Set attribute to fullname
-                            attrib.fullname = Some(fullname);
-                        }
-                        _ => {}
+                    if let attribute::AttributeContent::AttrX30(ref mut attrib) = attribute.content
+                    {
+                        // Get fullpath
+                        let fullpath = mft_handler.get_fullpath(attrib.parent);
+                        // Set fullname
+                        let fullname = fullpath + "/" + attrib.name.as_str();
+                        // Set attribute to fullname
+                        attrib.fullname = Some(fullname);
                     }
                 }
             }

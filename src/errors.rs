@@ -24,7 +24,7 @@ impl MftError {
     #[allow(dead_code)]
     pub fn invalid_file_signature(err: String) -> Self {
         MftError {
-            message: format!("{}", err),
+            message: err.to_string(),
             kind: ErrorKind::InvalidFileSignature,
             info: Some(vec![]),
         }
@@ -32,7 +32,7 @@ impl MftError {
     #[allow(dead_code)]
     pub fn invalid_entry_signature(err: String) -> Self {
         MftError {
-            message: format!("{}", err),
+            message: err.to_string(),
             kind: ErrorKind::InvalidFileSignature,
             info: Some(vec![]),
         }
@@ -40,7 +40,7 @@ impl MftError {
     #[allow(dead_code)]
     pub fn decode_error(err: String) -> Self {
         MftError {
-            message: format!("{}", err),
+            message: err.to_string(),
             kind: ErrorKind::Utf16Error,
             info: Some(vec![]),
         }

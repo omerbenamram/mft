@@ -7,6 +7,7 @@ pub struct PathMapping {
     pub parent: MftReference,
 }
 
+#[derive(Default)]
 pub struct PathEnumerator {
     pub mapping: HashMap<MftReference, PathMapping>,
 }

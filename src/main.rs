@@ -1,17 +1,8 @@
-#[macro_use]
-extern crate log;
-extern crate clap;
-extern crate env_logger;
-extern crate jmespath;
-extern crate rustymft;
-extern crate rwinstructs;
-extern crate serde;
-extern crate serde_json;
 use clap::{App, Arg, ArgMatches};
 use jmespath::Expression;
+use log::{error, warn};
 use rustymft::mft::MftHandler;
 use rwinstructs::reference;
-use rwinstructs::serialize;
 
 use std::fs;
 
@@ -84,7 +75,7 @@ fn process_file(filename: &str, options: ArgMatches) -> bool {
         };
     }
 
-    return true;
+    true
 }
 
 fn is_directory(source: &str) -> bool {
@@ -92,7 +83,7 @@ fn is_directory(source: &str) -> bool {
 }
 
 fn main() {
-    env_logger::init().unwrap();
+    env_logger::init();
     let source_arg = Arg::with_name("source")
         .short("s")
         .long("source")
@@ -125,9 +116,6 @@ fn main() {
     // Set Reference Display Options
     unsafe {
         reference::NESTED_REFERENCE = true;
-    }
-    unsafe {
-        serialize::U64_SERIALIZATION = serialize::U64Serialization::AsString;
     }
 
     let source = options.value_of("source").unwrap();

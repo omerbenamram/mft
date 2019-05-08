@@ -67,18 +67,18 @@ impl StandardInfoAttr {
         let usn = buffer.read_u64::<LittleEndian>()?;
 
         Ok(StandardInfoAttr {
-            created: created,
-            modified: modified,
-            mft_modified: mft_modified,
-            accessed: accessed,
-            file_flags: file_flags,
-            max_version: max_version,
-            version: version,
-            class_id: class_id,
-            owner_id: owner_id,
-            security_id: security_id,
-            quota: quota,
-            usn: usn,
+            created,
+            modified,
+            mft_modified,
+            accessed,
+            file_flags,
+            max_version,
+            version,
+            class_id,
+            owner_id,
+            security_id,
+            quota,
+            usn,
         })
     }
 }

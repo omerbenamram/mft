@@ -2,11 +2,8 @@ use crate::entry::MftEntry;
 use crate::enumerator::{PathEnumerator, PathMapping};
 use crate::errors::MftError;
 use rwinstructs::reference::MftReference;
-use seek_bufread::BufReader;
 use std::fs::File;
-use std::io::Read;
-use std::io::Seek;
-use std::io::SeekFrom;
+use std::io::{BufReader, Read, Seek, SeekFrom};
 
 pub struct MftHandler {
     filehandle: BufReader<File>,
@@ -32,7 +29,7 @@ impl MftHandler {
         let filehandle = BufReader::with_capacity(4096, mft_fh);
 
         Ok(MftHandler {
-            filehandle: filehandle,
+            filehandle,
             path_enumerator: PathEnumerator::new(),
             _entry_size: 1024,
             _offset: 0,
@@ -45,7 +42,7 @@ impl MftHandler {
     }
 
     pub fn get_entry_count(&self) -> u64 {
-        self._size / self._entry_size as u64
+        self._size / u64::from(self._entry_size)
     }
 
     pub fn entry(&mut self, entry: u64) -> Result<MftEntry, MftError> {
@@ -59,15 +56,11 @@ impl MftHandler {
         let mut mft_entry = self.entry_from_buffer(entry_buffer, entry)?;
 
         // We need to set the path if dir
-        match mft_entry.get_pathmap() {
-            Some(mapping) => {
-                if mft_entry.is_dir() {
-                    &self
-                        .path_enumerator
-                        .set_mapping(mft_entry.header.entry_reference.clone(), mapping.clone());
-                }
+        if let Some(mapping) = mft_entry.get_pathmap() {
+            if mft_entry.is_dir() {
+                self.path_enumerator
+                    .set_mapping(mft_entry.header.entry_reference, mapping.clone());
             }
-            None => {}
         }
 
         mft_entry.set_fullnames(self);
@@ -93,7 +86,7 @@ impl MftHandler {
 
     fn enumerate_path_stack(&mut self, name_stack: &mut Vec<String>, reference: MftReference) {
         // 1407374883553285 (5-5)
-        if reference.0 == 1407374883553285 {
+        if reference.0 == 1_407_374_883_553_285 {
 
         } else {
             match self.path_enumerator.get_mapping(reference) {
