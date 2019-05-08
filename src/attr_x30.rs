@@ -1,13 +1,13 @@
-use crate::errors::{MftError};
-use rwinstructs::timestamp::{WinTimestamp};
-use rwinstructs::reference::{MftReference};
-use byteorder::{ReadBytesExt, LittleEndian};
-use encoding::{Encoding, DecoderTrap};
+use crate::errors::MftError;
+use byteorder::{LittleEndian, ReadBytesExt};
 use encoding::all::UTF_16LE;
+use encoding::{DecoderTrap, Encoding};
+use rwinstructs::reference::MftReference;
+use rwinstructs::timestamp::WinTimestamp;
 use std::io::Read;
 
-use serde::ser::SerializeStruct;
 use serde::ser;
+use serde::ser::SerializeStruct;
 
 #[derive(Clone, Debug)]
 pub struct FileNameAttr {
@@ -23,7 +23,7 @@ pub struct FileNameAttr {
     pub name_length: u8,
     pub namespace: u8,
     pub name: String,
-    pub fullname: Option<String>
+    pub fullname: Option<String>,
 }
 impl FileNameAttr {
     /// Parse a Filename attrbiute buffer.
@@ -63,7 +63,7 @@ impl FileNameAttr {
     /// assert_eq!(attribute.name, "$LogFile");
     /// # }
     /// ```
-    pub fn new(mut buffer: &[u8]) -> Result<FileNameAttr,MftError> {
+    pub fn new(mut buffer: &[u8]) -> Result<FileNameAttr, MftError> {
         let parent = MftReference(buffer.read_u64::<LittleEndian>()?);
         let created = WinTimestamp(buffer.read_u64::<LittleEndian>()?);
         let modified = WinTimestamp(buffer.read_u64::<LittleEndian>()?);
@@ -79,47 +79,47 @@ impl FileNameAttr {
         let mut name_buffer = vec![0; (name_length as usize * 2) as usize];
         buffer.read_exact(&mut name_buffer)?;
 
-        let name = match UTF_16LE.decode(&name_buffer,DecoderTrap::Ignore){
+        let name = match UTF_16LE.decode(&name_buffer, DecoderTrap::Ignore) {
             Ok(filename) => filename,
-            Err(error) => return Err(
-                MftError::decode_error(
-                    format!("Error decoding name in filename attribute. [{}]",error)
-                )
-            )
+            Err(error) => {
+                return Err(MftError::decode_error(format!(
+                    "Error decoding name in filename attribute. [{}]",
+                    error
+                )))
+            }
         };
 
         let fullname = None;
 
-        Ok(
-            FileNameAttr {
-                parent: parent,
-                created: created,
-                modified: modified,
-                mft_modified: mft_modified,
-                accessed: accessed,
-                logical_size: logical_size,
-                physical_size: physical_size,
-                flags: flags,
-                reparse_value: reparse_value,
-                name_length: name_length,
-                namespace: namespace,
-                name: name,
-                fullname: fullname
-            }
-        )
+        Ok(FileNameAttr {
+            parent: parent,
+            created: created,
+            modified: modified,
+            mft_modified: mft_modified,
+            accessed: accessed,
+            logical_size: logical_size,
+            physical_size: physical_size,
+            flags: flags,
+            reparse_value: reparse_value,
+            name_length: name_length,
+            namespace: namespace,
+            name: name,
+            fullname: fullname,
+        })
     }
 }
 
 impl ser::Serialize for FileNameAttr {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where S: ser::Serializer
+    where
+        S: ser::Serializer,
     {
         let mut state = serializer.serialize_struct("FileNameAttr", 13)?;
 
-        state.serialize_field("parent",&self.parent)?;
-        state.serialize_field("created", &format!("{}",&self.created))?;
-        state.serialize_field("modified", &format!("{}",&self.modified))?;
-        state.serialize_field("mft_modified", &format!("{}",&self.mft_modified))?;
+        state.serialize_field("parent", &self.parent)?;
+        state.serialize_field("created", &format!("{}", &self.created))?;
+        state.serialize_field("modified", &format!("{}", &self.modified))?;
+        state.serialize_field("mft_modified", &format!("{}", &self.mft_modified))?;
         state.serialize_field("accessed", &self.accessed)?;
         state.serialize_field("logical_size", &self.logical_size)?;
         state.serialize_field("physical_size", &self.physical_size)?;
@@ -127,12 +127,12 @@ impl ser::Serialize for FileNameAttr {
         state.serialize_field("reparse_value", &self.reparse_value)?;
         state.serialize_field("name_length", &self.name_length)?;
         state.serialize_field("namespace", &self.namespace)?;
-        state.serialize_field("name", &format!("{}",&self.name))?;
+        state.serialize_field("name", &format!("{}", &self.name))?;
 
         match self.fullname {
             Some(ref fullname) => {
-                state.serialize_field("fullname", &format!("{}",&fullname))?;
-            },
+                state.serialize_field("fullname", &format!("{}", &fullname))?;
+            }
             None => {}
         }
 
