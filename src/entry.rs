@@ -132,6 +132,7 @@ pub struct MftEntry {
 impl MftEntry {
     pub fn new(buffer: Vec<u8>, entry: u64) -> Result<MftEntry> {
         debug!("MftEntry `{}` from buffer", entry);
+
         let mut cursor = Cursor::new(&buffer);
         // Get Header
         let entry_header = EntryHeader::from_reader(&mut cursor, entry)?;
@@ -197,22 +198,34 @@ impl MftEntry {
     //        }
     //    }
 
-    fn iter_attributes(&self) -> impl Iterator<Item = Result<Attribute>> + '_ {
+    /// Returns an iterator over the attributes of the entry.
+    pub fn iter_attributes(&self) -> impl Iterator<Item = Result<Attribute>> + '_ {
         let mut cursor = Cursor::new(&self.data);
-        let start_offset = u64::from(self.header.fst_attr_offset);
+        let mut offset = u64::from(self.header.fst_attr_offset);
+        let mut exhausted = false;
 
         std::iter::from_fn(move || {
+            if exhausted {
+                return None;
+            }
+
             match cursor
-                .seek(SeekFrom::Start(start_offset))
+                .seek(SeekFrom::Start(offset))
                 .eager_context(err::IoError)
             {
                 Ok(_) => {}
-                Err(e) => return Some(Err(e)),
+                Err(e) => {
+                    exhausted = true;
+                    return Some(Err(e));
+                }
             };
 
             match AttributeHeader::from_stream(&mut cursor) {
                 Ok(maybe_header) => match maybe_header {
                     Some(header) => {
+                        // Increment offset before moving header.
+                        offset += u64::from(header.record_length);
+
                         // Check if the header is resident, and if it is, read the attribute content.
                         match header.residential_header {
                             ResidentialHeader::Resident(ref resident) => match header.type_code {
@@ -256,7 +269,10 @@ impl MftEntry {
                     }
                     None => None,
                 },
-                Err(e) => Some(Err(e)),
+                Err(e) => {
+                    exhausted = true;
+                    Some(Err(e))
+                }
             }
         })
     }
