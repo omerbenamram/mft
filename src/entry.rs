@@ -1,8 +1,5 @@
-use crate::err::{self, Result};
-
-use crate::attr_x10::StandardInfoAttr;
-use crate::attr_x30::FileNameAttr;
 use crate::enumerator::PathMapping;
+use crate::err::{self, Result};
 
 use crate::{attribute, ReadSeek};
 use log::debug;
@@ -13,12 +10,17 @@ use winstructs::ntfs::mft_reference::MftReference;
 use byteorder::{LittleEndian, ReadBytesExt};
 
 use bitflags::bitflags;
-use serde::{ser, Serialize};
+use serde::{ser, Serialize, Serializer};
 
-use crate::attribute::MftAttribute;
-use std::io::Cursor;
+use crate::attribute::header::{AttributeHeader, ResidentialHeader};
+use crate::attribute::x10::StandardInfoAttr;
+use crate::attribute::{Attribute, AttributeType, MftAttributeContent};
+
+use crate::attribute::raw::RawAttribute;
+use crate::attribute::x30::FileNameAttr;
 use std::io::Read;
 use std::io::SeekFrom;
+use std::io::{Cursor, Seek};
 
 //https://github.com/libyal/libfsntfs/blob/master/documentation/New%20Technologies%20File%20System%20(NTFS).asciidoc#5-the-master-file-table-mft
 
@@ -120,10 +122,11 @@ impl EntryHeader {
     }
 }
 
+// TODO: manually implement serialize to dump attributes.
 #[derive(Serialize, Debug)]
 pub struct MftEntry {
     pub header: EntryHeader,
-    pub attributes: Vec<MftAttribute>,
+    pub data: Vec<u8>,
 }
 
 impl MftEntry {
@@ -133,11 +136,9 @@ impl MftEntry {
         // Get Header
         let entry_header = EntryHeader::from_reader(&mut cursor, entry)?;
 
-        let attributes = Self::read_attributes(&entry_header, &mut cursor)?;
-
         Ok(MftEntry {
             header: entry_header,
-            attributes,
+            data: buffer,
         })
     }
 
@@ -150,12 +151,12 @@ impl MftEntry {
     }
 
     pub fn get_pathmap(&self) -> Option<PathMapping> {
-        for attribute in self.attributes.iter() {
-            if let attribute::AttributeContent::AttrX30(ref attrib) = attribute.content {
+        for attribute in self.iter_attributes().filter_map(|a| a.ok()) {
+            if let attribute::MftAttributeContent::AttrX30(ref attrib) = attribute.data {
                 if attrib.namespace != 2 {
                     return Some(PathMapping {
                         name: attrib.name.clone(),
-                        parent: attrib.parent.clone(),
+                        parent: attrib.parent,
                     });
                 }
             }
@@ -196,66 +197,68 @@ impl MftEntry {
     //        }
     //    }
 
-    fn read_attributes<S: ReadSeek>(
-        header: &EntryHeader,
-        buffer: &mut S,
-    ) -> Result<Vec<MftAttribute>> {
-        let mut current_offset = buffer.seek(SeekFrom::Start(u64::from(header.fst_attr_offset)))?;
+    fn iter_attributes(&self) -> impl Iterator<Item = Result<Attribute>> + '_ {
+        let mut cursor = Cursor::new(&self.data);
+        let start_offset = u64::from(self.header.fst_attr_offset);
 
-        let mut attributes = vec![];
+        std::iter::from_fn(move || {
+            match cursor
+                .seek(SeekFrom::Start(start_offset))
+                .eager_context(err::IoError)
+            {
+                Ok(_) => {}
+                Err(e) => return Some(Err(e)),
+            };
 
-        loop {
-            let attribute_header = attribute::AttributeHeader::from_stream(buffer)?;
+            match AttributeHeader::from_stream(&mut cursor) {
+                Ok(maybe_header) => match maybe_header {
+                    Some(header) => {
+                        // Check if the header is resident, and if it is, read the attribute content.
+                        match header.residential_header {
+                            ResidentialHeader::Resident(ref resident) => match header.type_code {
+                                AttributeType::StandardInformation => {
+                                    match StandardInfoAttr::from_reader(&mut cursor) {
+                                        Ok(content) => Some(Ok(Attribute {
+                                            header,
+                                            data: MftAttributeContent::AttrX10(content),
+                                        })),
+                                        Err(e) => Some(Err(e)),
+                                    }
+                                }
+                                AttributeType::FileName => {
+                                    match FileNameAttr::from_reader(&mut cursor) {
+                                        Ok(content) => Some(Ok(Attribute {
+                                            header,
+                                            data: MftAttributeContent::AttrX30(content),
+                                        })),
+                                        Err(e) => Some(Err(e)),
+                                    }
+                                }
+                                _ => {
+                                    let mut data = vec![0_u8; resident.data_size as usize];
 
-            // The attribute list is terminated with 0xFFFFFFFF ($END).
-            if attribute_header.attribute_type == 0xFFFF_FFFF {
-                break;
-            }
+                                    match cursor.read_exact(&mut data).eager_context(err::IoError) {
+                                        Ok(_) => {}
+                                        Err(err) => return Some(Err(err)),
+                                    };
 
-            match attribute_header.residential_header {
-                attribute::ResidentialHeader::Resident(ref header) => {
-                    // Create attribute content to parse buffer into
-                    // Get attribute contents
-                    let attr_content = match attribute_header.attribute_type {
-                        0x10 => attribute::AttributeContent::AttrX10(
-                            StandardInfoAttr::from_reader(buffer)?,
-                        ),
-                        0x30 => {
-                            attribute::AttributeContent::AttrX30(FileNameAttr::from_reader(buffer)?)
+                                    Some(Ok(Attribute {
+                                        header,
+                                        data: MftAttributeContent::Raw(RawAttribute(data)),
+                                    }))
+                                }
+                            },
+                            ResidentialHeader::NonResident(_) => Some(Ok(Attribute {
+                                header,
+                                data: MftAttributeContent::None,
+                            })),
                         }
-                        _ => {
-                            let mut content_buffer = vec![0; header.data_size as usize];
-                            buffer.read_exact(&mut content_buffer)?;
-
-                            attribute::AttributeContent::Raw(attribute::RawAttribute(
-                                content_buffer,
-                            ))
-                        }
-                    };
-
-                    attributes.push(attribute::MftAttribute {
-                        header: attribute_header.clone(),
-                        content: attr_content,
-                    });
-                }
-                attribute::ResidentialHeader::NonResident(_) => {
-                    // No content, so push header into attributes
-                    attributes.push(attribute::MftAttribute {
-                        header: attribute_header.clone(),
-                        content: attribute::AttributeContent::None,
-                    });
-                }
-                attribute::ResidentialHeader::None => {
-                    // Not sure about this...
-                }
+                    }
+                    None => None,
+                },
+                Err(e) => Some(Err(e)),
             }
-
-            current_offset = buffer.seek(SeekFrom::Start(
-                current_offset + u64::from(attribute_header.attribute_size),
-            ))?;
-        }
-
-        Ok(attributes)
+        })
     }
 }
 

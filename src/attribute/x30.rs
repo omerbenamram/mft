@@ -39,7 +39,7 @@ impl FileNameAttr {
     /// Parse a raw buffer.
     ///
     /// ```
-    /// use mft::attr_x30::FileNameAttr;
+    /// use mft::attribute::x30::FileNameAttr;
     /// # use std::io::Cursor;
     /// # fn test_filename_attribute() {
     /// let attribute_buffer: &[u8] = &[

@@ -1,11 +1,11 @@
 use clap::{App, Arg};
 use env_logger;
 use log::{info, warn};
-use mft::mft::MftHandler;
+use mft::mft::MftParser;
 
 fn process_file(filename: &str, indent: bool) -> bool {
     info!("Opening file {}", filename);
-    let mut mft_handler = match MftHandler::from_path(filename) {
+    let mut mft_handler = match MftParser::from_path(filename) {
         Ok(mft_handler) => mft_handler,
         Err(error) => {
             warn!("Could not parse file: {} [error: {}]", filename, error);

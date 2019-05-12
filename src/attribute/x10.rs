@@ -1,12 +1,12 @@
 use crate::err::{self, Result};
 
+use crate::ReadSeek;
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::{DateTime, Utc};
 use log::trace;
 use serde::Serialize;
-use std::io::Read;
-use winstructs::timestamp::WinTimestamp;
 use snafu::ResultExt;
+use winstructs::timestamp::WinTimestamp;
 
 #[derive(Serialize, Debug, Clone)]
 pub struct StandardInfoAttr {
@@ -32,7 +32,7 @@ impl StandardInfoAttr {
     /// Parse a raw buffer.
     ///
     /// ```
-    /// use mft::attr_x10::StandardInfoAttr;
+    /// use mft::attribute::x10::StandardInfoAttr;
     /// # use std::io::Cursor;
     /// # fn test_standard_information() {
     /// let attribute_buffer: &[u8] = &[
@@ -58,7 +58,7 @@ impl StandardInfoAttr {
     /// assert_eq!(attribute.usn, 8768215144);
     /// # }
     /// ```
-    pub fn from_reader<R: Read>(reader: &mut R) -> Result<StandardInfoAttr> {
+    pub fn from_reader<S: ReadSeek>(reader: &mut S) -> Result<StandardInfoAttr> {
         trace!("StandardInfoAttr");
         let created = WinTimestamp::from_reader(reader)
             .context(err::FailedToReadWindowsTime)?

@@ -1,4 +1,4 @@
-use snafu::Snafu;
+use snafu::{Backtrace, Snafu};
 use std::path::PathBuf;
 use std::{io, result};
 
@@ -8,7 +8,10 @@ pub type Result<T> = result::Result<T, Error>;
 #[snafu(visibility(pub(crate)))]
 pub enum Error {
     #[snafu(display("An I/O error has occurred: {}", "source"))]
-    IoError { source: std::io::Error },
+    IoError {
+        source: std::io::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to open file {}: {}", path.display(), source))]
     FailedToOpenFile {
         path: PathBuf,
@@ -18,6 +21,8 @@ pub enum Error {
     InvalidFilename,
     #[snafu(display("Bad signature: {:04X}", bad_sig))]
     InvalidEntrySignature { bad_sig: u32 },
+    #[snafu(display("Unknown `AttributeType`: {:04X}", attribute_type))]
+    UnknownAttributeType { attribute_type: u32 },
     #[snafu(display("Unhandled resident flag: {} (offset: {})", flag, offset))]
     UnhandledResidentFlag { flag: u8, offset: u64 },
     #[snafu(display("Expected usa_offset `{}` to equal 48", offset))]
@@ -32,6 +37,9 @@ pub enum Error {
 
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
-        Error::IoError { source: err }
+        Error::IoError {
+            source: err,
+            backtrace: Backtrace::new(),
+        }
     }
 }

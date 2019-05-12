@@ -4,12 +4,12 @@ use crate::err::{self, Result};
 
 use log::debug;
 use snafu::ResultExt;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use winstructs::ntfs::mft_reference::MftReference;
 
-pub struct MftHandler {
+pub struct MftParser {
     file: BufReader<File>,
     path_enumerator: PathEnumerator,
     entry_size: u32,
@@ -17,22 +17,17 @@ pub struct MftHandler {
     size: u64,
 }
 
-impl MftHandler {
-    pub fn from_path(filename: impl AsRef<Path>) -> Result<MftHandler> {
+impl MftParser {
+    pub fn from_path(filename: impl AsRef<Path>) -> Result<MftParser> {
         let f = filename.as_ref();
 
-        let mut mft_fh = File::open(f).context(err::FailedToOpenFile { path: f.to_owned() })?;
+        let mft_fh = File::open(f).context(err::FailedToOpenFile { path: f.to_owned() })?;
+        let size = fs::metadata(f)?.len();
 
-        // TODO: remove this, and find a better way
-        let size = match mft_fh.seek(SeekFrom::End(0)) {
-            Err(e) => panic!("Error: {}", e),
-            Ok(size) => size,
-        };
+        let file = BufReader::with_capacity(4096, mft_fh);
 
-        let filehandle = BufReader::with_capacity(4096, mft_fh);
-
-        Ok(MftHandler {
-            file: filehandle,
+        Ok(MftParser {
+            file,
             path_enumerator: PathEnumerator::new(),
             entry_size: 1024,
             offset: 0,

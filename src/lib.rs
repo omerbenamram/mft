@@ -1,11 +1,12 @@
+#[macro_use]
+extern crate num_derive;
+
 use std::io::{self, Read, Seek, SeekFrom};
 
-pub mod err;
-pub mod attr_x10;
-pub mod attr_x30;
 pub mod attribute;
 pub mod entry;
 pub mod enumerator;
+pub mod err;
 pub mod mft;
 
 pub(crate) mod utils;
