@@ -10,7 +10,8 @@ use winstructs::ntfs::mft_reference::MftReference;
 use byteorder::{LittleEndian, ReadBytesExt};
 
 use bitflags::bitflags;
-use serde::{ser, Serialize, Serializer};
+use serde::ser::{self, SerializeStruct, Serializer};
+use serde::Serialize;
 
 use crate::attribute::header::{AttributeHeader, ResidentialHeader};
 use crate::attribute::x10::StandardInfoAttr;
@@ -24,28 +25,34 @@ use std::io::{Cursor, Seek};
 
 //https://github.com/libyal/libfsntfs/blob/master/documentation/New%20Technologies%20File%20System%20(NTFS).asciidoc#5-the-master-file-table-mft
 
-bitflags! {
-    pub struct EntryFlags: u16 {
-        const ALLOCATED     = 0x01;
-        const INDEX_PRESENT = 0x02;
-        const UNKNOWN_1     = 0x04;
-        const UNKNOWN_2     = 0x08;
-    }
-}
-pub fn serialize_entry_flags<S>(
-    item: &EntryFlags,
-    serializer: S,
-) -> ::std::result::Result<S::Ok, S::Error>
-where
-    S: ser::Serializer,
-{
-    serializer.serialize_str(&format!("{:?}", item))
+#[derive(Debug)]
+pub struct MftEntry {
+    pub header: EntryHeader,
+    pub data: Vec<u8>,
 }
 
+impl ser::Serialize for MftEntry {
+    fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("Color", 2)?;
+        let attributes: Vec<Attribute> = self.iter_attributes().filter_map(Result::ok).collect();
+        state.serialize_field("header", &self.header)?;
+        state.serialize_field("attributes", &attributes)?;
+        state.end()
+    }
+}
+
+/// https://docs.microsoft.com/en-us/windows/desktop/devnotes/file-record-segment-header
 #[derive(Serialize, Debug)]
 pub struct EntryHeader {
+    /// MULTI_SECTOR_HEADER
+    /// The signature. This value is a convenience to the user.
     pub signature: u32,
     #[serde(skip_serializing)]
+    /// The offset to the update sequence array, from the start of this structure.
+    /// The update sequence array must end before the last USHORT value in the first sector.
     pub usa_offset: u16,
     #[serde(skip_serializing)]
     pub usa_size: u16,
@@ -69,9 +76,27 @@ pub struct EntryHeader {
     pub update_sequence_value: u32,
     pub entry_reference: MftReference,
 }
+bitflags! {
+    pub struct EntryFlags: u16 {
+        const ALLOCATED     = 0x01;
+        const INDEX_PRESENT = 0x02;
+        const UNKNOWN_1     = 0x04;
+        const UNKNOWN_2     = 0x08;
+    }
+}
+
+pub fn serialize_entry_flags<S>(
+    item: &EntryFlags,
+    serializer: S,
+) -> ::std::result::Result<S::Ok, S::Error>
+where
+    S: ser::Serializer,
+{
+    serializer.serialize_str(&format!("{:?}", item))
+}
 
 impl EntryHeader {
-    pub fn from_reader<R: Read>(reader: &mut R, _entry: u64) -> Result<EntryHeader> {
+    pub fn from_reader<R: Read>(reader: &mut R) -> Result<EntryHeader> {
         let signature = reader.read_u32::<LittleEndian>()?;
 
         ensure!(
@@ -122,20 +147,13 @@ impl EntryHeader {
     }
 }
 
-// TODO: manually implement serialize to dump attributes.
-#[derive(Serialize, Debug)]
-pub struct MftEntry {
-    pub header: EntryHeader,
-    pub data: Vec<u8>,
-}
-
 impl MftEntry {
     pub fn new(buffer: Vec<u8>, entry: u64) -> Result<MftEntry> {
         debug!("MftEntry `{}` from buffer", entry);
 
         let mut cursor = Cursor::new(&buffer);
         // Get Header
-        let entry_header = EntryHeader::from_reader(&mut cursor, entry)?;
+        let entry_header = EntryHeader::from_reader(&mut cursor)?;
 
         Ok(MftEntry {
             header: entry_header,
@@ -292,7 +310,7 @@ mod tests {
             0x00, 0x00, 0xD5, 0x95, 0x00, 0x00, 0x53, 0x57, 0x81, 0x37, 0x00, 0x00, 0x00, 0x00,
         ];
 
-        let entry_header = EntryHeader::from_reader(&mut Cursor::new(header_buffer), 0).unwrap();
+        let entry_header = EntryHeader::from_reader(&mut Cursor::new(header_buffer)).unwrap();
 
         assert_eq!(entry_header.signature, 1_162_627_398);
         assert_eq!(entry_header.usa_offset, 48);

@@ -12,8 +12,9 @@ use winstructs::ntfs::mft_reference::MftReference;
 pub struct MftParser {
     file: BufReader<File>,
     path_enumerator: PathEnumerator,
+    /// Entry size is present in the volume header, but this is not available to us.
+    /// Instead this will be guessed by the entry size of the first entry.
     entry_size: u32,
-    offset: u64,
     size: u64,
 }
 
@@ -30,7 +31,6 @@ impl MftParser {
             file,
             path_enumerator: PathEnumerator::new(),
             entry_size: 1024,
-            offset: 0,
             size,
         })
     }

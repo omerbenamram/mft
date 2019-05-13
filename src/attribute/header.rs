@@ -88,6 +88,7 @@ impl AttributeHeader {
             }
         };
 
+        // Name is optional, and will not be present if size == 0.
         let name = if name_size > 0 {
             read_utf16_string(stream, Some(name_size as usize))?
         } else {

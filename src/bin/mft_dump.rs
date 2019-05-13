@@ -1,37 +1,54 @@
-use clap::{App, Arg};
+use clap::{App, Arg, ArgMatches};
 use env_logger;
 use log::{info, warn};
+
 use mft::mft::MftParser;
+use std::path::PathBuf;
 
-fn process_file(filename: &str, indent: bool) -> bool {
-    info!("Opening file {}", filename);
-    let mut mft_handler = match MftParser::from_path(filename) {
-        Ok(mft_handler) => mft_handler,
-        Err(error) => {
-            warn!("Could not parse file: {} [error: {}]", filename, error);
-            return false;
+struct MftDump {
+    filepath: PathBuf,
+    indent: bool,
+}
+
+impl MftDump {
+    pub fn from_cli_matches(matches: &ArgMatches) -> Self {
+        MftDump {
+            filepath: PathBuf::from(matches.value_of("INPUT").expect("Required argument")),
+            indent: !matches.is_present("no-indent"),
         }
-    };
-
-    for i in 0..mft_handler.get_entry_count() {
-        match mft_handler.entry(i) {
-            Ok(mft_entry) => {
-                let json_str = if indent {
-                    serde_json::to_string_pretty(&mft_entry).unwrap()
-                } else {
-                    serde_json::to_string(&mft_entry).unwrap()
-                };
-
-                println!("{}", json_str);
-            }
-            Err(error) => {
-                println!("Could not mft_entry: {} [error: {}]", i, error);
-                continue;
-            }
-        };
     }
 
-    true
+    pub fn parse_file(&self) {
+        info!("Opening file {:?}", &self.filepath);
+        let mut mft_handler = match MftParser::from_path(&self.filepath) {
+            Ok(mft_handler) => mft_handler,
+            Err(error) => {
+                eprintln!(
+                    "Failed to parse {:?}, failed with: [{}]",
+                    &self.filepath, error
+                );
+                std::process::exit(-1);
+            }
+        };
+
+        for i in 0..mft_handler.get_entry_count() {
+            match mft_handler.entry(i) {
+                Ok(mft_entry) => {
+                    let json_str = if self.indent {
+                        serde_json::to_string_pretty(&mft_entry).unwrap()
+                    } else {
+                        serde_json::to_string(&mft_entry).unwrap()
+                    };
+
+                    println!("{}", json_str);
+                }
+                Err(error) => {
+                    eprintln!("Failed to parse MFT entry {}, failed with: [{}]", i, error);
+                    continue;
+                }
+            };
+        }
+    }
 }
 
 fn main() {
@@ -50,9 +67,6 @@ fn main() {
         )
         .get_matches();
 
-    let indent = !matches.is_present("no-indent");
-    process_file(
-        matches.value_of("INPUT").expect("Required argument"),
-        indent,
-    );
+    let app = MftDump::from_cli_matches(&matches);
+    app.parse_file();
 }

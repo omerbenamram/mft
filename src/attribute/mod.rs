@@ -12,7 +12,7 @@ use crate::attribute::x10::StandardInfoAttr;
 use crate::attribute::x30::FileNameAttr;
 
 use crate::attribute::header::AttributeHeader;
-use crate::ReadSeek;
+
 use serde::{ser, Serialize};
 use std::io::{Cursor, Read, Seek};
 
