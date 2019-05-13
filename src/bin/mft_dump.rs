@@ -20,7 +20,7 @@ impl MftDump {
 
     pub fn parse_file(&self) {
         info!("Opening file {:?}", &self.filepath);
-        let mut mft_handler = match MftParser::from_path(&self.filepath) {
+        let mft_handler = match MftParser::from_path(&self.filepath) {
             Ok(mft_handler) => mft_handler,
             Err(error) => {
                 eprintln!(
@@ -31,8 +31,8 @@ impl MftDump {
             }
         };
 
-        for i in 0..mft_handler.get_entry_count() {
-            match mft_handler.entry(i) {
+        for (i, entry) in mft_handler.iter_entries().enumerate() {
+            match entry {
                 Ok(mft_entry) => {
                     let json_str = if self.indent {
                         serde_json::to_string_pretty(&mft_entry).unwrap()
@@ -46,7 +46,7 @@ impl MftDump {
                     eprintln!("Failed to parse MFT entry {}, failed with: [{}]", i, error);
                     continue;
                 }
-            };
+            }
         }
     }
 }

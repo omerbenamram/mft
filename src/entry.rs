@@ -306,7 +306,7 @@ impl MftEntry {
                                     }
                                 }
                                 AttributeType::FileName => {
-                                    match FileNameAttr::from_reader(&mut cursor) {
+                                    match FileNameAttr::from_stream(&mut cursor) {
                                         Ok(content) => Some(Ok(Attribute {
                                             header,
                                             data: MftAttributeContent::AttrX30(content),
@@ -361,7 +361,7 @@ mod tests {
 
         let entry_header = EntryHeader::from_reader(&mut Cursor::new(header_buffer)).unwrap();
 
-        assert_eq!(entry_header.signature, 1_162_627_398);
+        assert_eq!(&entry_header.signature, b"FILE");
         assert_eq!(entry_header.usa_offset, 48);
         assert_eq!(entry_header.usa_size, 3);
         assert_eq!(entry_header.logfile_sequence_number, 53_762_438_092);

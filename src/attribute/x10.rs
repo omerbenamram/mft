@@ -59,7 +59,7 @@ impl StandardInfoAttr {
     /// # }
     /// ```
     pub fn from_reader<S: ReadSeek>(reader: &mut S) -> Result<StandardInfoAttr> {
-        trace!("StandardInfoAttr");
+        trace!("Offset {}: StandardInfoAttr", reader.tell()?);
         let created = WinTimestamp::from_reader(reader)
             .context(err::FailedToReadWindowsTime)?
             .to_datetime();
@@ -73,28 +73,19 @@ impl StandardInfoAttr {
             .context(err::FailedToReadWindowsTime)?
             .to_datetime();
 
-        let file_flags = reader.read_u32::<LittleEndian>()?;
-        let max_version = reader.read_u32::<LittleEndian>()?;
-        let version = reader.read_u32::<LittleEndian>()?;
-        let class_id = reader.read_u32::<LittleEndian>()?;
-        let owner_id = reader.read_u32::<LittleEndian>()?;
-        let security_id = reader.read_u32::<LittleEndian>()?;
-        let quota = reader.read_u64::<LittleEndian>()?;
-        let usn = reader.read_u64::<LittleEndian>()?;
-
         Ok(StandardInfoAttr {
             created,
             modified,
             mft_modified,
             accessed,
-            file_flags,
-            max_version,
-            version,
-            class_id,
-            owner_id,
-            security_id,
-            quota,
-            usn,
+            file_flags: reader.read_u32::<LittleEndian>()?,
+            max_version: reader.read_u32::<LittleEndian>()?,
+            version: reader.read_u32::<LittleEndian>()?,
+            class_id: reader.read_u32::<LittleEndian>()?,
+            owner_id: reader.read_u32::<LittleEndian>()?,
+            security_id: reader.read_u32::<LittleEndian>()?,
+            quota: reader.read_u64::<LittleEndian>()?,
+            usn: reader.read_u64::<LittleEndian>()?,
         })
     }
 }

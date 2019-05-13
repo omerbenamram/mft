@@ -7,7 +7,7 @@ pub type Result<T> = result::Result<T, Error>;
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum Error {
-    #[snafu(display("An I/O error has occurred: {}", "source"))]
+    #[snafu(display("An I/O error has occurred: {}", source))]
     IoError {
         source: std::io::Error,
         backtrace: Backtrace,
@@ -38,9 +38,9 @@ pub enum Error {
         end_of_sector_bytes: Vec<u8>,
         fixup_bytes: Vec<u8>,
     },
-    #[snafu(display("Failed to read MftReference: `{}`", "source"))]
+    #[snafu(display("Failed to read MftReference: `{}`", source))]
     FailedToReadMftReference { source: winstructs::err::Error },
-    #[snafu(display("Failed to read WindowsTime: `{}`", "source"))]
+    #[snafu(display("Failed to read WindowsTime: `{}`", source))]
     FailedToReadWindowsTime { source: winstructs::err::Error },
     #[snafu(display("An unexpected error has occurred: {}", detail))]
     Any { detail: String },

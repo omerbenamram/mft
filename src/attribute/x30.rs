@@ -1,5 +1,5 @@
 use crate::err::{self, Result};
-use crate::impl_serialize_for_bitflags;
+use crate::{impl_serialize_for_bitflags, ReadSeek};
 use log::trace;
 
 use bitflags::bitflags;
@@ -72,7 +72,7 @@ impl FileNameAttr {
     /// 	0x65,0x00,0x00,0x00,0x00,0x00,0x00,0x00
     /// ];
     ///
-    /// let attribute = FileNameAttr::from_reader(&mut Cursor::new(attribute_buffer)).unwrap();
+    /// let attribute = FileNameAttr::from_stream(&mut Cursor::new(attribute_buffer)).unwrap();
     ///
     /// assert_eq!(attribute.parent.entry, 1407374883553285);
     /// assert_eq!(attribute.created.timestamp(), 130146182088895957);
@@ -88,30 +88,31 @@ impl FileNameAttr {
     /// assert_eq!(attribute.name, "$LogFile");
     /// # }
     /// ```
-    pub fn from_reader<R: Read>(reader: &mut R) -> Result<FileNameAttr> {
-        trace!("FileNameAttr");
-        let parent = MftReference::from_reader(reader).context(err::FailedToReadMftReference)?;
-        let created = WinTimestamp::from_reader(reader)
+    pub fn from_stream<S: ReadSeek>(stream: &mut S) -> Result<FileNameAttr> {
+        trace!("Offset {}: FilenameAttr", stream.tell()?);
+        let parent = MftReference::from_reader(stream).context(err::FailedToReadMftReference)?;
+        let created = WinTimestamp::from_reader(stream)
             .context(err::FailedToReadWindowsTime)?
             .to_datetime();
-        let modified = WinTimestamp::from_reader(reader)
+        let modified = WinTimestamp::from_reader(stream)
             .context(err::FailedToReadWindowsTime)?
             .to_datetime();
-        let mft_modified = WinTimestamp::from_reader(reader)
+        let mft_modified = WinTimestamp::from_reader(stream)
             .context(err::FailedToReadWindowsTime)?
             .to_datetime();
-        let accessed = WinTimestamp::from_reader(reader)
+        let accessed = WinTimestamp::from_reader(stream)
             .context(err::FailedToReadWindowsTime)?
             .to_datetime();
-        let logical_size = reader.read_u64::<LittleEndian>()?;
-        let physical_size = reader.read_u64::<LittleEndian>()?;
-        let flags = FileAttributeFlags::from_bits_truncate(reader.read_u32::<LittleEndian>()?);
-        let reparse_value = reader.read_u32::<LittleEndian>()?;
-        let name_length = reader.read_u8()?;
-        let namespace = reader.read_u8()?;
+
+        let logical_size = stream.read_u64::<LittleEndian>()?;
+        let physical_size = stream.read_u64::<LittleEndian>()?;
+        let flags = FileAttributeFlags::from_bits_truncate(stream.read_u32::<LittleEndian>()?);
+        let reparse_value = stream.read_u32::<LittleEndian>()?;
+        let name_length = stream.read_u8()?;
+        let namespace = stream.read_u8()?;
 
         let mut name_buffer = vec![0; (name_length as usize * 2) as usize];
-        reader.read_exact(&mut name_buffer)?;
+        stream.read_exact(&mut name_buffer)?;
 
         let name = match UTF_16LE.decode(&name_buffer, DecoderTrap::Ignore) {
             Ok(s) => s,
