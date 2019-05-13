@@ -4,6 +4,8 @@ pub mod x10;
 pub mod x30;
 
 use crate::err::{self, Result};
+use crate::impl_serialize_for_bitflags;
+
 use bitflags::bitflags;
 use num_traits::FromPrimitive;
 
@@ -72,12 +74,4 @@ bitflags! {
     }
 }
 
-pub fn serialize_attr_data_flags<S>(
-    item: &AttributeDataFlags,
-    serializer: S,
-) -> ::std::result::Result<S::Ok, S::Error>
-where
-    S: ser::Serializer,
-{
-    serializer.serialize_str(&format!("{:?}", item))
-}
+impl_serialize_for_bitflags! {AttributeDataFlags}

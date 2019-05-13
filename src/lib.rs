@@ -9,6 +9,7 @@ pub mod enumerator;
 pub mod err;
 pub mod mft;
 
+pub(crate) mod macros;
 pub(crate) mod utils;
 
 pub trait ReadSeek: Read + Seek {

@@ -34,7 +34,7 @@ pub enum Error {
         fixup_bytes
     ))]
     FailedToApplyFixup {
-        stride_number: u32,
+        stride_number: usize,
         end_of_sector_bytes: Vec<u8>,
         fixup_bytes: Vec<u8>,
     },

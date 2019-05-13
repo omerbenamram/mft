@@ -1,7 +1,8 @@
 use crate::enumerator::PathMapping;
 use crate::err::{self, Result};
+use crate::impl_serialize_for_bitflags;
 
-use crate::{attribute, ReadSeek};
+use crate::attribute;
 use log::{debug, trace};
 use snafu::{ensure, OptionExt, ResultExt};
 
@@ -22,9 +23,8 @@ use crate::attribute::x30::FileNameAttr;
 use std::io::Read;
 use std::io::SeekFrom;
 use std::io::{Cursor, Seek};
-use std::mem;
 
-const SEQUENCE_NUMBER_STRIDE: u16 = 512;
+const SEQUENCE_NUMBER_STRIDE: usize = 512;
 
 #[derive(Debug)]
 pub struct MftEntry {
@@ -69,7 +69,6 @@ pub struct EntryHeader {
     #[serde(skip_serializing)]
     /// The offset of the first attribute record, in bytes.
     pub first_attribute_record_offset: u16,
-    #[serde(serialize_with = "serialize_entry_flags")]
     pub flags: EntryFlags,
     #[serde(skip_serializing)]
     /// Contains the number of bytes of the MFT entry that are in use
@@ -95,15 +94,7 @@ bitflags! {
     }
 }
 
-pub fn serialize_entry_flags<S>(
-    item: &EntryFlags,
-    serializer: S,
-) -> ::std::result::Result<S::Ok, S::Error>
-where
-    S: ser::Serializer,
-{
-    serializer.serialize_str(&format!("{:?}", item))
-}
+impl_serialize_for_bitflags! {EntryFlags}
 
 impl EntryHeader {
     pub fn from_reader<R: Read>(reader: &mut R) -> Result<EntryHeader> {
@@ -208,13 +199,11 @@ impl MftEntry {
 
         // We need to compare each last two bytes each 512-bytes stride with the update_sequence,
         // And if they match, replace those bytes with the matching bytes from the fixup_sequence.
-        for (stride_number, fixup_bytes) in (0..number_of_fixups).zip(fixups) {
-            let sector_start_offset = (stride_number * u32::from(SEQUENCE_NUMBER_STRIDE)) as usize;
+        for (stride_number, fixup_bytes) in (0_usize..number_of_fixups as usize).zip(fixups) {
+            let sector_start_offset = stride_number * SEQUENCE_NUMBER_STRIDE;
 
-            let end_of_sector_bytes_start_offset =
-                (sector_start_offset + SEQUENCE_NUMBER_STRIDE as usize) - 2;
-            let end_of_sector_bytes_end_offset =
-                sector_start_offset + SEQUENCE_NUMBER_STRIDE as usize;
+            let end_of_sector_bytes_end_offset = sector_start_offset + SEQUENCE_NUMBER_STRIDE;
+            let end_of_sector_bytes_start_offset = end_of_sector_bytes_end_offset - 2;
 
             let end_of_sector_bytes =
                 &mut buffer[end_of_sector_bytes_start_offset..end_of_sector_bytes_end_offset];

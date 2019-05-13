@@ -1,4 +1,4 @@
-use crate::attribute::{serialize_attr_data_flags, AttributeDataFlags, AttributeType};
+use crate::attribute::{AttributeDataFlags, AttributeType};
 use crate::err::{self, Result};
 use crate::utils::read_utf16_string;
 use crate::ReadSeek;
@@ -26,7 +26,6 @@ pub struct AttributeHeader {
     /// The offset of the attribute name from the start of the attribute record, in bytes.
     /// If the NameLength member is 0, this member is undefined.
     pub name_offset: Option<u16>,
-    #[serde(serialize_with = "serialize_attr_data_flags")]
     pub data_flags: AttributeDataFlags,
     /// The unique instance for this attribute in the file record.
     pub instance: u16,
