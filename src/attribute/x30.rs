@@ -7,8 +7,6 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use encoding::all::UTF_16LE;
 use encoding::{DecoderTrap, Encoding};
 
-use std::io::Read;
-
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
