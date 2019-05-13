@@ -24,9 +24,6 @@ num-traits = "0.2"
 num-derive = "0.2"
 winstructs = {git = "https://github.com/omerbenamram/winstructs.git", branch = "master"}
 
-[dependencies.jmespath]
-version = "^0.1.1"
-
 [dependencies.chrono]
 version = "0.4.6"
 features = ["serde"]
