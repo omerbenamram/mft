@@ -19,14 +19,25 @@ pub enum Error {
     },
     #[snafu(display("Error while decoding name in filename attribute"))]
     InvalidFilename,
-    #[snafu(display("Bad signature: {:04X}", bad_sig))]
-    InvalidEntrySignature { bad_sig: u32 },
+    #[snafu(display("Bad signature: {:x?}", bad_sig))]
+    InvalidEntrySignature { bad_sig: Vec<u8> },
     #[snafu(display("Unknown `AttributeType`: {:04X}", attribute_type))]
     UnknownAttributeType { attribute_type: u32 },
     #[snafu(display("Unhandled resident flag: {} (offset: {})", flag, offset))]
     UnhandledResidentFlag { flag: u8, offset: u64 },
     #[snafu(display("Expected usa_offset `{}` to equal 48", offset))]
     InvalidUsaOffset { offset: u16 },
+    #[snafu(display(
+        "Fixup bytes do not match bytes at end of stride {} {:x?}: {:x?}",
+        stride_number,
+        end_of_sector_bytes,
+        fixup_bytes
+    ))]
+    FailedToApplyFixup {
+        stride_number: u32,
+        end_of_sector_bytes: Vec<u8>,
+        fixup_bytes: Vec<u8>,
+    },
     #[snafu(display("Failed to read MftReference: `{}`", "source"))]
     FailedToReadMftReference { source: winstructs::err::Error },
     #[snafu(display("Failed to read WindowsTime: `{}`", "source"))]

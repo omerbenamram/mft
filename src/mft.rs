@@ -35,10 +35,6 @@ impl MftParser {
         })
     }
 
-    pub fn set_entry_size(&mut self, entry_size: u32) {
-        self.entry_size = entry_size
-    }
-
     pub fn get_entry_count(&self) -> u64 {
         self.size / u64::from(self.entry_size)
     }
@@ -51,7 +47,7 @@ impl MftParser {
         let mut entry_buffer = vec![0; self.entry_size as usize];
         self.file.read_exact(&mut entry_buffer)?;
 
-        let mft_entry = self.entry_from_buffer(entry_buffer, entry)?;
+        let mft_entry = MftEntry::from_buffer(entry_buffer)?;
 
         // We need to set the path if dir
         if let Some(mapping) = mft_entry.get_pathmap() {
@@ -61,20 +57,11 @@ impl MftParser {
             }
         }
 
-        // TODO: don't do this mutably from here.
-        //        mft_entry.set_full_names(self);
-
         Ok(mft_entry)
     }
 
     pub fn print_mapping(&self) {
         self.path_enumerator.print_mapping();
-    }
-
-    pub fn entry_from_buffer(&mut self, buffer: Vec<u8>, entry: u64) -> Result<MftEntry> {
-        let mft_entry = MftEntry::new(buffer, entry)?;
-
-        Ok(mft_entry)
     }
 
     pub fn get_fullpath(&mut self, reference: MftReference) -> String {
@@ -124,7 +111,7 @@ impl MftParser {
         let mut entry_buffer = vec![0; self.entry_size as usize];
         self.file.read_exact(&mut entry_buffer)?;
 
-        let mft_entry = self.entry_from_buffer(entry_buffer, entry)?;
+        let mft_entry = MftEntry::from_buffer(entry_buffer)?;
 
         Ok(mft_entry.get_pathmap())
     }

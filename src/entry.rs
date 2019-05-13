@@ -2,8 +2,8 @@ use crate::enumerator::PathMapping;
 use crate::err::{self, Result};
 
 use crate::{attribute, ReadSeek};
-use log::debug;
-use snafu::{ensure, ResultExt};
+use log::{debug, trace};
+use snafu::{ensure, OptionExt, ResultExt};
 
 use winstructs::ntfs::mft_reference::MftReference;
 
@@ -22,8 +22,9 @@ use crate::attribute::x30::FileNameAttr;
 use std::io::Read;
 use std::io::SeekFrom;
 use std::io::{Cursor, Seek};
+use std::mem;
 
-//https://github.com/libyal/libfsntfs/blob/master/documentation/New%20Technologies%20File%20System%20(NTFS).asciidoc#5-the-master-file-table-mft
+const SEQUENCE_NUMBER_STRIDE: u16 = 512;
 
 #[derive(Debug)]
 pub struct MftEntry {
@@ -45,29 +46,38 @@ impl ser::Serialize for MftEntry {
 }
 
 /// https://docs.microsoft.com/en-us/windows/desktop/devnotes/file-record-segment-header
+/// The MFT entry can be filled entirely with 0-byte values.
 #[derive(Serialize, Debug)]
 pub struct EntryHeader {
     /// MULTI_SECTOR_HEADER
     /// The signature. This value is a convenience to the user.
-    pub signature: u32,
+    /// This is either "BAAD" or "FILE"
+    pub signature: [u8; 4],
     #[serde(skip_serializing)]
     /// The offset to the update sequence array, from the start of this structure.
     /// The update sequence array must end before the last USHORT value in the first sector.
     pub usa_offset: u16,
-    #[serde(skip_serializing)]
     pub usa_size: u16,
+    /// The sequence number.
+    /// This value is incremented each time that a file record segment is freed; it is 0 if the segment is not used.
+    /// The SequenceNumber field of a file reference must match the contents of this field;
+    /// if they do not match, the file reference is incorrect and probably obsolete.
     pub logfile_sequence_number: u64,
     #[serde(skip_serializing)]
     pub sequence: u16,
     pub hard_link_count: u16,
     #[serde(skip_serializing)]
-    pub fst_attr_offset: u16,
+    /// The offset of the first attribute record, in bytes.
+    pub first_attribute_record_offset: u16,
     #[serde(serialize_with = "serialize_entry_flags")]
     pub flags: EntryFlags,
     #[serde(skip_serializing)]
-    pub entry_size_real: u32,
+    /// Contains the number of bytes of the MFT entry that are in use
+    pub used_entry_size: u32,
     #[serde(skip_serializing)]
-    pub entry_size_allocated: u32,
+    pub total_entry_size: u32,
+    /// A file reference to the base file record segment for this file.
+    /// If this is the base file record, the value is 0. See MFT_SEGMENT_REFERENCE.
     pub base_reference: MftReference,
     #[serde(skip_serializing)]
     pub next_attribute_id: u16,
@@ -97,11 +107,23 @@ where
 
 impl EntryHeader {
     pub fn from_reader<R: Read>(reader: &mut R) -> Result<EntryHeader> {
-        let signature = reader.read_u32::<LittleEndian>()?;
+        let mut signature = [0; 4];
+        reader.read_exact(&mut signature)?;
 
+        // Corrupted entry
         ensure!(
-            signature == 1_162_627_398,
-            err::InvalidEntrySignature { bad_sig: signature }
+            &signature != b"BAAD",
+            err::InvalidEntrySignature {
+                bad_sig: signature.to_vec()
+            }
+        );
+
+        // Empty entry
+        ensure!(
+            &signature != b"\x00\x00\x00\x00",
+            err::InvalidEntrySignature {
+                bad_sig: signature.to_vec()
+            }
         );
 
         let usa_offset = reader.read_u16::<LittleEndian>()?;
@@ -134,10 +156,10 @@ impl EntryHeader {
             logfile_sequence_number,
             sequence,
             hard_link_count,
-            fst_attr_offset,
+            first_attribute_record_offset: fst_attr_offset,
             flags,
-            entry_size_real,
-            entry_size_allocated,
+            used_entry_size: entry_size_real,
+            total_entry_size: entry_size_allocated,
             base_reference,
             next_attribute_id,
             record_number,
@@ -148,17 +170,68 @@ impl EntryHeader {
 }
 
 impl MftEntry {
-    pub fn new(buffer: Vec<u8>, entry: u64) -> Result<MftEntry> {
-        debug!("MftEntry `{}` from buffer", entry);
-
+    /// Initializes an MFT Entry from a buffer.
+    /// Since the parser is the entity responsible for knowing the entry size,
+    /// we take ownership of the buffer instead of trying to read it from stream.
+    pub fn from_buffer(mut buffer: Vec<u8>) -> Result<MftEntry> {
         let mut cursor = Cursor::new(&buffer);
         // Get Header
         let entry_header = EntryHeader::from_reader(&mut cursor)?;
+        trace!("Number of sectors: {:#?}", entry_header);
+
+        Self::apply_fixups(&entry_header, &mut buffer)?;
 
         Ok(MftEntry {
             header: entry_header,
             data: buffer,
         })
+    }
+
+    /// Applies the update sequence array fixups.
+    /// https://docs.microsoft.com/en-us/windows/desktop/devnotes/multi-sector-header
+    /// **Note**: The fixup will be written at the end of each 512-byte stride,
+    /// even if the device has more (or less) than 512 bytes per sector.
+    #[must_use]
+    fn apply_fixups(header: &EntryHeader, buffer: &mut [u8]) -> Result<()> {
+        let number_of_fixups = u32::from(header.usa_size - 1);
+        trace!("Number of fixups: {}", number_of_fixups);
+
+        // Each fixup is a 2-byte element, and there are `usa_size` of them.
+        let fixups_start_offset = header.usa_offset as usize;
+        let fixups_end_offset = fixups_start_offset + (header.usa_size * 2) as usize;
+
+        let fixups = buffer[fixups_start_offset..fixups_end_offset].to_vec();
+        let mut fixups = fixups.chunks(2);
+
+        // There should always be bytes here, but just in case we put zeroes, so it will fail later.
+        let update_sequence = fixups.next().unwrap_or(&[0, 0]);
+
+        // We need to compare each last two bytes each 512-bytes stride with the update_sequence,
+        // And if they match, replace those bytes with the matching bytes from the fixup_sequence.
+        for (stride_number, fixup_bytes) in (0..number_of_fixups).zip(fixups) {
+            let sector_start_offset = (stride_number * u32::from(SEQUENCE_NUMBER_STRIDE)) as usize;
+
+            let end_of_sector_bytes_start_offset =
+                (sector_start_offset + SEQUENCE_NUMBER_STRIDE as usize) - 2;
+            let end_of_sector_bytes_end_offset =
+                sector_start_offset + SEQUENCE_NUMBER_STRIDE as usize;
+
+            let end_of_sector_bytes =
+                &mut buffer[end_of_sector_bytes_start_offset..end_of_sector_bytes_end_offset];
+
+            ensure!(
+                end_of_sector_bytes == update_sequence,
+                err::FailedToApplyFixup {
+                    stride_number,
+                    end_of_sector_bytes: end_of_sector_bytes.to_vec(),
+                    fixup_bytes: fixup_bytes.to_vec()
+                }
+            );
+
+            end_of_sector_bytes.copy_from_slice(&fixup_bytes);
+        }
+
+        Ok(())
     }
 
     pub fn is_allocated(&self) -> bool {
@@ -203,23 +276,10 @@ impl MftEntry {
     //        }
     //    }
 
-    //    // TODO: what is this function?
-    //    pub fn buffer_fixup(&self, buffer: &mut [u8]) {
-    //        let fixup_values = &buffer[(self.header.usa_offset + 2) as usize
-    //            ..((self.header.usa_offset + 2) + ((self.header.usa_size - 1) * 2)) as usize]
-    //            .to_vec();
-    //
-    //        for i in 0..(self.header.usa_size - 1) {
-    //            let ofs = (i * 512) as usize;
-    //            *buffer.get_mut(ofs + 510).unwrap() = fixup_values[i as usize];
-    //            *buffer.get_mut(ofs + 511).unwrap() = fixup_values[(i + 1) as usize];
-    //        }
-    //    }
-
     /// Returns an iterator over the attributes of the entry.
     pub fn iter_attributes(&self) -> impl Iterator<Item = Result<Attribute>> + '_ {
         let mut cursor = Cursor::new(&self.data);
-        let mut offset = u64::from(self.header.fst_attr_offset);
+        let mut offset = u64::from(self.header.first_attribute_record_offset);
         let mut exhausted = false;
 
         std::iter::from_fn(move || {
@@ -318,10 +378,10 @@ mod tests {
         assert_eq!(entry_header.logfile_sequence_number, 53_762_438_092);
         assert_eq!(entry_header.sequence, 5);
         assert_eq!(entry_header.hard_link_count, 1);
-        assert_eq!(entry_header.fst_attr_offset, 56);
+        assert_eq!(entry_header.first_attribute_record_offset, 56);
         assert_eq!(entry_header.flags.bits(), 5);
-        assert_eq!(entry_header.entry_size_real, 840);
-        assert_eq!(entry_header.entry_size_allocated, 1024);
+        assert_eq!(entry_header.used_entry_size, 840);
+        assert_eq!(entry_header.total_entry_size, 1024);
         assert_eq!(entry_header.base_reference.entry, 0);
         assert_eq!(entry_header.next_attribute_id, 6);
         assert_eq!(entry_header.record_number, 38357);
