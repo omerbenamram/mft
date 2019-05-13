@@ -5,21 +5,20 @@ use crate::err::{self, Result};
 use crate::ReadSeek;
 use log::debug;
 use snafu::ResultExt;
-use std::borrow::Borrow;
+
 use std::fs::{self, File};
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
-use std::ops::Deref;
 use std::path::Path;
 
-pub struct MftParser {
-    data: File,
+pub struct MftParser<T: ReadSeek> {
+    data: T,
     /// Entry size is present in the volume header, but this is not available to us.
     /// Instead this will be guessed by the entry size of the first entry.
     entry_size: u32,
     size: u64,
 }
 
-impl MftParser {
+impl MftParser<BufReader<File>> {
     /// Instantiates an instance of the parser from a file path.
     /// Does not mutate the file contents in any way.
     pub fn from_path(filename: impl AsRef<Path>) -> Result<Self> {
@@ -29,33 +28,32 @@ impl MftParser {
         let size = fs::metadata(f)?.len();
 
         Ok(MftParser {
-            data: mft_fh,
+            data: BufReader::with_capacity(4096, mft_fh),
             entry_size: 1024,
             size,
         })
     }
 }
-//
-//impl MftParser<Cursor<Vec<u8>>> {
-//    pub fn from_buffer(buffer: Vec<u8>) -> Result<Self> {
-//        let size = buffer.len() as u64;
-//        let cursor = Cursor::new(buffer);
-//
-//        Ok(MftParser {
-//            data: cursor,
-//            entry_size: 1024,
-//            size,
-//        })
-//    }
-//}
 
-impl MftParser {
+impl MftParser<Cursor<Vec<u8>>> {
+    pub fn from_buffer(buffer: Vec<u8>) -> Result<Self> {
+        let size = buffer.len() as u64;
+        let cursor = Cursor::new(buffer);
+
+        Ok(MftParser {
+            data: cursor,
+            entry_size: 1024,
+            size,
+        })
+    }
+}
+
+impl<T: Read + Seek> MftParser<T> {
     pub fn get_entry_count(&self) -> u64 {
         self.size / u64::from(self.entry_size)
     }
 
-    pub fn iter_entries(&self) -> impl Iterator<Item = Result<MftEntry>> + '_ {
-        let mut file = BufReader::with_capacity(4096, &self.data);
+    pub fn iter_entries(&mut self) -> impl Iterator<Item = Result<MftEntry>> + '_ {
         let total_entries = self.get_entry_count();
         let mut count = 0;
 
@@ -67,7 +65,8 @@ impl MftParser {
                 count += 1;
                 debug!("Reading entry {}", count);
 
-                if let Err(e) = file
+                if let Err(e) = self
+                    .data
                     .seek(SeekFrom::Start(count * u64::from(self.entry_size)))
                     .eager_context(err::IoError)
                 {
@@ -76,7 +75,8 @@ impl MftParser {
 
                 let mut entry_buffer = vec![0; self.entry_size as usize];
 
-                if let Err(e) = file
+                if let Err(e) = self
+                    .data
                     .read_exact(&mut entry_buffer)
                     .eager_context(err::IoError)
                 {
@@ -161,7 +161,7 @@ mod tests {
             .join("samples")
             .join("MFT");
 
-        let parser = MftParser::from_path(sample).unwrap();
+        let mut parser = MftParser::from_path(sample).unwrap();
 
         let _: Vec<_> = parser.iter_entries().take(90).collect();
     }

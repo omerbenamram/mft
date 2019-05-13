@@ -20,7 +20,7 @@ impl MftDump {
 
     pub fn parse_file(&self) {
         info!("Opening file {:?}", &self.filepath);
-        let mft_handler = match MftParser::from_path(&self.filepath) {
+        let mut mft_handler = match MftParser::from_path(&self.filepath) {
             Ok(mft_handler) => mft_handler,
             Err(error) => {
                 eprintln!(
