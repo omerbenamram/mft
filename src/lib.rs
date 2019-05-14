@@ -12,7 +12,6 @@ use std::io::{self, Read, Seek, SeekFrom};
 
 pub mod attribute;
 pub mod entry;
-pub mod enumerator;
 pub mod err;
 pub mod mft;
 

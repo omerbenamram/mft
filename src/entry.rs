@@ -1,10 +1,9 @@
-use crate::enumerator::PathMapping;
 use crate::err::{self, Result};
 use crate::impl_serialize_for_bitflags;
 
 use crate::attribute;
-use log::{debug, trace};
-use snafu::{ensure, OptionExt, ResultExt};
+use log::trace;
+use snafu::{ensure, ResultExt};
 
 use winstructs::ntfs::mft_reference::MftReference;
 
@@ -230,40 +229,6 @@ impl MftEntry {
     pub fn is_dir(&self) -> bool {
         self.header.flags.bits() & 0x02 != 0
     }
-
-    pub fn get_pathmap(&self) -> Option<PathMapping> {
-        for attribute in self.iter_attributes().filter_map(|a| a.ok()) {
-            if let attribute::MftAttributeContent::AttrX30(ref attrib) = attribute.data {
-                if attrib.namespace != 2 {
-                    return Some(PathMapping {
-                        name: attrib.name.clone(),
-                        parent: attrib.parent,
-                    });
-                }
-            }
-        }
-
-        None
-    }
-
-    //    pub fn set_full_names(&mut self, mft_handler: &mut MftHandler) {
-    //        if self.attributes.contains_key("0x0030") {
-    //            if let Some(attr_list) = self.attributes.get_mut("0x0030") {
-    //                for attribute in attr_list.iter_mut() {
-    //                    // Check if resident content
-    //                    if let attribute::AttributeContent::AttrX30(ref mut attrib) = attribute.content
-    //                    {
-    //                        // Get fullpath
-    //                        let fullpath = mft_handler.get_fullpath(attrib.parent);
-    //                        // Set fullname
-    //                        let fullname = fullpath + "/" + attrib.name.as_str();
-    //                        // Set attribute to fullname
-    //                        attrib.fullname = Some(fullname);
-    //                    }
-    //                }
-    //            }
-    //        }
-    //    }
 
     /// Returns an iterator over the attributes of the entry.
     pub fn iter_attributes(&self) -> impl Iterator<Item = Result<Attribute>> + '_ {
