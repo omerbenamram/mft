@@ -18,6 +18,9 @@ pub mod mft;
 pub(crate) mod macros;
 pub(crate) mod utils;
 
+#[cfg(test)]
+pub(crate) mod tests;
+
 pub trait ReadSeek: Read + Seek {
     fn tell(&mut self) -> io::Result<u64> {
         self.seek(SeekFrom::Current(0))

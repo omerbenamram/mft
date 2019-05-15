@@ -25,7 +25,7 @@ use std::io::{Cursor, Seek};
 
 const SEQUENCE_NUMBER_STRIDE: usize = 512;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MftEntry {
     pub header: EntryHeader,
     pub data: Vec<u8>,
@@ -46,7 +46,7 @@ impl ser::Serialize for MftEntry {
 
 /// https://docs.microsoft.com/en-us/windows/desktop/devnotes/file-record-segment-header
 /// The MFT entry can be filled entirely with 0-byte values.
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 pub struct EntryHeader {
     /// MULTI_SECTOR_HEADER
     /// The signature. This value is a convenience to the user.

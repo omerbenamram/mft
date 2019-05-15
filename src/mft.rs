@@ -2,7 +2,7 @@ use crate::entry::MftEntry;
 use crate::err::{self, Result};
 
 use crate::{EntryHeader, ReadSeek};
-use log::debug;
+use log::{debug, trace};
 use snafu::ResultExt;
 
 use crate::attribute::MftAttributeContent::AttrX30;
@@ -93,28 +93,43 @@ impl<T: ReadSeek> MftParser<T> {
     }
 
     /// Gets the full path for an entry.
+    /// Cached computations.
     pub fn get_full_path_for_entry(&mut self, entry: &MftEntry) -> Result<Option<PathBuf>> {
+        let entry_id = entry.header.entry_reference.entry;
+
         for attribute in entry.iter_attributes().filter_map(|a| a.ok()) {
             if let AttrX30(filename_header) = attribute.data {
                 let parent_entry_id = filename_header.parent.entry;
+
                 if parent_entry_id > 0 {
+                    // If i'm my own parent, I'm the root path.
+                    if parent_entry_id == entry_id {
+                        return Ok(Some(PathBuf::from(filename_header.name)));
+                    }
+
+                    let cached_entry = self.entries_cache.get(&parent_entry_id);
+
                     // If my parent path is known, then my path is parent's path + my name.
                     // Else, look and cache my parent's path.
-                    let parent_entry = self.get_entry(parent_entry_id).ok();
+                    if let Some(cached_parent_path) = cached_entry {
+                        return Ok(Some(cached_parent_path.clone().join(filename_header.name)));
+                    } else {
+                        let path = match self.get_entry(parent_entry_id).ok() {
+                            Some(parent) => self
+                                .get_full_path_for_entry(&parent)
+                                .expect("We've checked that parent_entry > 0")
+                                .unwrap(),
+                            None => PathBuf::from("[Unknown]"),
+                        };
 
-                    let parent_path =
-                        self.entries_cache
-                            .entry(parent_entry_id)
-                            .or_insert_with(|| match parent_entry {
-                                Some(e) => self
-                                    .get_full_path_for_entry(&e)
-                                    .expect("We've checked that parent_entry > 0")
-                                    .unwrap(),
-
-                                None => PathBuf::from("[Unknown]"),
-                            });
-
-                    return Ok(Some(parent_path.clone().join(filename_header.name)));
+                        self.entries_cache.insert(parent_entry_id, path.clone());
+                        return Ok(Some(path.join(filename_header.name)));
+                    }
+                } else {
+                    let root = PathBuf::from(filename_header.name);
+                    self.entries_cache
+                        .insert(entry.header.entry_reference.entry, root.clone());
+                    return Ok(Some(root));
                 }
             }
         }
@@ -125,19 +140,14 @@ impl<T: ReadSeek> MftParser<T> {
 
 #[cfg(test)]
 mod tests {
+    use crate::tests::fixtures::mft_sample;
     use crate::MftParser;
     use std::path::PathBuf;
 
     // entrypoint for clion profiler.
     #[test]
     fn test_process_90_mft_entries() {
-        let sample = PathBuf::from(file!())
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("samples")
-            .join("MFT");
+        let sample = mft_sample();
 
         let mut parser = MftParser::from_path(sample).unwrap();
 
@@ -147,5 +157,14 @@ mod tests {
                 count += 1;
             }
         }
+    }
+
+    #[test]
+    fn test_get_full_name() {
+        let sample = mft_sample();
+        let mut parser = MftParser::from_path(sample).unwrap();
+
+        let e = parser.get_entry(5).unwrap();
+        parser.get_full_path_for_entry(&e).unwrap();
     }
 }
