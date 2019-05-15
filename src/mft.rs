@@ -2,7 +2,7 @@ use crate::entry::MftEntry;
 use crate::err::{self, Result};
 
 use crate::{EntryHeader, ReadSeek};
-use log::{debug};
+use log::debug;
 use snafu::ResultExt;
 
 use crate::attribute::MftAttributeContent::AttrX30;
@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, Cursor, SeekFrom};
 use std::path::{Path, PathBuf};
-
 
 pub struct MftParser<T: ReadSeek> {
     data: T,
@@ -93,7 +92,7 @@ impl<T: ReadSeek> MftParser<T> {
     }
 
     /// Gets the full path for an entry.
-    /// Cached computations.
+    /// Caches computations.
     pub fn get_full_path_for_entry(&mut self, entry: &MftEntry) -> Result<Option<PathBuf>> {
         let entry_id = entry.header.entry_reference.entry;
 
@@ -109,16 +108,23 @@ impl<T: ReadSeek> MftParser<T> {
 
                     let cached_entry = self.entries_cache.get(&parent_entry_id);
 
-                    // If my parent path is known, then my path is parent's path + my name.
-                    // Else, look and cache my parent's path.
+                    // If my parent path is known, then my path is parent's full path + my name.
+                    // Else, retrieve and cache my parent's path.
                     if let Some(cached_parent_path) = cached_entry {
                         return Ok(Some(cached_parent_path.clone().join(filename_header.name)));
                     } else {
                         let path = match self.get_entry(parent_entry_id).ok() {
-                            Some(parent) => self
-                                .get_full_path_for_entry(&parent)
-                                .expect("We've checked that parent_entry > 0")
-                                .unwrap(),
+                            Some(parent) => match self.get_full_path_for_entry(&parent) {
+                                Ok(Some(path)) => path,
+                                _ => {
+                                    return err::Any {
+                                        detail: "Unexpected missing parent.\
+                                         This is a bug, please report it at report at https://github.com/omerbenamram/mft/issues",
+                                    }
+                                    .fail()
+                                }
+                            },
+                            // Parent is maybe corrupted or incomplete, use a sentinel instead.
                             None => PathBuf::from("[Unknown]"),
                         };
 
