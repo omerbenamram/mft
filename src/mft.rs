@@ -2,12 +2,16 @@ use crate::entry::MftEntry;
 use crate::err::{self, Result};
 
 use crate::{EntryHeader, ReadSeek};
-use log::debug;
+use log::{debug, trace};
 use snafu::ResultExt;
 
+use crate::attribute::MftAttributeContent::AttrX30;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, Cursor, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 pub struct MftParser<T: ReadSeek> {
     data: T,
@@ -15,6 +19,7 @@ pub struct MftParser<T: ReadSeek> {
     /// Instead this will be guessed by the entry size of the first entry.
     entry_size: u32,
     size: u64,
+    entries_cache: HashMap<u64, PathBuf>,
 }
 
 impl MftParser<BufReader<File>> {
@@ -43,6 +48,7 @@ impl MftParser<Cursor<Vec<u8>>> {
 
 impl<T: ReadSeek> MftParser<T> {
     pub fn from_read_seek(mut data: T, size: u64) -> Result<Self> {
+        // We use the first entry to guess the entry size for all the other records.
         let first_entry = EntryHeader::from_reader(&mut data)?;
         data.seek(SeekFrom::Start(0))?;
 
@@ -50,6 +56,7 @@ impl<T: ReadSeek> MftParser<T> {
             data,
             entry_size: first_entry.total_entry_size,
             size,
+            entries_cache: HashMap::new(),
         })
     }
 
@@ -57,6 +64,20 @@ impl<T: ReadSeek> MftParser<T> {
         self.size / u64::from(self.entry_size)
     }
 
+    /// Reads an entry from the MFT by entry number.
+    pub fn get_entry(&mut self, entry_number: u64) -> Result<MftEntry> {
+        debug!("Reading entry {}", entry_number);
+
+        self.data
+            .seek(SeekFrom::Start(entry_number * u64::from(self.entry_size)))?;
+        let mut entry_buffer = vec![0; self.entry_size as usize];
+
+        self.data.read_exact(&mut entry_buffer)?;
+
+        Ok(MftEntry::from_buffer(entry_buffer)?)
+    }
+
+    /// Iterates over all the entries in the MFT.
     pub fn iter_entries(&mut self) -> impl Iterator<Item = Result<MftEntry>> + '_ {
         let total_entries = self.get_entry_count();
         let mut count = 0;
@@ -65,49 +86,68 @@ impl<T: ReadSeek> MftParser<T> {
             if count == total_entries {
                 None
             } else {
-                // TODO: is this off by one?
                 count += 1;
-                debug!("Reading entry {}", count);
-
-                if let Err(e) = self
-                    .data
-                    .seek(SeekFrom::Start(count * u64::from(self.entry_size)))
-                    .eager_context(err::IoError)
-                {
-                    return Some(Err(e));
-                };
-
-                let mut entry_buffer = vec![0; self.entry_size as usize];
-
-                if let Err(e) = self
-                    .data
-                    .read_exact(&mut entry_buffer)
-                    .eager_context(err::IoError)
-                {
-                    return Some(Err(e));
-                }
-
-                Some(MftEntry::from_buffer(entry_buffer))
+                Some(self.get_entry(count))
             }
         })
+    }
+
+    /// Gets the full path for an entry.
+    /// Cached computations.
+    pub fn get_full_path_for_entry(&mut self, entry: &MftEntry) -> Result<Option<PathBuf>> {
+        let entry_id = entry.header.entry_reference.entry;
+
+        for attribute in entry.iter_attributes().filter_map(|a| a.ok()) {
+            if let AttrX30(filename_header) = attribute.data {
+                let parent_entry_id = filename_header.parent.entry;
+
+                if parent_entry_id > 0 {
+                    // If i'm my own parent, I'm the root path.
+                    if parent_entry_id == entry_id {
+                        return Ok(Some(PathBuf::from(filename_header.name)));
+                    }
+
+                    let cached_entry = self.entries_cache.get(&parent_entry_id);
+
+                    // If my parent path is known, then my path is parent's path + my name.
+                    // Else, look and cache my parent's path.
+                    if let Some(cached_parent_path) = cached_entry {
+                        return Ok(Some(cached_parent_path.clone().join(filename_header.name)));
+                    } else {
+                        let path = match self.get_entry(parent_entry_id).ok() {
+                            Some(parent) => self
+                                .get_full_path_for_entry(&parent)
+                                .expect("We've checked that parent_entry > 0")
+                                .unwrap(),
+                            None => PathBuf::from("[Unknown]"),
+                        };
+
+                        self.entries_cache.insert(parent_entry_id, path.clone());
+                        return Ok(Some(path.join(filename_header.name)));
+                    }
+                } else {
+                    let root = PathBuf::from(filename_header.name);
+                    self.entries_cache
+                        .insert(entry.header.entry_reference.entry, root.clone());
+                    return Ok(Some(root));
+                }
+            }
+        }
+
+        Ok(None)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::tests::fixtures::mft_sample;
     use crate::MftParser;
     use std::path::PathBuf;
 
     // entrypoint for clion profiler.
     #[test]
     fn test_process_90_mft_entries() {
-        let sample = PathBuf::from(file!())
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("samples")
-            .join("MFT");
+        let sample = mft_sample();
 
         let mut parser = MftParser::from_path(sample).unwrap();
 
@@ -117,5 +157,14 @@ mod tests {
                 count += 1;
             }
         }
+    }
+
+    #[test]
+    fn test_get_full_name() {
+        let sample = mft_sample();
+        let mut parser = MftParser::from_path(sample).unwrap();
+
+        let e = parser.get_entry(5).unwrap();
+        parser.get_full_path_for_entry(&e).unwrap();
     }
 }
