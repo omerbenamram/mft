@@ -2,12 +2,13 @@ use crate::entry::MftEntry;
 use crate::err::{self, Result};
 
 use crate::{EntryHeader, ReadSeek};
-use log::debug;
+use log::{debug, trace};
 use snafu::ResultExt;
 
 use crate::attribute::MftAttributeContent::AttrX30;
 
-use std::collections::HashMap;
+use cached::stores::SizedCache;
+use cached::Cached;
 use std::fs::{self, File};
 use std::io::{BufReader, Cursor, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -18,7 +19,7 @@ pub struct MftParser<T: ReadSeek> {
     /// Instead this will be guessed by the entry size of the first entry.
     entry_size: u32,
     size: u64,
-    entries_cache: HashMap<u64, PathBuf>,
+    entries_cache: SizedCache<u64, PathBuf>,
 }
 
 impl MftParser<BufReader<File>> {
@@ -55,7 +56,7 @@ impl<T: ReadSeek> MftParser<T> {
             data,
             entry_size: first_entry.total_entry_size,
             size,
-            entries_cache: HashMap::new(),
+            entries_cache: SizedCache::with_size(1000),
         })
     }
 
@@ -100,13 +101,21 @@ impl<T: ReadSeek> MftParser<T> {
             if let AttrX30(filename_header) = attribute.data {
                 let parent_entry_id = filename_header.parent.entry;
 
-                if parent_entry_id > 0 {
-                    // If i'm my own parent, I'm the root path.
-                    if parent_entry_id == entry_id {
-                        return Ok(Some(PathBuf::from(filename_header.name)));
-                    }
+                // MFT entry 5 is the root path.
+                if parent_entry_id == 5 {
+                    return Ok(Some(PathBuf::from(filename_header.name)));
+                }
 
-                    let cached_entry = self.entries_cache.get(&parent_entry_id);
+                if parent_entry_id == entry_id {
+                    trace!(
+                        "Found self-referential file path, for entry ID {}",
+                        entry_id
+                    );
+                    return Ok(Some(PathBuf::from("[Orphaned]").join(filename_header.name)));
+                }
+
+                if parent_entry_id > 0 {
+                    let cached_entry = self.entries_cache.cache_get(&parent_entry_id);
 
                     // If my parent path is known, then my path is parent's full path + my name.
                     // Else, retrieve and cache my parent's path.
@@ -128,15 +137,17 @@ impl<T: ReadSeek> MftParser<T> {
                             None => PathBuf::from("[Unknown]"),
                         };
 
-                        self.entries_cache.insert(parent_entry_id, path.clone());
+                        self.entries_cache.cache_set(parent_entry_id, path.clone());
                         return Ok(Some(path.join(filename_header.name)));
                     }
                 } else {
-                    let root = PathBuf::from(filename_header.name);
+                    trace!("Found orphaned entry ID {}", entry_id);
+
+                    let orphan = PathBuf::from("[Orphaned]").join(filename_header.name);
 
                     self.entries_cache
-                        .insert(entry.header.entry_reference.entry, root.clone());
-                    return Ok(Some(root));
+                        .cache_set(entry.header.entry_reference.entry, orphan.clone());
+                    return Ok(Some(orphan));
                 }
             }
         }

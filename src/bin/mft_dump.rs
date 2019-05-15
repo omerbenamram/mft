@@ -1,9 +1,14 @@
 use clap::{App, Arg, ArgMatches};
 use env_logger;
-use log::{info};
+use log::info;
 
 use mft::mft::MftParser;
 use std::path::PathBuf;
+
+enum OutputFormat {
+    JSON,
+    CSV,
+}
 
 struct MftDump {
     filepath: PathBuf,

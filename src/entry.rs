@@ -1,7 +1,6 @@
 use crate::err::{self, Result};
 use crate::impl_serialize_for_bitflags;
 
-
 use log::trace;
 use snafu::{ensure, ResultExt};
 
@@ -81,7 +80,6 @@ pub struct EntryHeader {
     pub next_attribute_id: u16,
     #[serde(skip_serializing)]
     pub record_number: u64,
-    pub update_sequence_value: u32,
     pub entry_reference: MftReference,
 }
 bitflags! {
@@ -153,7 +151,6 @@ impl EntryHeader {
             base_reference,
             next_attribute_id,
             record_number,
-            update_sequence_value: 0,
             entry_reference,
         })
     }
