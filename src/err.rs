@@ -25,8 +25,6 @@ pub enum Error {
     UnknownAttributeType { attribute_type: u32 },
     #[snafu(display("Unhandled resident flag: {} (offset: {})", flag, offset))]
     UnhandledResidentFlag { flag: u8, offset: u64 },
-    #[snafu(display("Expected usa_offset `{}` to equal 48", offset))]
-    InvalidUsaOffset { offset: u16 },
     #[snafu(display(
         "Fixup bytes do not match bytes at end of stride {} {:x?}: {:x?}",
         stride_number,

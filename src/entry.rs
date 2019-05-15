@@ -51,7 +51,6 @@ pub struct EntryHeader {
     /// The signature. This value is a convenience to the user.
     /// This is either "BAAD" or "FILE"
     pub signature: [u8; 4],
-    #[serde(skip_serializing)]
     /// The offset to the update sequence array, from the start of this structure.
     /// The update sequence array must end before the last USHORT value in the first sector.
     pub usa_offset: u16,
@@ -61,24 +60,18 @@ pub struct EntryHeader {
     /// The SequenceNumber field of a file reference must match the contents of this field;
     /// if they do not match, the file reference is incorrect and probably obsolete.
     pub logfile_sequence_number: u64,
-    #[serde(skip_serializing)]
     pub sequence: u16,
     pub hard_link_count: u16,
-    #[serde(skip_serializing)]
     /// The offset of the first attribute record, in bytes.
     pub first_attribute_record_offset: u16,
     pub flags: EntryFlags,
-    #[serde(skip_serializing)]
     /// Contains the number of bytes of the MFT entry that are in use
     pub used_entry_size: u32,
-    #[serde(skip_serializing)]
     pub total_entry_size: u32,
     /// A file reference to the base file record segment for this file.
     /// If this is the base file record, the value is 0. See MFT_SEGMENT_REFERENCE.
     pub base_reference: MftReference,
-    #[serde(skip_serializing)]
     pub next_attribute_id: u16,
-    #[serde(skip_serializing)]
     pub record_number: u64,
     pub entry_reference: MftReference,
 }
@@ -126,11 +119,6 @@ impl EntryHeader {
         let base_reference =
             MftReference::from_reader(reader).context(err::FailedToReadMftReference)?;
         let next_attribute_id = reader.read_u16::<LittleEndian>()?;
-
-        ensure!(
-            usa_offset == 48,
-            err::InvalidUsaOffset { offset: usa_offset }
-        );
 
         let _padding = reader.read_u16::<LittleEndian>()?;
         let record_number = u64::from(reader.read_u32::<LittleEndian>()?);
