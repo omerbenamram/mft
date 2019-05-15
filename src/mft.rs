@@ -127,6 +127,7 @@ impl<T: ReadSeek> MftParser<T> {
                     }
                 } else {
                     let root = PathBuf::from(filename_header.name);
+
                     self.entries_cache
                         .insert(entry.header.entry_reference.entry, root.clone());
                     return Ok(Some(root));
@@ -141,8 +142,7 @@ impl<T: ReadSeek> MftParser<T> {
 #[cfg(test)]
 mod tests {
     use crate::tests::fixtures::mft_sample;
-    use crate::MftParser;
-    use std::path::PathBuf;
+    use crate::{MftEntry, MftParser};
 
     // entrypoint for clion profiler.
     #[test]
@@ -157,6 +157,27 @@ mod tests {
                 count += 1;
             }
         }
+    }
+
+    #[test]
+    fn test_get_full_path() {
+        let sample = mft_sample();
+        let mut parser = MftParser::from_path(sample).unwrap();
+
+        let mut paths = Vec::with_capacity(1000);
+        let entries: Vec<MftEntry> = parser
+            .iter_entries()
+            .take(1000)
+            .filter_map(Result::ok)
+            .collect();
+
+        for entry in entries {
+            if let Some(path) = parser.get_full_path_for_entry(&entry).unwrap() {
+                paths.push(path)
+            }
+        }
+
+        assert_eq!(paths.len(), 988);
     }
 
     #[test]
