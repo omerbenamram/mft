@@ -1,6 +1,6 @@
 use clap::{App, Arg, ArgMatches};
 use env_logger;
-use log::{info, warn};
+use log::{info};
 
 use mft::mft::MftParser;
 use std::path::PathBuf;

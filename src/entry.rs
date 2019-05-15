@@ -1,7 +1,7 @@
 use crate::err::{self, Result};
 use crate::impl_serialize_for_bitflags;
 
-use crate::attribute;
+
 use log::trace;
 use snafu::{ensure, ResultExt};
 

@@ -10,7 +10,7 @@ fn process_1000_mft_records(sample: &[u8]) {
 
     let mut count = 0;
     for entry in parser.iter_entries().take(1000).filter_map(|a| a.ok()) {
-        for attr in entry.iter_attributes() {
+        for _attr in entry.iter_attributes() {
             count += 1;
         }
     }

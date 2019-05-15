@@ -2,16 +2,16 @@ use crate::entry::MftEntry;
 use crate::err::{self, Result};
 
 use crate::{EntryHeader, ReadSeek};
-use log::{debug, trace};
+use log::{debug};
 use snafu::ResultExt;
 
 use crate::attribute::MftAttributeContent::AttrX30;
-use std::cell::RefCell;
+
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, Cursor, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+
 
 pub struct MftParser<T: ReadSeek> {
     data: T,
@@ -153,7 +153,7 @@ mod tests {
 
         let mut count = 0;
         for record in parser.iter_entries().take(10000).filter_map(|a| a.ok()) {
-            for attribute in record.iter_attributes() {
+            for _attribute in record.iter_attributes() {
                 count += 1;
             }
         }

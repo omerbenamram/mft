@@ -3,7 +3,7 @@ pub mod raw;
 pub mod x10;
 pub mod x30;
 
-use crate::err::{self, Result};
+
 use crate::impl_serialize_for_bitflags;
 
 use bitflags::bitflags;
@@ -15,8 +15,8 @@ use crate::attribute::x30::FileNameAttr;
 
 use crate::attribute::header::AttributeHeader;
 
-use serde::{ser, Serialize};
-use std::io::{Cursor, Read, Seek};
+use serde::{Serialize};
+
 
 #[derive(Serialize, Clone, Debug)]
 pub struct Attribute {
