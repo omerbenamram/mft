@@ -228,12 +228,12 @@ impl MftEntry {
 
             match cursor
                 .seek(SeekFrom::Start(offset))
-                .eager_context(err::IoError)
+                .context(err::IoError)
             {
                 Ok(_) => {}
                 Err(e) => {
                     exhausted = true;
-                    return Some(Err(e));
+                    return Some(Err(e.into()));
                 }
             };
 
@@ -261,15 +261,15 @@ impl MftEntry {
                                             header,
                                             data: MftAttributeContent::AttrX30(content),
                                         })),
-                                        Err(e) => Some(Err(e)),
+                                        Err(e) => Some(Err(e.into())),
                                     }
                                 }
                                 _ => {
                                     let mut data = vec![0_u8; resident.data_size as usize];
 
-                                    match cursor.read_exact(&mut data).eager_context(err::IoError) {
+                                    match cursor.read_exact(&mut data).context(err::IoError) {
                                         Ok(_) => {}
-                                        Err(err) => return Some(Err(err)),
+                                        Err(err) => return Some(Err(err.into())),
                                     };
 
                                     Some(Ok(Attribute {
