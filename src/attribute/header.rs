@@ -1,4 +1,4 @@
-use crate::attribute::{AttributeDataFlags, AttributeType};
+use crate::attribute::{AttributeDataFlags, MftAttributeType};
 use crate::err::{self, Result};
 use crate::utils::read_utf16_string;
 use crate::ReadSeek;
@@ -11,8 +11,8 @@ use std::io::Read;
 /// Represents the union defined in
 /// https://docs.microsoft.com/en-us/windows/desktop/devnotes/attribute-record-header
 #[derive(Serialize, Clone, Debug)]
-pub struct AttributeHeader {
-    pub type_code: AttributeType,
+pub struct MftAttributeHeader {
+    pub type_code: MftAttributeType,
     /// The size of the attribute record, in bytes.
     /// This value reflects the required size for the record variant and is always rounded to the nearest quadword boundary.
     pub record_length: u32,
@@ -39,17 +39,17 @@ pub enum ResidentialHeader {
     NonResident(NonResidentHeader),
 }
 
-impl AttributeHeader {
+impl MftAttributeHeader {
     /// Tries to read an AttributeHeader from the stream.
     /// Will return `None` if the type code is $END.
-    pub fn from_stream<S: ReadSeek>(stream: &mut S) -> Result<Option<AttributeHeader>> {
+    pub fn from_stream<S: ReadSeek>(stream: &mut S) -> Result<Option<MftAttributeHeader>> {
         let type_code_value = stream.read_u32::<LittleEndian>()?;
 
         if type_code_value == 0xFFFF_FFFF {
             return Ok(None);
         }
 
-        let type_code = match AttributeType::from_u32(type_code_value) {
+        let type_code = match MftAttributeType::from_u32(type_code_value) {
             Some(attribute_type) => attribute_type,
             None => {
                 return err::UnknownAttributeType {
@@ -94,7 +94,7 @@ impl AttributeHeader {
             String::new()
         };
 
-        Ok(Some(AttributeHeader {
+        Ok(Some(MftAttributeHeader {
             type_code,
             record_length: attribute_size,
             form_code: resident_flag,
@@ -190,8 +190,8 @@ impl NonResidentHeader {
 
 #[cfg(test)]
 mod tests {
-    use super::AttributeHeader;
-    use crate::attribute::AttributeType;
+    use super::MftAttributeHeader;
+    use crate::attribute::MftAttributeType;
     use std::io::Cursor;
 
     #[test]
@@ -203,13 +203,13 @@ mod tests {
 
         let mut cursor = Cursor::new(raw);
 
-        let attribute_header = AttributeHeader::from_stream(&mut cursor)
+        let attribute_header = MftAttributeHeader::from_stream(&mut cursor)
             .expect("Should not be $End")
             .expect("Shold parse correctly");
 
         assert_eq!(
             attribute_header.type_code,
-            AttributeType::StandardInformation
+            MftAttributeType::StandardInformation
         );
         assert_eq!(attribute_header.record_length, 96);
         assert_eq!(attribute_header.form_code, 0);
@@ -230,11 +230,11 @@ mod tests {
 
         let mut cursor = Cursor::new(raw);
 
-        let attribute_header = AttributeHeader::from_stream(&mut cursor)
+        let attribute_header = MftAttributeHeader::from_stream(&mut cursor)
             .expect("Should not be $End")
             .expect("Shold parse correctly");
 
-        assert_eq!(attribute_header.type_code, AttributeType::DATA);
+        assert_eq!(attribute_header.type_code, MftAttributeType::DATA);
         assert_eq!(attribute_header.record_length, 80);
         assert_eq!(attribute_header.form_code, 1);
         assert_eq!(attribute_header.name_size, 0);

@@ -3,7 +3,7 @@ extern crate num_derive;
 
 pub use attribute::x10::StandardInfoAttr;
 pub use attribute::x30::FileNameAttr;
-pub use attribute::Attribute;
+pub use attribute::MftAttribute;
 
 pub use entry::{EntryHeader, MftEntry};
 pub use mft::MftParser;

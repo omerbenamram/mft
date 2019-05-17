@@ -3,7 +3,6 @@ pub mod raw;
 pub mod x10;
 pub mod x30;
 
-
 use crate::impl_serialize_for_bitflags;
 
 use bitflags::bitflags;
@@ -13,14 +12,13 @@ use crate::attribute::raw::RawAttribute;
 use crate::attribute::x10::StandardInfoAttr;
 use crate::attribute::x30::FileNameAttr;
 
-use crate::attribute::header::AttributeHeader;
+use crate::attribute::header::MftAttributeHeader;
 
-use serde::{Serialize};
-
+use serde::Serialize;
 
 #[derive(Serialize, Clone, Debug)]
-pub struct Attribute {
-    pub header: AttributeHeader,
+pub struct MftAttribute {
+    pub header: MftAttributeHeader,
     pub data: MftAttributeContent,
 }
 
@@ -37,7 +35,7 @@ pub enum MftAttributeContent {
 /// MFT Possible attribute types, from https://docs.microsoft.com/en-us/windows/desktop/devnotes/attribute-list-entry
 #[derive(Serialize, Debug, Clone, FromPrimitive, PartialOrd, PartialEq)]
 #[repr(u32)]
-pub enum AttributeType {
+pub enum MftAttributeType {
     /// File attributes (such as read-only and archive), time stamps (such as file creation and last modified), and the hard link count.
     StandardInformation = 0x10_u32,
     /// A list of attributes that make up the file and the file reference of the MFT file record in which each attribute is located.
