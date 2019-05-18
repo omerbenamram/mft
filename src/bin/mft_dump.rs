@@ -3,12 +3,14 @@ use env_logger;
 use log::info;
 use mft::err::Result;
 
-use mft::attribute::{MftAttributeContent, MftAttributeType};
+use mft::attribute::FileAttributeFlags;
+use mft::attribute::MftAttributeContent;
 use mft::entry::EntryFlags;
 use mft::mft::MftParser;
 use mft::{MftAttribute, MftEntry, ReadSeek};
 use serde::Serialize;
 
+use chrono::{DateTime, Utc};
 use std::io;
 use std::io::Write;
 use std::path::PathBuf;
@@ -30,21 +32,42 @@ impl OutputFormat {
 
 /// Used for CSV output
 #[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct FlatMftEntryWithName {
     pub signature: String,
     pub logfile_sequence_number: u64,
     pub sequence: u16,
     pub hard_link_count: u16,
     pub flags: EntryFlags,
+
+    /// The size of the file, in bytes.
     pub used_entry_size: u32,
     pub total_entry_size: u32,
+
     pub parent_reference_entry: u64,
     pub parent_reference_sequence: u16,
+
     pub record_number: u64,
     pub entry_reference_entry: u64,
+
+    /// Indicates whether the record is free or not.
+    // TODO: implement
+    pub in_use: bool,
+    /// Indicates whether the record is a directory.
+    pub is_a_directory: bool,
+    /// The file extension (only for non-directories entries)
     pub entry_reference_sequence: u16,
-    // TODO: figure out a name to make this play nice with CSV output.
-    //    pub file_name_records: Vec<FileNameAttr>,
+    /// All of these fields are present for entries that have an 0x10 attribute.
+    pub standard_info_flags: Option<FileAttributeFlags>,
+    pub standard_info_last_modified: Option<DateTime<Utc>>,
+    pub standard_info_last_access: Option<DateTime<Utc>>,
+    pub standard_info_created: Option<DateTime<Utc>>,
+    /// All of these fields are present for entries that have an 0x30 attribute.
+    pub file_name_flags: Option<FileAttributeFlags>,
+    pub file_name_last_modified: Option<DateTime<Utc>>,
+    pub file_name_last_access: Option<DateTime<Utc>>,
+    pub file_name_created: Option<DateTime<Utc>>,
+
     pub full_path: PathBuf,
 }
 
@@ -56,15 +79,24 @@ impl FlatMftEntryWithName {
         let entry_attributes: Vec<MftAttribute> =
             entry.iter_attributes().filter_map(Result::ok).collect();
 
-        let mut file_name_attributes = vec![];
+        let mut file_name = None;
+        let mut standard_info = None;
 
-        for attr in entry_attributes.iter().cloned() {
-            if let MftAttributeContent::AttrX30(data) = attr.data {
-                file_name_attributes.push(data)
+        for attr in entry_attributes.iter() {
+            if let MftAttributeContent::AttrX30(data) = &attr.data {
+                file_name = Some(data.clone());
+                break;
+            }
+        }
+        for attr in entry_attributes.iter() {
+            if let MftAttributeContent::AttrX10(data) = &attr.data {
+                standard_info = Some(data.clone());
+                break;
             }
         }
 
         FlatMftEntryWithName {
+            record_number: entry.header.record_number,
             signature: String::from_utf8(entry.header.signature.to_ascii_uppercase()).unwrap(),
             logfile_sequence_number: entry.header.logfile_sequence_number,
             sequence: entry.header.sequence,
@@ -75,9 +107,17 @@ impl FlatMftEntryWithName {
             parent_reference_entry: entry.header.base_reference.entry,
             parent_reference_sequence: entry.header.base_reference.sequence,
             entry_reference_entry: entry.header.entry_reference.entry,
+            in_use: false,
+            is_a_directory: entry.is_dir(),
             entry_reference_sequence: entry.header.entry_reference.sequence,
-            //            file_name_records: file_name_attributes,
-            record_number: entry.header.record_number,
+            standard_info_flags: standard_info.as_ref().and_then(|i| Some(i.file_flags)),
+            standard_info_last_modified: standard_info.as_ref().and_then(|i| Some(i.modified)),
+            standard_info_last_access: standard_info.as_ref().and_then(|i| Some(i.accessed)),
+            standard_info_created: standard_info.as_ref().and_then(|i| Some(i.created)),
+            file_name_flags: file_name.as_ref().and_then(|i| Some(i.flags)),
+            file_name_last_modified: file_name.as_ref().and_then(|i| Some(i.modified)),
+            file_name_last_access: file_name.as_ref().and_then(|i| Some(i.accessed)),
+            file_name_created: file_name.as_ref().and_then(|i| Some(i.created)),
             full_path: parser
                 .get_full_path_for_entry(entry)
                 .expect("I/O Err")

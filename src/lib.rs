@@ -5,8 +5,8 @@ pub use attribute::x10::StandardInfoAttr;
 pub use attribute::x30::FileNameAttr;
 pub use attribute::MftAttribute;
 
+pub use crate::mft::MftParser;
 pub use entry::{EntryHeader, MftEntry};
-pub use mft::MftParser;
 
 use std::io::{self, Read, Seek, SeekFrom};
 

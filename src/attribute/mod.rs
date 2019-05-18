@@ -63,6 +63,26 @@ pub enum MftAttributeType {
 }
 
 bitflags! {
+    pub struct FileAttributeFlags: u32 {
+        const FILE_ATTRIBUTE_READONLY             = 0x0000_0001;
+        const FILE_ATTRIBUTE_HIDDEN               = 0x0000_0002;
+        const FILE_ATTRIBUTE_SYSTEM               = 0x0000_0004;
+        const FILE_ATTRIBUTE_ARCHIVE              = 0x0000_0020;
+        const FILE_ATTRIBUTE_DEVICE               = 0x0000_0040;
+        const FILE_ATTRIBUTE_NORMAL               = 0x0000_0080;
+        const FILE_ATTRIBUTE_TEMPORARY            = 0x0000_0100;
+        const FILE_ATTRIBUTE_SPARSE_FILE          = 0x0000_0200;
+        const FILE_ATTRIBUTE_REPARSE_POINT        = 0x0000_0400;
+        const FILE_ATTRIBUTE_COMPRESSED           = 0x0000_0800;
+        const FILE_ATTRIBUTE_OFFLINE              = 0x0000_1000;
+        const FILE_ATTRIBUTE_NOT_CONTENT_INDEXED  = 0x0000_2000;
+        const FILE_ATTRIBUTE_ENCRYPTED            = 0x0000_4000;
+    }
+}
+
+impl_serialize_for_bitflags! {FileAttributeFlags}
+
+bitflags! {
     #[derive(Default)]
     pub struct AttributeDataFlags: u16 {
         const IS_COMPRESSED     = 0x0001;
