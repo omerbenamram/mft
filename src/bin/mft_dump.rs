@@ -3,8 +3,8 @@ use env_logger;
 use log::info;
 use mft::err::Result;
 
-use mft::attribute::FileAttributeFlags;
 use mft::attribute::MftAttributeContent;
+use mft::attribute::{FileAttributeFlags, MftAttributeType};
 use mft::entry::EntryFlags;
 use mft::mft::MftParser;
 use mft::{MftAttribute, MftEntry, ReadSeek};
@@ -53,6 +53,9 @@ pub struct FlatMftEntryWithName {
     /// Indicates whether the record is a directory.
     pub is_a_directory: bool,
 
+    /// Indicates whether the record has alternate data streams.
+    pub has_alternate_data_streams: bool,
+
     /// All of these fields are present for entries that have an 0x10 attribute.
     pub standard_info_flags: Option<FileAttributeFlags>,
     pub standard_info_last_modified: Option<DateTime<Utc>>,
@@ -72,8 +75,14 @@ impl FlatMftEntryWithName {
         entry: &MftEntry,
         parser: &mut MftParser<impl ReadSeek>,
     ) -> FlatMftEntryWithName {
-        let entry_attributes: Vec<MftAttribute> =
-            entry.iter_attributes().filter_map(Result::ok).collect();
+        let entry_attributes: Vec<MftAttribute> = entry
+            .iter_attributes_matching(Some(vec![
+                MftAttributeType::FileName,
+                MftAttributeType::StandardInformation,
+                MftAttributeType::DATA,
+            ]))
+            .filter_map(Result::ok)
+            .collect();
 
         let mut file_name = None;
         let mut standard_info = None;
@@ -91,6 +100,11 @@ impl FlatMftEntryWithName {
             }
         }
 
+        let has_ads = entry_attributes
+            .iter()
+            .find(|a| a.header.type_code == MftAttributeType::DATA && a.header.name_size > 0)
+            .is_some();
+
         FlatMftEntryWithName {
             entry_id: entry.header.record_number,
             signature: String::from_utf8(entry.header.signature.to_ascii_uppercase())
@@ -103,6 +117,7 @@ impl FlatMftEntryWithName {
             base_entry_id: entry.header.base_reference.entry,
             base_entry_sequence: entry.header.base_reference.sequence,
             is_a_directory: entry.is_dir(),
+            has_alternate_data_streams: has_ads,
             standard_info_flags: standard_info.as_ref().and_then(|i| Some(i.file_flags)),
             standard_info_last_modified: standard_info.as_ref().and_then(|i| Some(i.modified)),
             standard_info_last_access: standard_info.as_ref().and_then(|i| Some(i.accessed)),

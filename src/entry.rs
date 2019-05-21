@@ -13,14 +13,8 @@ use serde::ser::{self, SerializeStruct, Serializer};
 use serde::Serialize;
 
 use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
-use crate::attribute::x10::StandardInfoAttr;
 use crate::attribute::{MftAttribute, MftAttributeContent, MftAttributeType};
 
-use crate::attribute::raw::RawAttribute;
-use crate::attribute::x30::FileNameAttr;
-use crate::attribute::x40::ObjectIdAttr;
-use crate::attribute::x80::DataAttr;
-use crate::attribute::x90::IndexRootAttr;
 use std::io::Read;
 use std::io::SeekFrom;
 use std::io::{Cursor, Seek};
@@ -217,57 +211,69 @@ impl MftEntry {
     /// Returns an iterator over the attributes in the list given in `types`, skips other attributes.
     pub fn iter_attributes_matching(
         &self,
-        types: Option<&[MftAttributeType]>,
+        types: Option<Vec<MftAttributeType>>,
     ) -> impl Iterator<Item = Result<MftAttribute>> + '_ {
         let mut cursor = Cursor::new(&self.data);
         let mut offset = u64::from(self.header.first_attribute_record_offset);
         let mut exhausted = false;
 
         std::iter::from_fn(move || {
-            if exhausted {
-                return None;
-            }
-
-            match cursor.seek(SeekFrom::Start(offset)).context(err::IoError) {
-                Ok(_) => {}
-                Err(e) => {
-                    exhausted = true;
-                    return Some(Err(e.into()));
+            // We use a loop here to allow skipping filtered attributes.
+            loop {
+                if exhausted {
+                    return None;
                 }
-            };
 
-            match MftAttributeHeader::from_stream(&mut cursor) {
-                Ok(maybe_header) => match maybe_header {
-                    Some(header) => {
-                        // Increment offset before moving header.
-                        offset += u64::from(header.record_length);
-
-                        // Check if the header is resident, and if it is, read the attribute content.
-                        let attribute_content = match header.residential_header {
-                            ResidentialHeader::Resident(ref resident) => {
-                                match MftAttributeContent::from_stream_resident(
-                                    &mut cursor,
-                                    &header,
-                                    resident,
-                                ) {
-                                    Ok(content) => content,
-                                    Err(e) => return Some(Err(e)),
-                                }
-                            }
-                            ResidentialHeader::NonResident(_) => MftAttributeContent::None,
-                        };
-
-                        Some(Ok(MftAttribute {
-                            header,
-                            data: attribute_content,
-                        }))
+                match cursor.seek(SeekFrom::Start(offset)).context(err::IoError) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        exhausted = true;
+                        return Some(Err(e.into()));
                     }
-                    None => None,
-                },
-                Err(e) => {
+                };
+                let header = MftAttributeHeader::from_stream(&mut cursor);
+
+                // Unexpected I/O error, return err and stop iterating
+                if let Err(e) = header {
                     exhausted = true;
-                    Some(Err(e))
+                    return Some(Err(e));
                 }
+
+                let header = header.unwrap();
+
+                // Header is 0xFFFF_FFFF, we are finished
+                header.as_ref()?;
+
+                let header = header.unwrap();
+                // Increment offset before moving header.
+                offset += u64::from(header.record_length);
+
+                // Skip attribute if filtered
+                if let Some(filter) = &types {
+                    if !filter.contains(&header.type_code) {
+                        continue;
+                    }
+                }
+
+                // Check if the header is resident, and if it is, read the attribute content.
+                let attribute_content = match header.residential_header {
+                    ResidentialHeader::Resident(ref resident) => {
+                        match MftAttributeContent::from_stream_resident(
+                            &mut cursor,
+                            &header,
+                            resident,
+                        ) {
+                            Ok(content) => content,
+                            Err(e) => return Some(Err(e)),
+                        }
+                    }
+                    ResidentialHeader::NonResident(_) => MftAttributeContent::None,
+                };
+
+                return Some(Ok(MftAttribute {
+                    header,
+                    data: attribute_content,
+                }));
             }
         })
     }
