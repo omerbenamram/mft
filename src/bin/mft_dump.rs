@@ -11,6 +11,7 @@ use mft::{MftAttribute, MftEntry, ReadSeek};
 use serde::Serialize;
 
 use chrono::{DateTime, Utc};
+use std::cmp::max;
 use std::io;
 use std::io::Write;
 use std::path::PathBuf;
@@ -168,32 +169,50 @@ impl MftDump {
                 std::process::exit(-1);
             }
         };
-        // TODO: find a way to read entries in chunks without screwing double mutable references.
-        let entires: Vec<Result<MftEntry>> = mft_handler.iter_entries().collect();
 
         let mut csv_writer = match self.output_format {
             OutputFormat::CSV => Some(csv::Writer::from_writer(io::stdout())),
             _ => None,
         };
 
-        for (count, entry) in entires.iter().enumerate() {
-            match entry {
-                Ok(mft_entry) => match self.output_format {
-                    OutputFormat::JSON => self.print_json_entry(&mft_entry),
+        let number_of_entries = mft_handler.get_entry_count();
+
+        let chunk_size = 1000;
+        let mut chunk_count = 0;
+        let mut entry_count = 0;
+
+        while entry_count <= number_of_entries {
+            let mut chunk = vec![];
+
+            let start = chunk_count * chunk_size;
+            let end = max(start + chunk_size, number_of_entries);
+
+            for i in start..end {
+                let entry = mft_handler.get_entry(i);
+
+                match entry {
+                    Ok(entry) => chunk.push(entry),
+                    Err(error) => {
+                        eprintln!("Failed to parse MFT entry {}, failed with: [{}]", i, error);
+                    }
+                }
+                entry_count += 1;
+            }
+
+            for entry in chunk.iter() {
+                match self.output_format {
+                    OutputFormat::JSON => self.print_json_entry(entry),
                     OutputFormat::CSV => self.print_csv_entry(
-                        &mft_entry,
+                        entry,
                         &mut mft_handler,
-                        csv_writer.as_mut().unwrap(),
+                        csv_writer
+                            .as_mut()
+                            .expect("CSV Writer is for OutputFormat::CSV"),
                     ),
-                },
-                Err(error) => {
-                    eprintln!(
-                        "Failed to parse MFT entry {}, failed with: [{}]",
-                        count, error
-                    );
-                    continue;
                 }
             }
+
+            chunk_count += 1;
         }
     }
 }
