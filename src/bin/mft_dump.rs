@@ -11,6 +11,8 @@ use mft::{MftAttribute, MftEntry, ReadSeek};
 use serde::Serialize;
 
 use chrono::{DateTime, Utc};
+use mft::attribute::x30::FileNamespace;
+use mft::attribute::MftAttributeType::FileName;
 use std::cmp::max;
 use std::io;
 use std::io::Write;
@@ -89,8 +91,10 @@ impl FlatMftEntryWithName {
 
         for attr in entry_attributes.iter() {
             if let MftAttributeContent::AttrX30(data) = &attr.data {
-                file_name = Some(data.clone());
-                break;
+                if [FileNamespace::Win32, FileNamespace::Win32AndDos].contains(&data.namespace) {
+                    file_name = Some(data.clone());
+                    break;
+                }
             }
         }
         for attr in entry_attributes.iter() {
@@ -102,8 +106,7 @@ impl FlatMftEntryWithName {
 
         let has_ads = entry_attributes
             .iter()
-            .find(|a| a.header.type_code == MftAttributeType::DATA && a.header.name_size > 0)
-            .is_some();
+            .any(|a| a.header.type_code == MftAttributeType::DATA && a.header.name_size > 0);
 
         FlatMftEntryWithName {
             entry_id: entry.header.record_number,

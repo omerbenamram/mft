@@ -23,6 +23,8 @@ pub enum Error {
     InvalidEntrySignature { bad_sig: Vec<u8> },
     #[snafu(display("Unknown `AttributeType`: {:04X}", attribute_type))]
     UnknownAttributeType { attribute_type: u32 },
+    #[snafu(display("Unknown filename namespace {}", namespace))]
+    UnknownNamespace { namespace: u8 },
     #[snafu(display("Unhandled resident flag: {} (offset: {})", flag, offset))]
     UnhandledResidentFlag { flag: u8, offset: u64 },
     #[snafu(display(

@@ -7,6 +7,7 @@ use snafu::ResultExt;
 
 use crate::attribute::MftAttributeContent::AttrX30;
 
+use crate::attribute::x30::FileNamespace;
 use cached::stores::SizedCache;
 use cached::Cached;
 use std::fs::{self, File};
@@ -100,6 +101,12 @@ impl<T: ReadSeek> MftParser<T> {
 
         for attribute in entry.iter_attributes().filter_map(|a| a.ok()) {
             if let AttrX30(filename_header) = attribute.data {
+                if ![FileNamespace::Win32, FileNamespace::Win32AndDos]
+                    .contains(&filename_header.namespace)
+                {
+                    continue;
+                }
+
                 let parent_entry_id = filename_header.parent.entry;
 
                 // MFT entry 5 is the root path.

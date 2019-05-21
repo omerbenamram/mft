@@ -2,17 +2,28 @@ use crate::attribute::FileAttributeFlags;
 use crate::err::{self, Result};
 use crate::ReadSeek;
 use log::trace;
+use snafu::OptionExt;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use encoding::all::UTF_16LE;
 use encoding::{DecoderTrap, Encoding};
 
 use chrono::{DateTime, Utc};
+use num_traits::FromPrimitive;
 use serde::Serialize;
 
 use snafu::ResultExt;
 use winstructs::ntfs::mft_reference::MftReference;
 use winstructs::timestamp::WinTimestamp;
+
+#[derive(FromPrimitive, Serialize, Clone, Debug, PartialOrd, PartialEq)]
+#[repr(u8)]
+pub enum FileNamespace {
+    POSIX = 0,
+    Win32 = 1,
+    DOS = 2,
+    Win32AndDos = 3,
+}
 
 #[derive(Serialize, Clone, Debug)]
 pub struct FileNameAttr {
@@ -26,7 +37,7 @@ pub struct FileNameAttr {
     pub flags: FileAttributeFlags,
     pub reparse_value: u32,
     pub name_length: u8,
-    pub namespace: u8,
+    pub namespace: FileNamespace,
     pub name: String,
 }
 
@@ -86,6 +97,8 @@ impl FileNameAttr {
         let reparse_value = stream.read_u32::<LittleEndian>()?;
         let name_length = stream.read_u8()?;
         let namespace = stream.read_u8()?;
+        let namespace =
+            FileNamespace::from_u8(namespace).context(err::UnknownNamespace { namespace })?;
 
         let mut name_buffer = vec![0; (name_length as usize * 2) as usize];
         stream.read_exact(&mut name_buffer)?;
