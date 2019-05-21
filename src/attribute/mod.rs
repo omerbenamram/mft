@@ -2,18 +2,23 @@ pub mod header;
 pub mod raw;
 pub mod x10;
 pub mod x30;
+pub mod x40;
+pub mod x80;
+pub mod x90;
 
-use crate::impl_serialize_for_bitflags;
+use crate::err::{self, Result};
+use crate::{impl_serialize_for_bitflags, ReadSeek};
 
 use bitflags::bitflags;
-use num_traits::FromPrimitive;
 
 use crate::attribute::raw::RawAttribute;
 use crate::attribute::x10::StandardInfoAttr;
 use crate::attribute::x30::FileNameAttr;
 
-use crate::attribute::header::MftAttributeHeader;
-
+use crate::attribute::header::{MftAttributeHeader, ResidentHeader};
+use crate::attribute::x40::ObjectIdAttr;
+use crate::attribute::x80::DataAttr;
+use crate::attribute::x90::IndexRootAttr;
 use serde::Serialize;
 
 #[derive(Serialize, Clone, Debug)]
@@ -22,12 +27,51 @@ pub struct MftAttribute {
     pub data: MftAttributeContent,
 }
 
+impl MftAttributeContent {
+    pub fn from_stream_resident<S: ReadSeek>(
+        stream: &mut S,
+        header: &MftAttributeHeader,
+        resident: &ResidentHeader,
+    ) -> Result<Self> {
+        match header.type_code {
+            MftAttributeType::StandardInformation => Ok(MftAttributeContent::AttrX10(
+                StandardInfoAttr::from_reader(stream)?,
+            )),
+            MftAttributeType::FileName => Ok(MftAttributeContent::AttrX30(
+                FileNameAttr::from_stream(stream)?,
+            )),
+            // Resident DATA
+            MftAttributeType::DATA => Ok(MftAttributeContent::AttrX80(DataAttr::from_stream(
+                stream,
+                resident.data_size as usize,
+            )?)),
+            // Always Resident
+            MftAttributeType::ObjectId => Ok(MftAttributeContent::AttrX40(
+                ObjectIdAttr::from_stream(stream, resident.data_size as usize)?,
+            )),
+            // Always Resident
+            MftAttributeType::IndexRoot => Ok(MftAttributeContent::AttrX90(
+                IndexRootAttr::from_stream(stream)?,
+            )),
+            // An unparsed resident attribute
+            _ => Ok(MftAttributeContent::Raw(RawAttribute::from_stream(
+                stream,
+                header.type_code.clone(),
+                resident.data_size as usize,
+            )?)),
+        }
+    }
+}
+
 #[derive(Serialize, Clone, Debug)]
 #[serde(untagged)]
 pub enum MftAttributeContent {
     Raw(RawAttribute),
+    AttrX80(DataAttr),
     AttrX10(StandardInfoAttr),
     AttrX30(FileNameAttr),
+    AttrX40(ObjectIdAttr),
+    AttrX90(IndexRootAttr),
     /// Empty - used when data is non resident.
     None,
 }

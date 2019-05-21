@@ -126,13 +126,9 @@ impl<T: ReadSeek> MftParser<T> {
                         let path = match self.get_entry(parent_entry_id).ok() {
                             Some(parent) => match self.get_full_path_for_entry(&parent) {
                                 Ok(Some(path)) => path,
-                                _ => {
-                                    return err::Any {
-                                        detail: "Unexpected missing parent.\
-                                         This is a bug, please report it at report at https://github.com/omerbenamram/mft/issues",
-                                    }
-                                    .fail()
-                                }
+                                // I have a parent, which doesn't have a filename attribute.
+                                // Default to root.
+                                _ => PathBuf::new(),
                             },
                             // Parent is maybe corrupted or incomplete, use a sentinel instead.
                             None => PathBuf::from("[Unknown]"),

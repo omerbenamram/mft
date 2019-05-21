@@ -18,6 +18,9 @@ use crate::attribute::{MftAttribute, MftAttributeContent, MftAttributeType};
 
 use crate::attribute::raw::RawAttribute;
 use crate::attribute::x30::FileNameAttr;
+use crate::attribute::x40::ObjectIdAttr;
+use crate::attribute::x80::DataAttr;
+use crate::attribute::x90::IndexRootAttr;
 use std::io::Read;
 use std::io::SeekFrom;
 use std::io::{Cursor, Seek};
@@ -206,8 +209,16 @@ impl MftEntry {
         self.header.flags.bits() & 0x02 != 0
     }
 
-    /// Returns an iterator over the attributes of the entry.
+    /// Returns an iterator over all the attributes of the entry.
     pub fn iter_attributes(&self) -> impl Iterator<Item = Result<MftAttribute>> + '_ {
+        self.iter_attributes_matching(None)
+    }
+
+    /// Returns an iterator over the attributes in the list given in `types`, skips other attributes.
+    pub fn iter_attributes_matching(
+        &self,
+        types: Option<&[MftAttributeType]>,
+    ) -> impl Iterator<Item = Result<MftAttribute>> + '_ {
         let mut cursor = Cursor::new(&self.data);
         let mut offset = u64::from(self.header.first_attribute_record_offset);
         let mut exhausted = false;
@@ -232,45 +243,24 @@ impl MftEntry {
                         offset += u64::from(header.record_length);
 
                         // Check if the header is resident, and if it is, read the attribute content.
-                        match header.residential_header {
-                            ResidentialHeader::Resident(ref resident) => match header.type_code {
-                                MftAttributeType::StandardInformation => {
-                                    match StandardInfoAttr::from_reader(&mut cursor) {
-                                        Ok(content) => Some(Ok(MftAttribute {
-                                            header,
-                                            data: MftAttributeContent::AttrX10(content),
-                                        })),
-                                        Err(e) => Some(Err(e)),
-                                    }
+                        let attribute_content = match header.residential_header {
+                            ResidentialHeader::Resident(ref resident) => {
+                                match MftAttributeContent::from_stream_resident(
+                                    &mut cursor,
+                                    &header,
+                                    resident,
+                                ) {
+                                    Ok(content) => content,
+                                    Err(e) => return Some(Err(e)),
                                 }
-                                MftAttributeType::FileName => {
-                                    match FileNameAttr::from_stream(&mut cursor) {
-                                        Ok(content) => Some(Ok(MftAttribute {
-                                            header,
-                                            data: MftAttributeContent::AttrX30(content),
-                                        })),
-                                        Err(e) => Some(Err(e.into())),
-                                    }
-                                }
-                                _ => {
-                                    let mut data = vec![0_u8; resident.data_size as usize];
+                            }
+                            ResidentialHeader::NonResident(_) => MftAttributeContent::None,
+                        };
 
-                                    match cursor.read_exact(&mut data).context(err::IoError) {
-                                        Ok(_) => {}
-                                        Err(err) => return Some(Err(err.into())),
-                                    };
-
-                                    Some(Ok(MftAttribute {
-                                        header,
-                                        data: MftAttributeContent::Raw(RawAttribute(data)),
-                                    }))
-                                }
-                            },
-                            ResidentialHeader::NonResident(_) => Some(Ok(MftAttribute {
-                                header,
-                                data: MftAttributeContent::None,
-                            })),
-                        }
+                        Some(Ok(MftAttribute {
+                            header,
+                            data: attribute_content,
+                        }))
                     }
                     None => None,
                 },

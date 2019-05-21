@@ -40,6 +40,8 @@ pub enum Error {
     FailedToReadMftReference { source: winstructs::err::Error },
     #[snafu(display("Failed to read WindowsTime: `{}`", source))]
     FailedToReadWindowsTime { source: winstructs::err::Error },
+    #[snafu(display("Failed to read GUID: `{}`", source))]
+    FailedToReadGuid { source: winstructs::err::Error },
     #[snafu(display("An unexpected error has occurred: {}", detail))]
     Any { detail: String },
 }

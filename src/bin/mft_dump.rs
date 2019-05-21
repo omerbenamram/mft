@@ -93,7 +93,8 @@ impl FlatMftEntryWithName {
 
         FlatMftEntryWithName {
             entry_id: entry.header.record_number,
-            signature: String::from_utf8(entry.header.signature.to_ascii_uppercase()).unwrap(),
+            signature: String::from_utf8(entry.header.signature.to_ascii_uppercase())
+                .expect("It should be either FILE or BAAD (valid utf-8)"),
             sequence: entry.header.sequence,
             hard_link_count: entry.header.hard_link_count,
             flags: entry.header.flags,
