@@ -35,8 +35,13 @@ impl OutputFormat {
 #[serde(rename_all = "PascalCase")]
 pub struct FlatMftEntryWithName {
     pub signature: String,
-    pub logfile_sequence_number: u64,
+
+    pub entry_id: u64,
     pub sequence: u16,
+
+    pub base_entry_id: u64,
+    pub base_entry_sequence: u16,
+
     pub hard_link_count: u16,
     pub flags: EntryFlags,
 
@@ -44,19 +49,9 @@ pub struct FlatMftEntryWithName {
     pub used_entry_size: u32,
     pub total_entry_size: u32,
 
-    pub parent_reference_entry: u64,
-    pub parent_reference_sequence: u16,
-
-    pub record_number: u64,
-    pub entry_reference_entry: u64,
-
-    /// Indicates whether the record is free or not.
-    // TODO: implement
-    pub in_use: bool,
     /// Indicates whether the record is a directory.
     pub is_a_directory: bool,
-    /// The file extension (only for non-directories entries)
-    pub entry_reference_sequence: u16,
+
     /// All of these fields are present for entries that have an 0x10 attribute.
     pub standard_info_flags: Option<FileAttributeFlags>,
     pub standard_info_last_modified: Option<DateTime<Utc>>,
@@ -96,20 +91,16 @@ impl FlatMftEntryWithName {
         }
 
         FlatMftEntryWithName {
-            record_number: entry.header.record_number,
+            entry_id: entry.header.record_number,
             signature: String::from_utf8(entry.header.signature.to_ascii_uppercase()).unwrap(),
-            logfile_sequence_number: entry.header.logfile_sequence_number,
             sequence: entry.header.sequence,
             hard_link_count: entry.header.hard_link_count,
             flags: entry.header.flags,
             used_entry_size: entry.header.used_entry_size,
             total_entry_size: entry.header.total_entry_size,
-            parent_reference_entry: entry.header.base_reference.entry,
-            parent_reference_sequence: entry.header.base_reference.sequence,
-            entry_reference_entry: entry.header.entry_reference.entry,
-            in_use: false,
+            base_entry_id: entry.header.base_reference.entry,
+            base_entry_sequence: entry.header.base_reference.sequence,
             is_a_directory: entry.is_dir(),
-            entry_reference_sequence: entry.header.entry_reference.sequence,
             standard_info_flags: standard_info.as_ref().and_then(|i| Some(i.file_flags)),
             standard_info_last_modified: standard_info.as_ref().and_then(|i| Some(i.modified)),
             standard_info_last_access: standard_info.as_ref().and_then(|i| Some(i.accessed)),

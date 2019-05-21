@@ -55,11 +55,13 @@ pub struct EntryHeader {
     /// The update sequence array must end before the last USHORT value in the first sector.
     pub usa_offset: u16,
     pub usa_size: u16,
+    /// Metadata transaction journal sequence number (Reserved1 in windows docs)
+    /// Contains a $LogFile Sequence Number (LSN) (metz)
+    pub metadata_transaction_journal: u64,
     /// The sequence number.
     /// This value is incremented each time that a file record segment is freed; it is 0 if the segment is not used.
     /// The SequenceNumber field of a file reference must match the contents of this field;
     /// if they do not match, the file reference is incorrect and probably obsolete.
-    pub logfile_sequence_number: u64,
     pub sequence: u16,
     pub hard_link_count: u16,
     /// The offset of the first attribute record, in bytes.
@@ -71,9 +73,8 @@ pub struct EntryHeader {
     /// A file reference to the base file record segment for this file.
     /// If this is the base file record, the value is 0. See MFT_SEGMENT_REFERENCE.
     pub base_reference: MftReference,
-    pub next_attribute_id: u16,
+    pub first_attribute_id: u16,
     pub record_number: u64,
-    pub entry_reference: MftReference,
 }
 bitflags! {
     pub struct EntryFlags: u16 {
@@ -87,17 +88,11 @@ bitflags! {
 impl_serialize_for_bitflags! {EntryFlags}
 
 impl EntryHeader {
-    pub fn from_reader<R: Read>(reader: &mut R) -> Result<EntryHeader> {
+    /// Reads an entry from a stream, will error if the entry is empty (zeroes)
+    /// Since the entry id is not present in the header, it should be provided by the caller.
+    pub fn from_reader<R: Read>(reader: &mut R, entry_id: u64) -> Result<EntryHeader> {
         let mut signature = [0; 4];
         reader.read_exact(&mut signature)?;
-
-        // Corrupted entry
-        ensure!(
-            &signature != b"BAAD",
-            err::InvalidEntrySignature {
-                bad_sig: signature.to_vec()
-            }
-        );
 
         // Empty entry
         ensure!(
@@ -112,34 +107,30 @@ impl EntryHeader {
         let logfile_sequence_number = reader.read_u64::<LittleEndian>()?;
         let sequence = reader.read_u16::<LittleEndian>()?;
         let hard_link_count = reader.read_u16::<LittleEndian>()?;
-        let fst_attr_offset = reader.read_u16::<LittleEndian>()?;
+        let first_attribute_offset = reader.read_u16::<LittleEndian>()?;
         let flags = EntryFlags::from_bits_truncate(reader.read_u16::<LittleEndian>()?);
         let entry_size_real = reader.read_u32::<LittleEndian>()?;
         let entry_size_allocated = reader.read_u32::<LittleEndian>()?;
+
         let base_reference =
             MftReference::from_reader(reader).context(err::FailedToReadMftReference)?;
-        let next_attribute_id = reader.read_u16::<LittleEndian>()?;
 
-        let _padding = reader.read_u16::<LittleEndian>()?;
-        let record_number = u64::from(reader.read_u32::<LittleEndian>()?);
-
-        let entry_reference = MftReference::new(record_number as u64, sequence);
+        let first_attribute_id = reader.read_u16::<LittleEndian>()?;
 
         Ok(EntryHeader {
             signature,
             usa_offset,
             usa_size,
-            logfile_sequence_number,
+            metadata_transaction_journal: logfile_sequence_number,
             sequence,
             hard_link_count,
-            first_attribute_record_offset: fst_attr_offset,
+            first_attribute_record_offset: first_attribute_offset,
             flags,
             used_entry_size: entry_size_real,
             total_entry_size: entry_size_allocated,
             base_reference,
-            next_attribute_id,
-            record_number,
-            entry_reference,
+            first_attribute_id,
+            record_number: entry_id,
         })
     }
 }
@@ -148,10 +139,10 @@ impl MftEntry {
     /// Initializes an MFT Entry from a buffer.
     /// Since the parser is the entity responsible for knowing the entry size,
     /// we take ownership of the buffer instead of trying to read it from stream.
-    pub fn from_buffer(mut buffer: Vec<u8>) -> Result<MftEntry> {
+    pub fn from_buffer(mut buffer: Vec<u8>, entry_number: u64) -> Result<MftEntry> {
         let mut cursor = Cursor::new(&buffer);
         // Get Header
-        let entry_header = EntryHeader::from_reader(&mut cursor)?;
+        let entry_header = EntryHeader::from_reader(&mut cursor, entry_number)?;
         trace!("Number of sectors: {:#?}", entry_header);
 
         Self::apply_fixups(&entry_header, &mut buffer)?;
@@ -306,12 +297,13 @@ mod tests {
             0x00, 0x00, 0xD5, 0x95, 0x00, 0x00, 0x53, 0x57, 0x81, 0x37, 0x00, 0x00, 0x00, 0x00,
         ];
 
-        let entry_header = EntryHeader::from_reader(&mut Cursor::new(header_buffer)).unwrap();
+        let entry_header =
+            EntryHeader::from_reader(&mut Cursor::new(header_buffer), 38357).unwrap();
 
         assert_eq!(&entry_header.signature, b"FILE");
         assert_eq!(entry_header.usa_offset, 48);
         assert_eq!(entry_header.usa_size, 3);
-        assert_eq!(entry_header.logfile_sequence_number, 53_762_438_092);
+        assert_eq!(entry_header.metadata_transaction_journal, 53_762_438_092);
         assert_eq!(entry_header.sequence, 5);
         assert_eq!(entry_header.hard_link_count, 1);
         assert_eq!(entry_header.first_attribute_record_offset, 56);
@@ -319,7 +311,7 @@ mod tests {
         assert_eq!(entry_header.used_entry_size, 840);
         assert_eq!(entry_header.total_entry_size, 1024);
         assert_eq!(entry_header.base_reference.entry, 0);
-        assert_eq!(entry_header.next_attribute_id, 6);
+        assert_eq!(entry_header.first_attribute_id, 6);
         assert_eq!(entry_header.record_number, 38357);
     }
 }

@@ -49,7 +49,7 @@ impl MftParser<Cursor<Vec<u8>>> {
 impl<T: ReadSeek> MftParser<T> {
     pub fn from_read_seek(mut data: T, size: u64) -> Result<Self> {
         // We use the first entry to guess the entry size for all the other records.
-        let first_entry = EntryHeader::from_reader(&mut data)?;
+        let first_entry = EntryHeader::from_reader(&mut data, 0)?;
         data.seek(SeekFrom::Start(0))?;
 
         Ok(Self {
@@ -74,7 +74,7 @@ impl<T: ReadSeek> MftParser<T> {
 
         self.data.read_exact(&mut entry_buffer)?;
 
-        Ok(MftEntry::from_buffer(entry_buffer)?)
+        Ok(MftEntry::from_buffer(entry_buffer, entry_number)?)
     }
 
     /// Iterates over all the entries in the MFT.
@@ -86,8 +86,9 @@ impl<T: ReadSeek> MftParser<T> {
             if count == total_entries {
                 None
             } else {
+                let entry = Some(self.get_entry(count));
                 count += 1;
-                Some(self.get_entry(count))
+                entry
             }
         })
     }
@@ -95,7 +96,7 @@ impl<T: ReadSeek> MftParser<T> {
     /// Gets the full path for an entry.
     /// Caches computations.
     pub fn get_full_path_for_entry(&mut self, entry: &MftEntry) -> Result<Option<PathBuf>> {
-        let entry_id = entry.header.entry_reference.entry;
+        let entry_id = entry.header.record_number;
 
         for attribute in entry.iter_attributes().filter_map(|a| a.ok()) {
             if let AttrX30(filename_header) = attribute.data {
@@ -146,7 +147,7 @@ impl<T: ReadSeek> MftParser<T> {
                     let orphan = PathBuf::from("[Orphaned]").join(filename_header.name);
 
                     self.entries_cache
-                        .cache_set(entry.header.entry_reference.entry, orphan.clone());
+                        .cache_set(entry.header.record_number, orphan.clone());
                     return Ok(Some(orphan));
                 }
             }
