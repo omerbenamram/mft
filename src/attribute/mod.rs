@@ -77,7 +77,7 @@ pub enum MftAttributeContent {
 }
 
 /// MFT Possible attribute types, from https://docs.microsoft.com/en-us/windows/desktop/devnotes/attribute-list-entry
-#[derive(Serialize, Debug, Clone, FromPrimitive, PartialOrd, PartialEq)]
+#[derive(Serialize, Debug, Clone, FromPrimitive, ToPrimitive, PartialOrd, PartialEq)]
 #[repr(u32)]
 pub enum MftAttributeType {
     /// File attributes (such as read-only and archive), time stamps (such as file creation and last modified), and the hard link count.
