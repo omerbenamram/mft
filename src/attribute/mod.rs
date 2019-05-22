@@ -6,7 +6,7 @@ pub mod x40;
 pub mod x80;
 pub mod x90;
 
-use crate::err::{self, Result};
+use crate::err::Result;
 use crate::{impl_serialize_for_bitflags, ReadSeek};
 
 use bitflags::bitflags;

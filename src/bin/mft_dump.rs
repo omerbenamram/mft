@@ -1,18 +1,11 @@
 use clap::{App, Arg, ArgMatches};
 use env_logger;
 use log::info;
-use mft::err::Result;
 
-use mft::attribute::MftAttributeContent;
-use mft::attribute::{FileAttributeFlags, MftAttributeType};
-use mft::entry::EntryFlags;
 use mft::mft::MftParser;
-use mft::{MftAttribute, MftEntry, ReadSeek};
+use mft::{MftEntry, ReadSeek};
 use serde::Serialize;
 
-use chrono::{DateTime, Utc};
-use mft::attribute::x30::FileNamespace;
-use mft::attribute::MftAttributeType::FileName;
 use mft::csv::FlatMftEntryWithName;
 use std::cmp::max;
 use std::io;
