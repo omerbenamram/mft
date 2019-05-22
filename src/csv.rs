@@ -1,3 +1,13 @@
+use crate::attribute::x30::FileNamespace;
+use crate::attribute::{FileAttributeFlags, MftAttributeContent, MftAttributeType};
+use crate::entry::EntryFlags;
+use crate::{MftAttribute, MftEntry, MftParser, ReadSeek};
+
+use serde::Serialize;
+
+use chrono::{DateTime, Utc};
+use std::path::PathBuf;
+
 /// Used for CSV output
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]

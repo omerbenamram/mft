@@ -32,7 +32,7 @@ impl MftParser<BufReader<File>> {
         let mft_fh = File::open(f).context(err::FailedToOpenFile { path: f.to_owned() })?;
         let size = fs::metadata(f)?.len();
 
-        Self::from_read_seek(BufReader::with_capacity(4096, mft_fh), size)
+        Self::from_read_seek(BufReader::with_capacity(4096, mft_fh), Some(size))
     }
 }
 
@@ -43,14 +43,20 @@ impl MftParser<Cursor<Vec<u8>>> {
         let size = buffer.len() as u64;
         let cursor = Cursor::new(buffer);
 
-        Self::from_read_seek(cursor, size)
+        Self::from_read_seek(cursor, Some(size))
     }
 }
 
 impl<T: ReadSeek> MftParser<T> {
-    pub fn from_read_seek(mut data: T, size: u64) -> Result<Self> {
+    pub fn from_read_seek(mut data: T, size: Option<u64>) -> Result<Self> {
         // We use the first entry to guess the entry size for all the other records.
         let first_entry = EntryHeader::from_reader(&mut data, 0)?;
+
+        let size = match size {
+            Some(sz) => sz,
+            None => data.seek(SeekFrom::End(0))?,
+        };
+
         data.seek(SeekFrom::Start(0))?;
 
         Ok(Self {
