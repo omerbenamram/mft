@@ -11,6 +11,7 @@ pub use entry::{EntryHeader, MftEntry};
 use std::io::{self, Read, Seek, SeekFrom};
 
 pub mod attribute;
+pub mod csv;
 pub mod entry;
 pub mod err;
 pub mod mft;
