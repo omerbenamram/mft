@@ -23,7 +23,7 @@ env_logger = "0.6.1"
 snafu = {version="0.3.1", features = ["backtraces", "rust_1_30"]}
 num-traits = "0.2"
 num-derive = "0.2"
-winstructs = {git = "https://github.com/omerbenamram/winstructs.git", branch = "master"}
+winstructs = "0.1.1"
 cached = "0.8.0"
 itertools = "0.8.0"
 
