@@ -1,6 +1,7 @@
+use crate::attribute::FileAttributeFlags;
 use crate::err::{self, Result};
-
 use crate::ReadSeek;
+
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::{DateTime, Utc};
 use log::trace;
@@ -14,7 +15,8 @@ pub struct StandardInfoAttr {
     pub modified: DateTime<Utc>,
     pub mft_modified: DateTime<Utc>,
     pub accessed: DateTime<Utc>,
-    pub file_flags: u32,
+    /// DOS File Permissions
+    pub file_flags: FileAttributeFlags,
     pub max_version: u32,
     pub version: u32,
     pub class_id: u32,
@@ -33,8 +35,8 @@ impl StandardInfoAttr {
     ///
     /// ```
     /// use mft::attribute::x10::StandardInfoAttr;
+    /// use mft::attribute::FileAttributeFlags;
     /// # use std::io::Cursor;
-    /// # fn test_standard_information() {
     /// let attribute_buffer: &[u8] = &[
     /// 	0x2F,0x6D,0xB6,0x6F,0x0C,0x97,0xCE,0x01,0x56,0xCD,0x1A,0x75,0x73,0xB5,0xCE,0x01,
     /// 	0x56,0xCD,0x1A,0x75,0x73,0xB5,0xCE,0x01,0x56,0xCD,0x1A,0x75,0x73,0xB5,0xCE,0x01,
@@ -45,18 +47,17 @@ impl StandardInfoAttr {
     ///
     /// let attribute = StandardInfoAttr::from_reader(&mut Cursor::new(attribute_buffer)).unwrap();
     ///
-    /// assert_eq!(attribute.created.timestamp(), 130207518909951279);
-    /// assert_eq!(attribute.modified.timestamp(), 130240946730880342);
-    /// assert_eq!(attribute.mft_modified.timestamp(), 130240946730880342);
-    /// assert_eq!(attribute.accessed.timestamp(), 130240946730880342);
-    /// assert_eq!(attribute.file_flags, 32);
+    /// assert_eq!(attribute.created.timestamp(), 1376278290);
+    /// assert_eq!(attribute.modified.timestamp(), 1379621073);
+    /// assert_eq!(attribute.mft_modified.timestamp(), 1379621073);
+    /// assert_eq!(attribute.accessed.timestamp(), 1379621073);
+    /// assert_eq!(attribute.file_flags.bits(), 32);
     /// assert_eq!(attribute.max_version, 0);
     /// assert_eq!(attribute.version, 0);
     /// assert_eq!(attribute.class_id, 0);
     /// assert_eq!(attribute.security_id, 1456);
     /// assert_eq!(attribute.quota, 0);
     /// assert_eq!(attribute.usn, 8768215144);
-    /// # }
     /// ```
     pub fn from_reader<S: ReadSeek>(reader: &mut S) -> Result<StandardInfoAttr> {
         trace!("Offset {}: StandardInfoAttr", reader.tell()?);
@@ -78,7 +79,7 @@ impl StandardInfoAttr {
             modified,
             mft_modified,
             accessed,
-            file_flags: reader.read_u32::<LittleEndian>()?,
+            file_flags: FileAttributeFlags::from_bits_truncate(reader.read_u32::<LittleEndian>()?),
             max_version: reader.read_u32::<LittleEndian>()?,
             version: reader.read_u32::<LittleEndian>()?,
             class_id: reader.read_u32::<LittleEndian>()?,

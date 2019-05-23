@@ -23,6 +23,8 @@ pub enum Error {
     InvalidEntrySignature { bad_sig: Vec<u8> },
     #[snafu(display("Unknown `AttributeType`: {:04X}", attribute_type))]
     UnknownAttributeType { attribute_type: u32 },
+    #[snafu(display("Unknown filename namespace {}", namespace))]
+    UnknownNamespace { namespace: u8 },
     #[snafu(display("Unhandled resident flag: {} (offset: {})", flag, offset))]
     UnhandledResidentFlag { flag: u8, offset: u64 },
     #[snafu(display(
@@ -40,6 +42,8 @@ pub enum Error {
     FailedToReadMftReference { source: winstructs::err::Error },
     #[snafu(display("Failed to read WindowsTime: `{}`", source))]
     FailedToReadWindowsTime { source: winstructs::err::Error },
+    #[snafu(display("Failed to read GUID: `{}`", source))]
+    FailedToReadGuid { source: winstructs::err::Error },
     #[snafu(display("An unexpected error has occurred: {}", detail))]
     Any { detail: String },
 }

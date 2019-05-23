@@ -12,12 +12,9 @@ use bitflags::bitflags;
 use serde::ser::{self, SerializeStruct, Serializer};
 use serde::Serialize;
 
-use crate::attribute::header::{AttributeHeader, ResidentialHeader};
-use crate::attribute::x10::StandardInfoAttr;
-use crate::attribute::{Attribute, AttributeType, MftAttributeContent};
+use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
+use crate::attribute::{MftAttribute, MftAttributeContent, MftAttributeType};
 
-use crate::attribute::raw::RawAttribute;
-use crate::attribute::x30::FileNameAttr;
 use std::io::Read;
 use std::io::SeekFrom;
 use std::io::{Cursor, Seek};
@@ -36,7 +33,7 @@ impl ser::Serialize for MftEntry {
         S: Serializer,
     {
         let mut state = serializer.serialize_struct("Color", 2)?;
-        let attributes: Vec<Attribute> = self.iter_attributes().filter_map(Result::ok).collect();
+        let attributes: Vec<MftAttribute> = self.iter_attributes().filter_map(Result::ok).collect();
         state.serialize_field("header", &self.header)?;
         state.serialize_field("attributes", &attributes)?;
         state.end()
@@ -55,11 +52,13 @@ pub struct EntryHeader {
     /// The update sequence array must end before the last USHORT value in the first sector.
     pub usa_offset: u16,
     pub usa_size: u16,
+    /// Metadata transaction journal sequence number (Reserved1 in windows docs)
+    /// Contains a $LogFile Sequence Number (LSN) (metz)
+    pub metadata_transaction_journal: u64,
     /// The sequence number.
     /// This value is incremented each time that a file record segment is freed; it is 0 if the segment is not used.
     /// The SequenceNumber field of a file reference must match the contents of this field;
     /// if they do not match, the file reference is incorrect and probably obsolete.
-    pub logfile_sequence_number: u64,
     pub sequence: u16,
     pub hard_link_count: u16,
     /// The offset of the first attribute record, in bytes.
@@ -71,9 +70,8 @@ pub struct EntryHeader {
     /// A file reference to the base file record segment for this file.
     /// If this is the base file record, the value is 0. See MFT_SEGMENT_REFERENCE.
     pub base_reference: MftReference,
-    pub next_attribute_id: u16,
+    pub first_attribute_id: u16,
     pub record_number: u64,
-    pub entry_reference: MftReference,
 }
 bitflags! {
     pub struct EntryFlags: u16 {
@@ -87,17 +85,11 @@ bitflags! {
 impl_serialize_for_bitflags! {EntryFlags}
 
 impl EntryHeader {
-    pub fn from_reader<R: Read>(reader: &mut R) -> Result<EntryHeader> {
+    /// Reads an entry from a stream, will error if the entry is empty (zeroes)
+    /// Since the entry id is not present in the header, it should be provided by the caller.
+    pub fn from_reader<R: Read>(reader: &mut R, entry_id: u64) -> Result<EntryHeader> {
         let mut signature = [0; 4];
         reader.read_exact(&mut signature)?;
-
-        // Corrupted entry
-        ensure!(
-            &signature != b"BAAD",
-            err::InvalidEntrySignature {
-                bad_sig: signature.to_vec()
-            }
-        );
 
         // Empty entry
         ensure!(
@@ -112,34 +104,30 @@ impl EntryHeader {
         let logfile_sequence_number = reader.read_u64::<LittleEndian>()?;
         let sequence = reader.read_u16::<LittleEndian>()?;
         let hard_link_count = reader.read_u16::<LittleEndian>()?;
-        let fst_attr_offset = reader.read_u16::<LittleEndian>()?;
+        let first_attribute_offset = reader.read_u16::<LittleEndian>()?;
         let flags = EntryFlags::from_bits_truncate(reader.read_u16::<LittleEndian>()?);
         let entry_size_real = reader.read_u32::<LittleEndian>()?;
         let entry_size_allocated = reader.read_u32::<LittleEndian>()?;
+
         let base_reference =
             MftReference::from_reader(reader).context(err::FailedToReadMftReference)?;
-        let next_attribute_id = reader.read_u16::<LittleEndian>()?;
 
-        let _padding = reader.read_u16::<LittleEndian>()?;
-        let record_number = u64::from(reader.read_u32::<LittleEndian>()?);
-
-        let entry_reference = MftReference::new(record_number as u64, sequence);
+        let first_attribute_id = reader.read_u16::<LittleEndian>()?;
 
         Ok(EntryHeader {
             signature,
             usa_offset,
             usa_size,
-            logfile_sequence_number,
+            metadata_transaction_journal: logfile_sequence_number,
             sequence,
             hard_link_count,
-            first_attribute_record_offset: fst_attr_offset,
+            first_attribute_record_offset: first_attribute_offset,
             flags,
             used_entry_size: entry_size_real,
             total_entry_size: entry_size_allocated,
             base_reference,
-            next_attribute_id,
-            record_number,
-            entry_reference,
+            first_attribute_id,
+            record_number: entry_id,
         })
     }
 }
@@ -148,10 +136,10 @@ impl MftEntry {
     /// Initializes an MFT Entry from a buffer.
     /// Since the parser is the entity responsible for knowing the entry size,
     /// we take ownership of the buffer instead of trying to read it from stream.
-    pub fn from_buffer(mut buffer: Vec<u8>) -> Result<MftEntry> {
+    pub fn from_buffer(mut buffer: Vec<u8>, entry_number: u64) -> Result<MftEntry> {
         let mut cursor = Cursor::new(&buffer);
         // Get Header
-        let entry_header = EntryHeader::from_reader(&mut cursor)?;
+        let entry_header = EntryHeader::from_reader(&mut cursor, entry_number)?;
         trace!("Number of sectors: {:#?}", entry_header);
 
         Self::apply_fixups(&entry_header, &mut buffer)?;
@@ -215,81 +203,81 @@ impl MftEntry {
         self.header.flags.bits() & 0x02 != 0
     }
 
-    /// Returns an iterator over the attributes of the entry.
-    pub fn iter_attributes(&self) -> impl Iterator<Item = Result<Attribute>> + '_ {
+    /// Returns an iterator over all the attributes of the entry.
+    pub fn iter_attributes(&self) -> impl Iterator<Item = Result<MftAttribute>> + '_ {
+        self.iter_attributes_matching(None)
+    }
+
+    /// Returns an iterator over the attributes in the list given in `types`, skips other attributes.
+    pub fn iter_attributes_matching(
+        &self,
+        types: Option<Vec<MftAttributeType>>,
+    ) -> impl Iterator<Item = Result<MftAttribute>> + '_ {
         let mut cursor = Cursor::new(&self.data);
         let mut offset = u64::from(self.header.first_attribute_record_offset);
         let mut exhausted = false;
 
         std::iter::from_fn(move || {
-            if exhausted {
-                return None;
-            }
-
-            match cursor
-                .seek(SeekFrom::Start(offset))
-                .context(err::IoError)
-            {
-                Ok(_) => {}
-                Err(e) => {
-                    exhausted = true;
-                    return Some(Err(e.into()));
+            // We use a loop here to allow skipping filtered attributes.
+            loop {
+                if exhausted {
+                    return None;
                 }
-            };
 
-            match AttributeHeader::from_stream(&mut cursor) {
-                Ok(maybe_header) => match maybe_header {
-                    Some(header) => {
-                        // Increment offset before moving header.
-                        offset += u64::from(header.record_length);
+                match cursor.seek(SeekFrom::Start(offset)).context(err::IoError) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        exhausted = true;
+                        return Some(Err(e.into()));
+                    }
+                };
 
-                        // Check if the header is resident, and if it is, read the attribute content.
-                        match header.residential_header {
-                            ResidentialHeader::Resident(ref resident) => match header.type_code {
-                                AttributeType::StandardInformation => {
-                                    match StandardInfoAttr::from_reader(&mut cursor) {
-                                        Ok(content) => Some(Ok(Attribute {
-                                            header,
-                                            data: MftAttributeContent::AttrX10(content),
-                                        })),
-                                        Err(e) => Some(Err(e)),
-                                    }
-                                }
-                                AttributeType::FileName => {
-                                    match FileNameAttr::from_stream(&mut cursor) {
-                                        Ok(content) => Some(Ok(Attribute {
-                                            header,
-                                            data: MftAttributeContent::AttrX30(content),
-                                        })),
-                                        Err(e) => Some(Err(e.into())),
-                                    }
-                                }
-                                _ => {
-                                    let mut data = vec![0_u8; resident.data_size as usize];
+                let header = MftAttributeHeader::from_stream(&mut cursor);
 
-                                    match cursor.read_exact(&mut data).context(err::IoError) {
-                                        Ok(_) => {}
-                                        Err(err) => return Some(Err(err.into())),
-                                    };
+                // Unexpected I/O error, return err and stop iterating
+                let header = match header {
+                    Ok(h) => h,
+                    Err(e) => {
+                        exhausted = true;
+                        return Some(Err(e));
+                    }
+                };
 
-                                    Some(Ok(Attribute {
-                                        header,
-                                        data: MftAttributeContent::Raw(RawAttribute(data)),
-                                    }))
-                                }
-                            },
-                            ResidentialHeader::NonResident(_) => Some(Ok(Attribute {
-                                header,
-                                data: MftAttributeContent::None,
-                            })),
+                let header = match header {
+                    Some(attribute_header) => attribute_header,
+                    // Header is 0xFFFF_FFFF, we are finished
+                    None => return None,
+                };
+
+                // Increment offset before moving header.
+                offset += u64::from(header.record_length);
+
+                // Skip attribute if filtered
+                if let Some(filter) = &types {
+                    if !filter.contains(&header.type_code) {
+                        continue;
+                    }
+                }
+
+                // Check if the header is resident, and if it is, read the attribute content.
+                let attribute_content = match header.residential_header {
+                    ResidentialHeader::Resident(ref resident) => {
+                        match MftAttributeContent::from_stream_resident(
+                            &mut cursor,
+                            &header,
+                            resident,
+                        ) {
+                            Ok(content) => content,
+                            Err(e) => return Some(Err(e)),
                         }
                     }
-                    None => None,
-                },
-                Err(e) => {
-                    exhausted = true;
-                    Some(Err(e))
-                }
+                    ResidentialHeader::NonResident(_) => MftAttributeContent::None,
+                };
+
+                return Some(Ok(MftAttribute {
+                    header,
+                    data: attribute_content,
+                }));
             }
         })
     }
@@ -309,12 +297,13 @@ mod tests {
             0x00, 0x00, 0xD5, 0x95, 0x00, 0x00, 0x53, 0x57, 0x81, 0x37, 0x00, 0x00, 0x00, 0x00,
         ];
 
-        let entry_header = EntryHeader::from_reader(&mut Cursor::new(header_buffer)).unwrap();
+        let entry_header =
+            EntryHeader::from_reader(&mut Cursor::new(header_buffer), 38357).unwrap();
 
         assert_eq!(&entry_header.signature, b"FILE");
         assert_eq!(entry_header.usa_offset, 48);
         assert_eq!(entry_header.usa_size, 3);
-        assert_eq!(entry_header.logfile_sequence_number, 53_762_438_092);
+        assert_eq!(entry_header.metadata_transaction_journal, 53_762_438_092);
         assert_eq!(entry_header.sequence, 5);
         assert_eq!(entry_header.hard_link_count, 1);
         assert_eq!(entry_header.first_attribute_record_offset, 56);
@@ -322,7 +311,7 @@ mod tests {
         assert_eq!(entry_header.used_entry_size, 840);
         assert_eq!(entry_header.total_entry_size, 1024);
         assert_eq!(entry_header.base_reference.entry, 0);
-        assert_eq!(entry_header.next_attribute_id, 6);
+        assert_eq!(entry_header.first_attribute_id, 6);
         assert_eq!(entry_header.record_number, 38357);
     }
 }

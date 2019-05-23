@@ -3,14 +3,15 @@ extern crate num_derive;
 
 pub use attribute::x10::StandardInfoAttr;
 pub use attribute::x30::FileNameAttr;
-pub use attribute::Attribute;
+pub use attribute::MftAttribute;
 
+pub use crate::mft::MftParser;
 pub use entry::{EntryHeader, MftEntry};
-pub use mft::MftParser;
 
 use std::io::{self, Read, Seek, SeekFrom};
 
 pub mod attribute;
+pub mod csv;
 pub mod entry;
 pub mod err;
 pub mod mft;

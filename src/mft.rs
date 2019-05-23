@@ -7,6 +7,7 @@ use snafu::ResultExt;
 
 use crate::attribute::MftAttributeContent::AttrX30;
 
+use crate::attribute::x30::FileNamespace;
 use cached::stores::SizedCache;
 use cached::Cached;
 use std::fs::{self, File};
@@ -31,7 +32,7 @@ impl MftParser<BufReader<File>> {
         let mft_fh = File::open(f).context(err::FailedToOpenFile { path: f.to_owned() })?;
         let size = fs::metadata(f)?.len();
 
-        Self::from_read_seek(BufReader::with_capacity(4096, mft_fh), size)
+        Self::from_read_seek(BufReader::with_capacity(4096, mft_fh), Some(size))
     }
 }
 
@@ -42,14 +43,20 @@ impl MftParser<Cursor<Vec<u8>>> {
         let size = buffer.len() as u64;
         let cursor = Cursor::new(buffer);
 
-        Self::from_read_seek(cursor, size)
+        Self::from_read_seek(cursor, Some(size))
     }
 }
 
 impl<T: ReadSeek> MftParser<T> {
-    pub fn from_read_seek(mut data: T, size: u64) -> Result<Self> {
+    pub fn from_read_seek(mut data: T, size: Option<u64>) -> Result<Self> {
         // We use the first entry to guess the entry size for all the other records.
-        let first_entry = EntryHeader::from_reader(&mut data)?;
+        let first_entry = EntryHeader::from_reader(&mut data, 0)?;
+
+        let size = match size {
+            Some(sz) => sz,
+            None => data.seek(SeekFrom::End(0))?,
+        };
+
         data.seek(SeekFrom::Start(0))?;
 
         Ok(Self {
@@ -74,31 +81,29 @@ impl<T: ReadSeek> MftParser<T> {
 
         self.data.read_exact(&mut entry_buffer)?;
 
-        Ok(MftEntry::from_buffer(entry_buffer)?)
+        Ok(MftEntry::from_buffer(entry_buffer, entry_number)?)
     }
 
     /// Iterates over all the entries in the MFT.
     pub fn iter_entries(&mut self) -> impl Iterator<Item = Result<MftEntry>> + '_ {
         let total_entries = self.get_entry_count();
-        let mut count = 0;
 
-        std::iter::from_fn(move || {
-            if count == total_entries {
-                None
-            } else {
-                count += 1;
-                Some(self.get_entry(count))
-            }
-        })
+        (0..total_entries).map(move |i| self.get_entry(i))
     }
 
     /// Gets the full path for an entry.
     /// Caches computations.
     pub fn get_full_path_for_entry(&mut self, entry: &MftEntry) -> Result<Option<PathBuf>> {
-        let entry_id = entry.header.entry_reference.entry;
+        let entry_id = entry.header.record_number;
 
         for attribute in entry.iter_attributes().filter_map(|a| a.ok()) {
             if let AttrX30(filename_header) = attribute.data {
+                if ![FileNamespace::Win32, FileNamespace::Win32AndDos]
+                    .contains(&filename_header.namespace)
+                {
+                    continue;
+                }
+
                 let parent_entry_id = filename_header.parent.entry;
 
                 // MFT entry 5 is the root path.
@@ -125,13 +130,9 @@ impl<T: ReadSeek> MftParser<T> {
                         let path = match self.get_entry(parent_entry_id).ok() {
                             Some(parent) => match self.get_full_path_for_entry(&parent) {
                                 Ok(Some(path)) => path,
-                                _ => {
-                                    return err::Any {
-                                        detail: "Unexpected missing parent.\
-                                         This is a bug, please report it at report at https://github.com/omerbenamram/mft/issues",
-                                    }
-                                    .fail()
-                                }
+                                // I have a parent, which doesn't have a filename attribute.
+                                // Default to root.
+                                _ => PathBuf::new(),
                             },
                             // Parent is maybe corrupted or incomplete, use a sentinel instead.
                             None => PathBuf::from("[Unknown]"),
@@ -146,7 +147,7 @@ impl<T: ReadSeek> MftParser<T> {
                     let orphan = PathBuf::from("[Orphaned]").join(filename_header.name);
 
                     self.entries_cache
-                        .cache_set(entry.header.entry_reference.entry, orphan.clone());
+                        .cache_set(entry.header.record_number, orphan.clone());
                     return Ok(Some(orphan));
                 }
             }
