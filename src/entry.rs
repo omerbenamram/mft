@@ -231,20 +231,24 @@ impl MftEntry {
                         return Some(Err(e.into()));
                     }
                 };
+
                 let header = MftAttributeHeader::from_stream(&mut cursor);
 
                 // Unexpected I/O error, return err and stop iterating
-                if let Err(e) = header {
-                    exhausted = true;
-                    return Some(Err(e));
-                }
+                let header = match header {
+                    Ok(h) => h,
+                    Err(e) => {
+                        exhausted = true;
+                        return Some(Err(e));
+                    }
+                };
 
-                let header = header.unwrap();
+                let header = match header {
+                    Some(attribute_header) => attribute_header,
+                    // Header is 0xFFFF_FFFF, we are finished
+                    None => return None,
+                };
 
-                // Header is 0xFFFF_FFFF, we are finished
-                header.as_ref()?;
-
-                let header = header.unwrap();
                 // Increment offset before moving header.
                 offset += u64::from(header.record_length);
 
