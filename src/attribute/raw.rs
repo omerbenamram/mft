@@ -29,7 +29,7 @@ impl RawAttribute {
     }
 }
 
-fn data_as_hex<S>(x: &Vec<u8>, s: S) -> std::result::Result<S::Ok, S::Error>
+fn data_as_hex<S>(x: &[u8], s: S) -> std::result::Result<S::Ok, S::Error>
 where
     S: ser::Serializer,
 {
