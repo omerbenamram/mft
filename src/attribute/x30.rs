@@ -49,7 +49,7 @@ impl FileNameAttr {
     /// Parse a raw buffer.
     ///
     /// ```
-    /// use mft::attribute::x30::FileNameAttr;
+    /// use mft::attribute::x30::{FileNameAttr, FileNamespace};
     /// # use std::io::Cursor;
     /// let attribute_buffer: &[u8] = &[
     /// 	0x05,0x00,0x00,0x00,0x00,0x00,0x05,0x00,0xD5,0x2D,0x48,0x58,0x43,0x5F,0xCE,0x01,
@@ -72,7 +72,7 @@ impl FileNameAttr {
     /// assert_eq!(attribute.flags.bits(), 6);
     /// assert_eq!(attribute.reparse_value, 0);
     /// assert_eq!(attribute.name_length, 8);
-    /// assert_eq!(attribute.namespace, 3);
+    /// assert_eq!(attribute.namespace, FileNamespace::Win32AndDos);
     /// assert_eq!(attribute.name, "$LogFile");
     /// ```
     pub fn from_stream<S: ReadSeek>(stream: &mut S) -> Result<FileNameAttr> {
