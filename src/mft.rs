@@ -87,17 +87,8 @@ impl<T: ReadSeek> MftParser<T> {
     /// Iterates over all the entries in the MFT.
     pub fn iter_entries(&mut self) -> impl Iterator<Item = Result<MftEntry>> + '_ {
         let total_entries = self.get_entry_count();
-        let mut count = 0;
 
-        std::iter::from_fn(move || {
-            if count == total_entries {
-                None
-            } else {
-                let entry = Some(self.get_entry(count));
-                count += 1;
-                entry
-            }
-        })
+        (0..total_entries).map(move |i| self.get_entry(i))
     }
 
     /// Gets the full path for an entry.
