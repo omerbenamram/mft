@@ -4,10 +4,8 @@ use log::info;
 
 use mft::mft::MftParser;
 use mft::{MftEntry, ReadSeek};
-use serde::Serialize;
 
 use mft::csv::FlatMftEntryWithName;
-use std::cmp::max;
 use std::io;
 use std::io::Write;
 use std::path::PathBuf;
@@ -85,43 +83,27 @@ impl MftDump {
         };
 
         let number_of_entries = mft_handler.get_entry_count();
+        for i in 0..number_of_entries {
+            let entry = mft_handler.get_entry(i);
 
-        let chunk_size = 1000;
-        let mut chunk_count = 0;
-        let mut entry_count = 0;
-
-        while entry_count <= number_of_entries {
-            let mut chunk = vec![];
-
-            let start = chunk_count * chunk_size;
-            let end = max(start + chunk_size, number_of_entries);
-
-            for i in start..end {
-                let entry = mft_handler.get_entry(i);
-
-                match entry {
-                    Ok(entry) => chunk.push(entry),
-                    Err(error) => {
-                        eprintln!("Failed to parse MFT entry {}, failed with: [{}]", i, error);
-                    }
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    eprintln!("Failed to parse MFT entry {}, failed with: [{}]", i, error);
+                    continue;
                 }
-                entry_count += 1;
-            }
+            };
 
-            for entry in chunk.iter() {
-                match self.output_format {
-                    OutputFormat::JSON => self.print_json_entry(entry),
-                    OutputFormat::CSV => self.print_csv_entry(
-                        entry,
-                        &mut mft_handler,
-                        csv_writer
-                            .as_mut()
-                            .expect("CSV Writer is for OutputFormat::CSV"),
-                    ),
-                }
+            match self.output_format {
+                OutputFormat::JSON => self.print_json_entry(&entry),
+                OutputFormat::CSV => self.print_csv_entry(
+                    &entry,
+                    &mut mft_handler,
+                    csv_writer
+                        .as_mut()
+                        .expect("CSV Writer is for OutputFormat::CSV"),
+                ),
             }
-
-            chunk_count += 1;
         }
     }
 }
