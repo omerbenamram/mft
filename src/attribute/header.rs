@@ -6,7 +6,7 @@ use crate::ReadSeek;
 use byteorder::{LittleEndian, ReadBytesExt};
 use num_traits::FromPrimitive;
 use serde::Serialize;
-use std::io::Read;
+use std::io::{Read, SeekFrom};
 
 /// Represents the union defined in
 /// https://docs.microsoft.com/en-us/windows/desktop/devnotes/attribute-record-header
@@ -43,6 +43,8 @@ impl MftAttributeHeader {
     /// Tries to read an AttributeHeader from the stream.
     /// Will return `None` if the type code is $END.
     pub fn from_stream<S: ReadSeek>(stream: &mut S) -> Result<Option<MftAttributeHeader>> {
+        let attribute_header_start_offset = stream.tell()?;
+
         let type_code_value = stream.read_u32::<LittleEndian>()?;
 
         if type_code_value == 0xFFFF_FFFF {
@@ -76,8 +78,8 @@ impl MftAttributeHeader {
         let id = stream.read_u16::<LittleEndian>()?;
 
         let residential_header = match resident_flag {
-            0 => ResidentialHeader::Resident(ResidentHeader::new(stream)?),
-            1 => ResidentialHeader::NonResident(NonResidentHeader::new(stream)?),
+            0 => ResidentialHeader::Resident(ResidentHeader::from_stream(stream)?),
+            1 => ResidentialHeader::NonResident(NonResidentHeader::from_stream(stream)?),
             _ => {
                 return err::UnhandledResidentFlag {
                     flag: resident_flag,
@@ -89,6 +91,10 @@ impl MftAttributeHeader {
 
         // Name is optional, and will not be present if size == 0.
         let name = if name_size > 0 {
+            stream.seek(SeekFrom::Start(
+                attribute_header_start_offset
+                    + u64::from(name_offset.expect("name_size > 0 is invariant")),
+            ))?;
             read_utf16_string(stream, Some(name_size as usize))?
         } else {
             String::new()
@@ -122,7 +128,7 @@ pub struct ResidentHeader {
 }
 
 impl ResidentHeader {
-    pub fn new<R: Read>(reader: &mut R) -> Result<ResidentHeader> {
+    pub fn from_stream<R: Read>(reader: &mut R) -> Result<ResidentHeader> {
         Ok(ResidentHeader {
             data_size: reader.read_u32::<LittleEndian>()?,
             data_offset: reader.read_u16::<LittleEndian>()?,
@@ -158,7 +164,7 @@ pub struct NonResidentHeader {
 }
 
 impl NonResidentHeader {
-    pub fn new<R: Read>(reader: &mut R) -> Result<NonResidentHeader> {
+    pub fn from_stream<R: Read>(reader: &mut R) -> Result<NonResidentHeader> {
         let vnc_first = reader.read_u64::<LittleEndian>()?;
         let vnc_last = reader.read_u64::<LittleEndian>()?;
         let datarun_offset = reader.read_u16::<LittleEndian>()?;

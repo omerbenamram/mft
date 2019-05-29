@@ -1,6 +1,7 @@
 pub mod header;
 pub mod raw;
 pub mod x10;
+pub mod x20;
 pub mod x30;
 pub mod x40;
 pub mod x80;
@@ -13,6 +14,7 @@ use bitflags::bitflags;
 
 use crate::attribute::raw::RawAttribute;
 use crate::attribute::x10::StandardInfoAttr;
+use crate::attribute::x20::AttributeListAttr;
 use crate::attribute::x30::FileNameAttr;
 
 use crate::attribute::header::{MftAttributeHeader, ResidentHeader};
@@ -36,6 +38,9 @@ impl MftAttributeContent {
         match header.type_code {
             MftAttributeType::StandardInformation => Ok(MftAttributeContent::AttrX10(
                 StandardInfoAttr::from_reader(stream)?,
+            )),
+            MftAttributeType::AttributeList => Ok(MftAttributeContent::AttrX20(
+                AttributeListAttr::from_stream(stream)?,
             )),
             MftAttributeType::FileName => Ok(MftAttributeContent::AttrX30(
                 FileNameAttr::from_stream(stream)?,
@@ -61,6 +66,13 @@ impl MftAttributeContent {
             )?)),
         }
     }
+
+    pub fn into_file_name(self) -> Option<FileNameAttr> {
+        match self {
+            MftAttributeContent::AttrX30(content) => Some(content),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -69,6 +81,7 @@ pub enum MftAttributeContent {
     Raw(RawAttribute),
     AttrX80(DataAttr),
     AttrX10(StandardInfoAttr),
+    AttrX20(AttributeListAttr),
     AttrX30(FileNameAttr),
     AttrX40(ObjectIdAttr),
     AttrX90(IndexRootAttr),
@@ -88,6 +101,8 @@ pub enum MftAttributeType {
     FileName = 0x30_u32,
     /// An 16-byte object identifier assigned by the link-tracking service.
     ObjectId = 0x40_u32,
+    /// File's access control list and security properties
+    SecurityDescriptor = 0x50_u32,
     /// The volume label.
     /// Present in the $Volume file.
     VolumeName = 0x60_u32,

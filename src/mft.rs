@@ -91,19 +91,42 @@ impl<T: ReadSeek> MftParser<T> {
         (0..total_entries).map(move |i| self.get_entry(i))
     }
 
+    fn inner_get_entry(&mut self, parent_entry_id: u64, entry_name: Option<&str>) -> PathBuf {
+        let cached_entry = self.entries_cache.cache_get(&parent_entry_id);
+
+        // If my parent path is known, then my path is parent's full path + my name.
+        // Else, retrieve and cache my parent's path.
+        if let Some(cached_parent_path) = cached_entry {
+            match entry_name {
+                Some(name) => cached_parent_path.clone().join(name),
+                None => cached_parent_path.clone(),
+            }
+        } else {
+            let path = match self.get_entry(parent_entry_id).ok() {
+                Some(parent) => match self.get_full_path_for_entry(&parent) {
+                    Ok(Some(path)) => path,
+                    // I have a parent, which doesn't have a filename attribute.
+                    // Default to root.
+                    _ => PathBuf::new(),
+                },
+                // Parent is maybe corrupted or incomplete, use a sentinel instead.
+                None => PathBuf::from("[Unknown]"),
+            };
+
+            self.entries_cache.cache_set(parent_entry_id, path.clone());
+            match entry_name {
+                Some(name) => path.join(name),
+                None => path,
+            }
+        }
+    }
+
     /// Gets the full path for an entry.
     /// Caches computations.
     pub fn get_full_path_for_entry(&mut self, entry: &MftEntry) -> Result<Option<PathBuf>> {
         let entry_id = entry.header.record_number;
-
-        for attribute in entry.iter_attributes().filter_map(|a| a.ok()) {
-            if let AttrX30(filename_header) = attribute.data {
-                if ![FileNamespace::Win32, FileNamespace::Win32AndDos]
-                    .contains(&filename_header.namespace)
-                {
-                    continue;
-                }
-
+        match entry.find_best_name_attribute() {
+            Some(filename_header) => {
                 let parent_entry_id = filename_header.parent.entry;
 
                 // MFT entry 5 is the root path.
@@ -120,27 +143,10 @@ impl<T: ReadSeek> MftParser<T> {
                 }
 
                 if parent_entry_id > 0 {
-                    let cached_entry = self.entries_cache.cache_get(&parent_entry_id);
-
-                    // If my parent path is known, then my path is parent's full path + my name.
-                    // Else, retrieve and cache my parent's path.
-                    if let Some(cached_parent_path) = cached_entry {
-                        return Ok(Some(cached_parent_path.clone().join(filename_header.name)));
-                    } else {
-                        let path = match self.get_entry(parent_entry_id).ok() {
-                            Some(parent) => match self.get_full_path_for_entry(&parent) {
-                                Ok(Some(path)) => path,
-                                // I have a parent, which doesn't have a filename attribute.
-                                // Default to root.
-                                _ => PathBuf::new(),
-                            },
-                            // Parent is maybe corrupted or incomplete, use a sentinel instead.
-                            None => PathBuf::from("[Unknown]"),
-                        };
-
-                        self.entries_cache.cache_set(parent_entry_id, path.clone());
-                        return Ok(Some(path.join(filename_header.name)));
-                    }
+                    Ok(Some(self.inner_get_entry(
+                        parent_entry_id,
+                        Some(&filename_header.name),
+                    )))
                 } else {
                     trace!("Found orphaned entry ID {}", entry_id);
 
@@ -148,12 +154,16 @@ impl<T: ReadSeek> MftParser<T> {
 
                     self.entries_cache
                         .cache_set(entry.header.record_number, orphan.clone());
-                    return Ok(Some(orphan));
+
+                    Ok(Some(orphan))
                 }
             }
+            None => match entry.header.base_reference.entry {
+                // I don't have a parent reference, and no X30 attribute. Though luck.
+                0 => Ok(None),
+                parent_entry_id => Ok(Some(self.inner_get_entry(parent_entry_id, None))),
+            },
         }
-
-        Ok(None)
     }
 }
 

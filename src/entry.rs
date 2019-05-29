@@ -13,11 +13,13 @@ use serde::ser::{self, SerializeStruct, Serializer};
 use serde::Serialize;
 
 use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
+use crate::attribute::x30::{FileNameAttr, FileNamespace};
 use crate::attribute::{MftAttribute, MftAttributeContent, MftAttributeType};
 
 use std::io::Read;
 use std::io::SeekFrom;
 use std::io::{Cursor, Seek};
+use std::path::PathBuf;
 
 const SEQUENCE_NUMBER_STRIDE: usize = 512;
 
@@ -148,6 +150,32 @@ impl MftEntry {
             header: entry_header,
             data: buffer,
         })
+    }
+
+    /// Retrieves most human-readable representation of a file path entry.
+    /// Will prefer `Win32` file name attributes, and fallback to `Dos` paths.
+    pub fn find_best_name_attribute(&self) -> Option<FileNameAttr> {
+        let file_name_attributes: Vec<FileNameAttr> = self
+            .iter_attributes()
+            .filter_map(Result::ok)
+            .filter_map(|a| a.data.into_file_name())
+            .collect();
+
+        // Try to find a human-readable filename first
+        let win32_filename = file_name_attributes
+            .iter()
+            .find(|a| [FileNamespace::Win32, FileNamespace::Win32AndDos].contains(&a.namespace));
+
+        match win32_filename {
+            Some(filename) => Some(filename.clone()),
+            None => {
+                // Try to take anything
+                match file_name_attributes.iter().next() {
+                    Some(filename) => Some(filename.clone()),
+                    None => None,
+                }
+            }
+        }
     }
 
     /// Applies the update sequence array fixups.
