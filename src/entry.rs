@@ -19,7 +19,6 @@ use crate::attribute::{MftAttribute, MftAttributeContent, MftAttributeType};
 use std::io::Read;
 use std::io::SeekFrom;
 use std::io::{Cursor, Seek};
-use std::path::PathBuf;
 
 const SEQUENCE_NUMBER_STRIDE: usize = 512;
 

@@ -17,10 +17,8 @@ fn process_1000_mft_records(sample: &[u8]) {
 }
 
 fn get_full_path(parser: &mut MftParser<impl ReadSeek>, entries: &[MftEntry]) {
-    let mut paths = Vec::with_capacity(10000);
-
     for entry in entries {
-        paths.push(parser.get_full_path_for_entry(&entry));
+        parser.get_full_path_for_entry(&entry).unwrap();
     }
 }
 

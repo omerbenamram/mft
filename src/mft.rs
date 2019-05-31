@@ -8,8 +8,7 @@ use snafu::ResultExt;
 use crate::attribute::MftAttributeContent::AttrX30;
 
 use crate::attribute::x30::FileNamespace;
-use cached::stores::SizedCache;
-use cached::Cached;
+use lru::LruCache;
 use std::fs::{self, File};
 use std::io::{BufReader, Cursor, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -20,7 +19,7 @@ pub struct MftParser<T: ReadSeek> {
     /// Instead this will be guessed by the entry size of the first entry.
     entry_size: u32,
     size: u64,
-    entries_cache: SizedCache<u64, PathBuf>,
+    entries_cache: LruCache<u64, PathBuf>,
 }
 
 impl MftParser<BufReader<File>> {
@@ -63,7 +62,7 @@ impl<T: ReadSeek> MftParser<T> {
             data,
             entry_size: first_entry.total_entry_size,
             size,
-            entries_cache: SizedCache::with_size(1000),
+            entries_cache: LruCache::new(1000),
         })
     }
 
@@ -92,7 +91,7 @@ impl<T: ReadSeek> MftParser<T> {
     }
 
     fn inner_get_entry(&mut self, parent_entry_id: u64, entry_name: Option<&str>) -> PathBuf {
-        let cached_entry = self.entries_cache.cache_get(&parent_entry_id);
+        let cached_entry = self.entries_cache.get(&parent_entry_id);
 
         // If my parent path is known, then my path is parent's full path + my name.
         // Else, retrieve and cache my parent's path.
@@ -113,7 +112,7 @@ impl<T: ReadSeek> MftParser<T> {
                 None => PathBuf::from("[Unknown]"),
             };
 
-            self.entries_cache.cache_set(parent_entry_id, path.clone());
+            self.entries_cache.put(parent_entry_id, path.clone());
             match entry_name {
                 Some(name) => path.join(name),
                 None => path,
@@ -153,7 +152,7 @@ impl<T: ReadSeek> MftParser<T> {
                     let orphan = PathBuf::from("[Orphaned]").join(filename_header.name);
 
                     self.entries_cache
-                        .cache_set(entry.header.record_number, orphan.clone());
+                        .put(entry.header.record_number, orphan.clone());
 
                     Ok(Some(orphan))
                 }
