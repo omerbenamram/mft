@@ -5,9 +5,9 @@ use crate::{EntryHeader, ReadSeek};
 use log::{debug, trace};
 use snafu::ResultExt;
 
-use crate::attribute::MftAttributeContent::AttrX30;
 
-use crate::attribute::x30::FileNamespace;
+
+
 use lru::LruCache;
 use std::fs::{self, File};
 use std::io::{BufReader, Cursor, SeekFrom};

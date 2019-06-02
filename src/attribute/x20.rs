@@ -1,7 +1,6 @@
 use crate::err::{self, Result};
 use crate::ReadSeek;
 use log::trace;
-use snafu::OptionExt;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use encoding::all::UTF_16LE;
