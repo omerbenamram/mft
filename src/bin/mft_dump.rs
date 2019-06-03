@@ -18,7 +18,7 @@ use std::process::exit;
 
 use std::{fs, io, path};
 
-/// Simple error  macro for use inside of internal errors in `EvtxDump`
+/// Simple error macro for use inside of internal errors in `MftDump`
 macro_rules! err {
     ($($tt:tt)*) => { Err(Box::<dyn std::error::Error>::from(format!($($tt)*))) }
 }
