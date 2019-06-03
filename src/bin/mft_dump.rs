@@ -1,16 +1,16 @@
 use clap::{App, Arg, ArgMatches};
 use env_logger;
 use indoc::indoc;
-use log::{info, Level};
+use log::Level;
 
-use mft::attribute::{MftAttributeContent, MftAttributeType};
+use mft::attribute::MftAttributeType;
 use mft::mft::MftParser;
 use mft::{MftEntry, ReadSeek};
 
 use dialoguer::Confirmation;
 use mft::csv::FlatMftEntryWithName;
 
-use snafu::{Backtrace, ErrorCompat, Snafu};
+use snafu::ErrorCompat;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};

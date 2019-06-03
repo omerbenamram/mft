@@ -5,7 +5,7 @@ use fixtures::*;
 use assert_cmd::prelude::*;
 use std::fs;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{Read};
 use std::process::Command;
 use tempfile::tempdir;
 
