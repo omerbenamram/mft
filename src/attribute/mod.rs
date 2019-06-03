@@ -67,6 +67,36 @@ impl MftAttributeContent {
         }
     }
 
+    /// Converts the given attributes into a `IndexRootAttr`, consuming the object attribute object.
+    pub fn into_index_root(self) -> Option<IndexRootAttr> {
+        match self {
+            MftAttributeContent::AttrX90(content) => Some(content),
+            _ => None,
+        }
+    }
+    /// Converts the given attributes into a `ObjectIdAttr`, consuming the object attribute object.
+    pub fn into_object_id(self) -> Option<ObjectIdAttr> {
+        match self {
+            MftAttributeContent::AttrX40(content) => Some(content),
+            _ => None,
+        }
+    }
+    /// Converts the given attributes into a `StandardInfoAttr`, consuming the object attribute object.
+    pub fn into_standard_info(self) -> Option<StandardInfoAttr> {
+        match self {
+            MftAttributeContent::AttrX10(content) => Some(content),
+            _ => None,
+        }
+    }
+    /// Converts the given attributes into a `DataAttr`, consuming the object attribute object.
+    pub fn into_data(self) -> Option<DataAttr> {
+        match self {
+            MftAttributeContent::AttrX80(content) => Some(content),
+            _ => None,
+        }
+    }
+
+    /// Converts the given attributes into a `FileNameAttr`, consuming the object attribute object.
     pub fn into_file_name(self) -> Option<FileNameAttr> {
         match self {
             MftAttributeContent::AttrX30(content) => Some(content),
