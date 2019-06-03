@@ -1,11 +1,19 @@
 use crate::ReadSeek;
 use byteorder::ReadBytesExt;
 use std::char::decode_utf16;
+use std::fmt::Write;
 use std::io;
 
 pub fn to_hex_string(bytes: &[u8]) -> String {
-    let strs: Vec<String> = bytes.iter().map(|b| format!("{:02X}", b)).collect();
-    strs.join("")
+    let len = bytes.len();
+    // Each byte is represented by 2 ascii bytes.
+    let mut s = String::with_capacity(len * 2);
+
+    for byte in bytes {
+        write!(s, "{:02X}", byte).expect("Writing to an allocated string cannot fail");
+    }
+
+    s
 }
 
 /// Reads a utf16 string from the given stream.
