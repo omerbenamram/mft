@@ -30,7 +30,7 @@ Some examples
   - `mft_dump -e <output_directory> -o json <input_file>` will extract all resident streams in MFT to files.
 
 # Library usage:
-```rust
+```rust,no_run
 use mft::MftParser;
 use mft::attribute::MftAttributeContent;
 use std::path::PathBuf;
