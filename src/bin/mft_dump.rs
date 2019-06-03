@@ -12,10 +12,12 @@ use mft::csv::FlatMftEntryWithName;
 
 use snafu::ErrorCompat;
 use std::fs::File;
+use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
+use std::fmt::Write as FmtWrite;
 use std::{fs, io, path};
 
 /// Simple error macro for use inside of internal errors in `MftDump`
@@ -242,17 +244,28 @@ impl MftDump {
                         let orig_path_component: String = data_streams_dir
                             .join(&sanitized_path)
                             .to_string_lossy()
-                            .to_string()
-                            .chars()
-                            .take(150)
-                            .collect();
+                            .to_string();
 
+                        // Add some random bits to prevent collisions
+                        let random: [u8; 6] = rand::random();
+                        let rando_string: String = to_hex_string(&random);
+
+                        let truncated: String = orig_path_component.chars().take(150).collect();
                         let data_stream_path = format!(
-                            "{parent_name}__{stream_number}_{stream_name}.dontrun",
-                            parent_name = orig_path_component,
+                            "{path}__{random}_{stream_number}_{stream_name}.dontrun",
+                            path = truncated,
+                            random = rando_string,
                             stream_number = i,
                             stream_name = name
                         );
+
+                        if PathBuf::from(&data_stream_path).exists() {
+                            return err!(
+                                "Tried to override an existing stream {} already exists!\
+                                 This is a bug, please report to github!",
+                                data_stream_path
+                            );
+                        }
 
                         let mut f = File::create(&data_stream_path)?;
                         f.write_all(stream.data())?;
@@ -320,6 +333,18 @@ impl MftDump {
     }
 }
 
+fn to_hex_string(bytes: &[u8]) -> String {
+    let len = bytes.len();
+    // Each byte is represented by 2 ascii bytes.
+    let mut s = String::with_capacity(len * 2);
+
+    for byte in bytes {
+        write!(s, "{:02X}", byte).expect("Writing to an allocated string cannot fail");
+    }
+
+    s
+}
+
 // adapter from python version
 // https://github.com/pallets/werkzeug/blob/9394af646038abf8b59d6f866a1ea5189f6d46b8/src/werkzeug/utils.py#L414
 pub fn sanitized(component: &str) -> String {
@@ -365,8 +390,9 @@ fn main() {
                 .long("--extract-resident-streams")
                 .short("-e")
                 .takes_value(true)
-                .help(indoc!("Writes resident data streams to the given directory, resident streams will be named\
-                              <original_file_path>_<stream_number>/<stream_name>.norun")),
+                .help(indoc!("Writes resident data streams to the given directory.
+                             Resident streams will be named like - `{path}__<random_bytes>_{stream_number}_{stream_name}.dontrun`
+                             random is added to prevent collisions.")),
         )
         .arg(
             Arg::with_name("no-confirm-overwrite")

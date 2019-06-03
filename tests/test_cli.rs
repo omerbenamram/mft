@@ -58,5 +58,5 @@ fn test_it_exports_resident_streams() {
 
     cmd.assert().success();
 
-    assert_eq!(fs::read_dir(d.path()).unwrap().count(), 2146)
+    assert_eq!(fs::read_dir(d.path()).unwrap().count(), 2142)
 }

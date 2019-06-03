@@ -26,6 +26,7 @@ num-derive = "0.2"
 winstructs = "0.2.0"
 lru = "0.1.15"
 itertools = "0.8.0"
+rand = "0.6.5"
 
 # `mft_dump` dependencies
 simplelog = "0.5.3"
