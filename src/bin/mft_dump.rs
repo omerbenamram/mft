@@ -17,6 +17,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
+use mft::entry::ZERO_HEADER;
 use std::fmt::Write as FmtWrite;
 use std::{fs, io, path};
 
@@ -206,7 +207,10 @@ impl MftDump {
             let entry = parser.get_entry(i);
 
             let entry = match entry {
-                Ok(entry) => entry,
+                Ok(entry) => match &entry.header.signature {
+                    ZERO_HEADER => continue,
+                    _ => entry,
+                },
                 Err(error) => {
                     eprintln!("{}", error);
 

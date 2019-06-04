@@ -22,9 +22,9 @@ use std::io::{Cursor, Seek};
 
 const SEQUENCE_NUMBER_STRIDE: usize = 512;
 
-const ZERO_HEADER: &'static [u8; 4] = b"\x00\x00\x00\x00";
-const BAAD_HEADER: &'static [u8; 4] = b"BAAD";
-const FILE_HEADER: &'static [u8; 4] = b"FILE";
+pub const ZERO_HEADER: &'static [u8; 4] = b"\x00\x00\x00\x00";
+pub const BAAD_HEADER: &'static [u8; 4] = b"BAAD";
+pub const FILE_HEADER: &'static [u8; 4] = b"FILE";
 
 #[derive(Debug, Clone)]
 pub struct MftEntry {
