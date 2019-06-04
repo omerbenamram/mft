@@ -96,14 +96,7 @@ impl EntryHeader {
         let mut signature = [0; 4];
         reader.read_exact(&mut signature)?;
 
-        let mut header_is_valid = false;
-
-        for header in &[FILE_HEADER, BAAD_HEADER, ZERO_HEADER] {
-            if signature == **header {
-                header_is_valid = true;
-                break;
-            }
-        }
+        let header_is_valid = [FILE_HEADER, BAAD_HEADER, ZERO_HEADER].contains(&&signature);
 
         ensure!(
             header_is_valid,
