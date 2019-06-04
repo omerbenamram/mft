@@ -4,10 +4,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2019-06-04
+
+### Fixed
+- Ignore zeroed entries in `mft_dump`
+
 ## [0.4.1] - 2019-06-04
 
 ### Fixed
 - Files which are not an MFT now cause the program to terminate with a nice message.
+- Nicely ignore zeroed files in `mft_dump`
 
 ## [0.4.0] - 2019-06-04
 
