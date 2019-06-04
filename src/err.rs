@@ -19,7 +19,10 @@ pub enum Error {
     },
     #[snafu(display("Error while decoding name in filename attribute"))]
     InvalidFilename,
-    #[snafu(display("Bad signature: {:x?}", bad_sig))]
+    #[snafu(display(
+        "Bad signature: {:x?}, expected one of [b\"FILE\", b\"BAAD\", b\"0000\"]",
+        bad_sig
+    ))]
     InvalidEntrySignature { bad_sig: Vec<u8> },
     #[snafu(display("Unknown `AttributeType`: {:04X}", attribute_type))]
     UnknownAttributeType { attribute_type: u32 },

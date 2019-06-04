@@ -22,6 +22,10 @@ use std::io::{Cursor, Seek};
 
 const SEQUENCE_NUMBER_STRIDE: usize = 512;
 
+const ZERO_HEADER: &'static [u8; 4] = b"\x00\x00\x00\x00";
+const BAAD_HEADER: &'static [u8; 4] = b"BAAD";
+const FILE_HEADER: &'static [u8; 4] = b"FILE";
+
 #[derive(Debug, Clone)]
 pub struct MftEntry {
     pub header: EntryHeader,
@@ -47,7 +51,7 @@ impl ser::Serialize for MftEntry {
 pub struct EntryHeader {
     /// MULTI_SECTOR_HEADER
     /// The signature. This value is a convenience to the user.
-    /// This is either "BAAD" or "FILE"
+    /// This is either "BAAD", "FILE", or "\x00\x00\x00\x00"
     pub signature: [u8; 4],
     /// The offset to the update sequence array, from the start of this structure.
     /// The update sequence array must end before the last USHORT value in the first sector.
@@ -92,13 +96,25 @@ impl EntryHeader {
         let mut signature = [0; 4];
         reader.read_exact(&mut signature)?;
 
-        // Empty entry
+        let mut header_is_valid = false;
+
+        for header in &[FILE_HEADER, BAAD_HEADER, ZERO_HEADER] {
+            if signature == **header {
+                header_is_valid = true;
+                break;
+            }
+        }
+
         ensure!(
-            &signature != b"\x00\x00\x00\x00",
+            header_is_valid,
             err::InvalidEntrySignature {
                 bad_sig: signature.to_vec()
             }
         );
+
+        if signature == *ZERO_HEADER {
+            return Ok(Self::zero());
+        }
 
         let usa_offset = reader.read_u16::<LittleEndian>()?;
         let usa_size = reader.read_u16::<LittleEndian>()?;
@@ -131,6 +147,31 @@ impl EntryHeader {
             record_number: entry_id,
         })
     }
+
+    pub fn is_valid(&self) -> bool {
+        self.signature == *FILE_HEADER
+    }
+
+    pub fn zero() -> Self {
+        EntryHeader {
+            signature: *ZERO_HEADER,
+            usa_offset: 0,
+            usa_size: 0,
+            metadata_transaction_journal: 0,
+            sequence: 0,
+            hard_link_count: 0,
+            first_attribute_record_offset: 0,
+            flags: EntryFlags::from_bits_truncate(0),
+            used_entry_size: 0,
+            total_entry_size: 0,
+            base_reference: MftReference {
+                entry: 0,
+                sequence: 0,
+            },
+            first_attribute_id: 0,
+            record_number: 0,
+        }
+    }
 }
 
 impl MftEntry {
@@ -143,7 +184,9 @@ impl MftEntry {
         let entry_header = EntryHeader::from_reader(&mut cursor, entry_number)?;
         trace!("Number of sectors: {:#?}", entry_header);
 
-        Self::apply_fixups(&entry_header, &mut buffer)?;
+        if entry_header.is_valid() {
+            Self::apply_fixups(&entry_header, &mut buffer)?;
+        }
 
         Ok(MftEntry {
             header: entry_header,
