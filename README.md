@@ -36,7 +36,7 @@ use mft::attribute::MftAttributeContent;
 use std::path::PathBuf;
 
 fn main() {
-    // Change this to a path of your .evtx sample. 
+    // Change this to a path of your MFT sample. 
     let fp = PathBuf::from(format!("{}/samples/MFT", std::env::var("CARGO_MANIFEST_DIR").unwrap())); 
     
     let mut parser = MftParser::from_path(fp).unwrap();
