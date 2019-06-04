@@ -429,7 +429,7 @@ fn main() {
     match app.run() {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("A runtime error has occurred {}", &e);
+            eprintln!("A runtime error has occurred: {}", &e);
             exit(1);
         }
     };

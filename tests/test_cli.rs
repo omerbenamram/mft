@@ -5,7 +5,7 @@ use fixtures::*;
 use assert_cmd::prelude::*;
 use std::fs;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::Command;
 use tempfile::tempdir;
 
@@ -40,6 +40,21 @@ fn test_it_refuses_to_overwrite_directory() {
     let sample = mft_sample();
     let mut cmd = Command::cargo_bin("mft_dump").expect("failed to find binary");
     cmd.args(&["-f", &d.path().to_string_lossy(), sample.to_str().unwrap()]);
+
+    cmd.assert().failure().code(1);
+}
+
+#[test]
+fn test_non_mft_file_is_error() {
+    let d = tempdir().unwrap();
+
+    let f = d.as_ref().join("test.out");
+
+    let mut file = File::create(&f).unwrap();
+    file.write_all(b"I'm a file!").unwrap();
+
+    let mut cmd = Command::cargo_bin("mft_dump").expect("failed to find binary");
+    cmd.args(&[f.to_str().unwrap()]);
 
     cmd.assert().failure().code(1);
 }
