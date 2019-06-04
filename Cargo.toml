@@ -26,6 +26,12 @@ num-derive = "0.2"
 winstructs = "0.2.0"
 lru = "0.1.15"
 itertools = "0.8.0"
+rand = "0.6.5"
+
+# `mft_dump` dependencies
+simplelog = "0.5.3"
+dialoguer = "0.4.0"
+indoc = "0.3"
 
 [dependencies.chrono]
 version = "0.4.6"
@@ -33,6 +39,18 @@ features = ["serde"]
 
 [dev-dependencies]
 criterion = "0.2"
+skeptic = "0.13"
+assert_cmd = "0.11"
+predicates = "1"
+env_logger = "0.6.1"
+tempfile = "3"
+
+# rexpect relies on unix process semantics, but it's only used for process interaction tests.
+[target.'cfg(not(target_os = "windows"))'.dev-dependencies]
+rexpect = "0.3"
+
+[build-dependencies]
+skeptic = "0.13"
 
 [[bin]]
 name = "mft_dump"
