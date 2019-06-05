@@ -25,8 +25,8 @@ Python bindings are available as well at https://github.com/omerbenamram/pymft-r
 The main binary utility provided with this crate is `mft_dump`, and it provides a quick way to convert mft snapshots to different output formats.
 
 Some examples
-  - `mft_dump <evtx_file>` will dump contents of mft entries as JSON.
-  - `mft_dump -o csv <evtx_file>` will dump contents of mft entries as CSV. 
+  - `mft_dump <input_file>` will dump contents of mft entries as JSON.
+  - `mft_dump -o csv <input_file>` will dump contents of mft entries as CSV. 
   - `mft_dump --extract-resident-streams <output_directory> -o json <input_file>` will extract all resident streams in MFT to files in <output_directory>.
 
 # Library usage:
