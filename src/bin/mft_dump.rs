@@ -118,6 +118,12 @@ mod tests {
     }
 
     #[test]
+    fn it_works_with_two_ranges() {
+        let ranges = Ranges::from_str("1-10,20-25").unwrap();
+        assert_eq!(ranges.0, vec![1..=10, 20..=25]);
+    }
+
+    #[test]
     fn it_errors_on_a_random_string() {
         let ranges = Ranges::from_str("hello");
         assert!(ranges.is_err())
