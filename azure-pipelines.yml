@@ -37,7 +37,7 @@ steps:
   - script: cargo build --release
     displayName: Cargo build
   - script: cargo test
-    displayName: Cargo test
+    displayName: Cargo test --all
   - bash: |
       MY_TAG="$(Build.SourceBranch)"
       MY_TAG=${MY_TAG#refs/tags/}
