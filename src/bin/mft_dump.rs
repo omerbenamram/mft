@@ -1,5 +1,4 @@
 use clap::{App, Arg, ArgMatches};
-use env_logger;
 use indoc::indoc;
 use log::Level;
 
@@ -11,6 +10,7 @@ use dialoguer::Confirmation;
 use mft::csv::FlatMftEntryWithName;
 
 use snafu::ErrorCompat;
+use std::error::Error;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -407,7 +407,7 @@ impl MftDump {
                 io::stderr(),
             ) {
                 Ok(_) => {}
-                Err(e) => eprintln!("Failed to initialize logging: {:?}", e),
+                Err(e) => eprintln!("Failed to initialize logging: {}", e.description()),
             };
         }
     }
@@ -471,8 +471,6 @@ pub fn sanitized(component: &str) -> String {
 }
 
 fn main() {
-    env_logger::init();
-
     let matches = App::new("MFT Parser")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Omer B. <omerbenamram@gmail.com>")
