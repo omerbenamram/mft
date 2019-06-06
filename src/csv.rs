@@ -1,5 +1,6 @@
-use crate::attribute::x30::FileNamespace;
-use crate::attribute::{FileAttributeFlags, MftAttributeContent, MftAttributeType};
+use crate::attribute::header::ResidentialHeader;
+
+use crate::attribute::{FileAttributeFlags, MftAttributeType};
 use crate::entry::EntryFlags;
 use crate::{MftAttribute, MftEntry, MftParser, ReadSeek};
 
@@ -27,8 +28,14 @@ pub struct FlatMftEntryWithName {
     pub used_entry_size: u32,
     pub total_entry_size: u32,
 
+    /// The size of the file, if available, from the X80 attribute.
+    /// Will be 0 if no $DATA attribute is found.
+    pub file_size: u64,
+
     /// Indicates whether the record is a directory.
     pub is_a_directory: bool,
+    /// Indicates whether the record has the `ALLOCATED` bit turned off.
+    pub is_deleted: bool,
 
     /// Indicates whether the record has alternate data streams.
     pub has_alternate_data_streams: bool,
@@ -61,27 +68,33 @@ impl FlatMftEntryWithName {
             .filter_map(Result::ok)
             .collect();
 
-        let mut file_name = None;
-        let mut standard_info = None;
+        let file_name = entry_attributes
+            .iter()
+            .find(|a| a.header.type_code == MftAttributeType::FileName)
+            .and_then(|a| a.data.clone().into_file_name());
 
-        for attr in entry_attributes.iter() {
-            if let MftAttributeContent::AttrX30(data) = &attr.data {
-                if [FileNamespace::Win32, FileNamespace::Win32AndDos].contains(&data.namespace) {
-                    file_name = Some(data.clone());
-                    break;
-                }
-            }
-        }
-        for attr in entry_attributes.iter() {
-            if let MftAttributeContent::AttrX10(data) = &attr.data {
-                standard_info = Some(data.clone());
-                break;
-            }
-        }
+        let standard_info = entry_attributes
+            .iter()
+            .find(|a| a.header.type_code == MftAttributeType::StandardInformation)
+            .and_then(|a| a.data.clone().into_standard_info());
+
+        let data_attr = entry_attributes
+            .iter()
+            .find(|a| a.header.type_code == MftAttributeType::DATA);
+
+        let file_size = match data_attr {
+            Some(attr) => match &attr.header.residential_header {
+                ResidentialHeader::Resident(r) => u64::from(r.data_size),
+                ResidentialHeader::NonResident(nr) => nr.file_size,
+            },
+            _ => 0,
+        };
 
         let has_ads = entry_attributes
             .iter()
-            .any(|a| a.header.type_code == MftAttributeType::DATA && a.header.name_size > 0);
+            .filter(|a| a.header.type_code == MftAttributeType::DATA)
+            .count()
+            > 1;
 
         FlatMftEntryWithName {
             entry_id: entry.header.record_number,
@@ -95,6 +108,7 @@ impl FlatMftEntryWithName {
             base_entry_id: entry.header.base_reference.entry,
             base_entry_sequence: entry.header.base_reference.sequence,
             is_a_directory: entry.is_dir(),
+            is_deleted: !entry.header.flags.contains(EntryFlags::ALLOCATED),
             has_alternate_data_streams: has_ads,
             standard_info_flags: standard_info.as_ref().and_then(|i| Some(i.file_flags)),
             standard_info_last_modified: standard_info.as_ref().and_then(|i| Some(i.modified)),
@@ -104,6 +118,7 @@ impl FlatMftEntryWithName {
             file_name_last_modified: file_name.as_ref().and_then(|i| Some(i.modified)),
             file_name_last_access: file_name.as_ref().and_then(|i| Some(i.accessed)),
             file_name_created: file_name.as_ref().and_then(|i| Some(i.created)),
+            file_size,
             full_path: parser
                 .get_full_path_for_entry(entry)
                 .expect("I/O Err")

@@ -191,7 +191,7 @@ impl MftEntry {
     /// Will prefer `Win32` file name attributes, and fallback to `Dos` paths.
     pub fn find_best_name_attribute(&self) -> Option<FileNameAttr> {
         let file_name_attributes: Vec<FileNameAttr> = self
-            .iter_attributes()
+            .iter_attributes_matching(Some(vec![MftAttributeType::FileName]))
             .filter_map(Result::ok)
             .filter_map(|a| a.data.into_file_name())
             .collect();

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `mft_dump` can now dump only a specific range of entries with `-r`.
+- CSV output now shows `FileSize`, `IsDeleted` as separate columns.
 
 ### Fixed
 - Fixed an issue with debug-logs
