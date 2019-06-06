@@ -6,9 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.3] - UNRELEASED
 
+### Added
+- `mft_dump` can now dump only a specific range of entries with `-r`.
+
 ### Fixed
 - Fixed an issue with debug-logs
-
 
 ## [0.4.2] - 2019-06-04
 
