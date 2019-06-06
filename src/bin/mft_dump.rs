@@ -12,13 +12,14 @@ use mft::csv::FlatMftEntryWithName;
 
 use snafu::ErrorCompat;
 use std::fs::File;
-use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
 use mft::entry::ZERO_HEADER;
 use std::fmt::Write as FmtWrite;
+use std::ops::RangeInclusive;
+use std::str::FromStr;
 use std::{fs, io, path};
 
 /// Simple error macro for use inside of internal errors in `MftDump`
@@ -46,6 +47,89 @@ impl OutputFormat {
     }
 }
 
+struct Ranges(Vec<RangeInclusive<usize>>);
+
+impl Ranges {
+    pub fn chain(&self) -> impl Iterator<Item = usize> + '_ {
+        self.0.iter().cloned().flatten()
+    }
+}
+
+impl FromStr for Ranges {
+    type Err = StdErr;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut ranges = vec![];
+        for x in s.split(',') {
+            // range
+            if x.contains('-') {
+                let range: Vec<&str> = x.split('-').collect();
+                if range.len() != 2 {
+                    return err!(
+                        "Failed to parse ranges: Range should contain exactly one `-`, found {}",
+                        x
+                    );
+                }
+
+                ranges.push(range[0].parse()?..=range[1].parse()?);
+            } else {
+                let n = x.parse()?;
+                ranges.push(n..=n);
+            }
+        }
+
+        Ok(Ranges(ranges))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Ranges;
+    use std::str::FromStr;
+
+    #[test]
+    fn it_works_with_single_number() {
+        let ranges = Ranges::from_str("1").unwrap();
+        assert_eq!(ranges.0, vec![1..=1]);
+    }
+
+    #[test]
+    fn it_works_with_a_range() {
+        let ranges = Ranges::from_str("1-5").unwrap();
+        assert_eq!(ranges.0, vec![1..=5]);
+    }
+
+    #[test]
+    fn it_works_with_a_range_and_a_number() {
+        let ranges = Ranges::from_str("1-5,8").unwrap();
+        assert_eq!(ranges.0, vec![1..=5, 8..=8]);
+    }
+
+    #[test]
+    fn it_works_with_a_number_and_a_range() {
+        let ranges = Ranges::from_str("1-5,8").unwrap();
+        assert_eq!(ranges.0, vec![1..=5, 8..=8]);
+    }
+
+    #[test]
+    fn it_works_with_more_than_2_number_and_a_range() {
+        let ranges = Ranges::from_str("1-5,8,10-19").unwrap();
+        assert_eq!(ranges.0, vec![1..=5, 8..=8, 10..=19]);
+    }
+
+    #[test]
+    fn it_errors_on_a_random_string() {
+        let ranges = Ranges::from_str("hello");
+        assert!(ranges.is_err())
+    }
+
+    #[test]
+    fn it_errors_on_a_range_with_too_many_dashes() {
+        let ranges = Ranges::from_str("1-5-8");
+        assert!(ranges.is_err())
+    }
+}
+
 struct MftDump {
     filepath: PathBuf,
     // We use an option here to be able to move the output out of mftdump from a mutable reference.
@@ -53,6 +137,7 @@ struct MftDump {
     data_streams_output: Option<PathBuf>,
     verbosity_level: Option<Level>,
     output_format: OutputFormat,
+    ranges: Option<Ranges>,
     backtraces: bool,
 }
 
@@ -98,12 +183,18 @@ impl MftDump {
             }
         };
 
+        let ranges = match matches.value_of("entry-range") {
+            Some(range) => Some(Ranges::from_str(range)?),
+            None => None,
+        };
+
         Ok(MftDump {
             filepath: PathBuf::from(matches.value_of("INPUT").expect("Required argument")),
             output,
             data_streams_output,
             verbosity_level,
             output_format,
+            ranges,
             backtraces,
         })
     }
@@ -203,8 +294,18 @@ impl MftDump {
         };
 
         let number_of_entries = parser.get_entry_count();
-        for i in 0..number_of_entries {
-            let entry = parser.get_entry(i);
+
+        // Move ranges out of self here to avoid immutably locking self during
+        // the `for i in entries` loop.
+        let take_ranges = self.ranges.take();
+
+        let entries = match take_ranges {
+            Some(ref ranges) => Box::new(ranges.chain()),
+            None => Box::new(0..number_of_entries as usize) as Box<dyn Iterator<Item = usize>>,
+        };
+
+        for i in entries {
+            let entry = parser.get_entry(i as u64);
 
             let entry = match entry {
                 Ok(entry) => match &entry.header.signature {
@@ -379,6 +480,13 @@ fn main() {
                 .possible_values(&["csv", "json", "jsonl"])
                 .default_value("json")
                 .help("Output format."),
+        )
+        .arg(
+            Arg::with_name("entry-range")
+                .long("--ranges")
+                .short("-r")
+                .takes_value(true)
+                .help(indoc!("Dumps only the given entry range(s), for example, `1-15,30` will dump entries 1-15, and 30")),
         )
         .arg(
             Arg::with_name("output-target")
