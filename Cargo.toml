@@ -28,7 +28,7 @@ itertools = "0.8.0"
 rand = "0.6.5"
 
 # `mft_dump` dependencies
-simplelog = "0.5.3"
+simplelog = "0.6.0"
 dialoguer = "0.4.0"
 indoc = "0.3"
 
