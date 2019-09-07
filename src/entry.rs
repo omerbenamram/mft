@@ -187,6 +187,29 @@ impl MftEntry {
         })
     }
 
+    /// Initializes an MFT Entry from a buffer but skips applying fixups
+    /// It is not recommended to use this function unless you know what you are doing.
+    /// The main purpose of it is for use when you have buffers that already have fixup
+    /// already applied. For example, using Windows API 
+    /// (https://docs.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_get_ntfs_file_record)
+    pub fn from_buffer_skip_fixup(buffer: Vec<u8>, entry_number: u64) -> Result<MftEntry> {
+        let mut cursor = Cursor::new(&buffer);
+        // Get Header
+        let entry_header = EntryHeader::from_reader(&mut cursor, entry_number)?;
+        trace!("Number of sectors: {:#?}", entry_header);
+
+        if !entry_header.is_valid() {
+            return Err(err::Error::InvalidEntrySignature {
+                bad_sig: entry_header.signature.to_vec()
+            });
+        }
+
+        Ok(MftEntry {
+            header: entry_header,
+            data: buffer,
+        })
+    }
+
     /// Retrieves most human-readable representation of a file path entry.
     /// Will prefer `Win32` file name attributes, and fallback to `Dos` paths.
     pub fn find_best_name_attribute(&self) -> Option<FileNameAttr> {
