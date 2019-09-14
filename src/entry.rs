@@ -187,22 +187,21 @@ impl MftEntry {
         })
     }
 
-    /// Initializes an MFT Entry from a buffer but skips applying fixups
-    /// It is not recommended to use this function unless you know what you are doing.
-    /// The main purpose of it is for use when you have buffers that already have fixup
-    /// already applied. For example, using Windows API 
-    /// (https://docs.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_get_ntfs_file_record)
+    /// Initializes an MFT Entry from a buffer but skips checking and fixing the 
+    /// fixup array. This will throw InvalidEntrySignature error if the entry header 
+    /// is not valid.
     pub fn from_buffer_skip_fixup(buffer: Vec<u8>, entry_number: u64) -> Result<MftEntry> {
         let mut cursor = Cursor::new(&buffer);
         // Get Header
         let entry_header = EntryHeader::from_reader(&mut cursor, entry_number)?;
         trace!("Number of sectors: {:#?}", entry_header);
 
-        if !entry_header.is_valid() {
-            return Err(err::Error::InvalidEntrySignature {
+        ensure!(
+            entry_header.is_valid(),
+            err::InvalidEntrySignature {
                 bad_sig: entry_header.signature.to_vec()
-            });
-        }
+            }
+        );
 
         Ok(MftEntry {
             header: entry_header,
