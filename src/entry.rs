@@ -187,6 +187,28 @@ impl MftEntry {
         })
     }
 
+    /// Initializes an MFT Entry from a buffer but skips checking and fixing the 
+    /// fixup array. This will throw InvalidEntrySignature error if the entry header 
+    /// is not valid.
+    pub fn from_buffer_skip_fixup(buffer: Vec<u8>, entry_number: u64) -> Result<MftEntry> {
+        let mut cursor = Cursor::new(&buffer);
+        // Get Header
+        let entry_header = EntryHeader::from_reader(&mut cursor, entry_number)?;
+        trace!("Number of sectors: {:#?}", entry_header);
+
+        ensure!(
+            entry_header.is_valid(),
+            err::InvalidEntrySignature {
+                bad_sig: entry_header.signature.to_vec()
+            }
+        );
+
+        Ok(MftEntry {
+            header: entry_header,
+            data: buffer,
+        })
+    }
+
     /// Retrieves most human-readable representation of a file path entry.
     /// Will prefer `Win32` file name attributes, and fallback to `Dos` paths.
     pub fn find_best_name_attribute(&self) -> Option<FileNameAttr> {
