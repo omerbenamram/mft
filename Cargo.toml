@@ -29,7 +29,7 @@ rand = "0.7.0"
 
 # `mft_dump` dependencies
 simplelog = "0.7.1"
-dialoguer = "0.4.0"
+dialoguer = "0.5.0"
 indoc = "0.3"
 
 [dependencies.chrono]
