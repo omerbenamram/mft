@@ -11,31 +11,31 @@ authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-log = { version = "0.4.8", features = ["release_max_level_debug"] }
-clap = "2.33.0"
-encoding = "0.2.33"
-byteorder = "1.3.2"
-bitflags = "1.2.1"
+log = { version = "0.4", features = ["release_max_level_debug"] }
+encoding = "0.2"
+byteorder = "1.3"
+bitflags = "1.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-csv = "1.1.1"
+csv = "1.1"
 thiserror = "1.0"
-num-traits = "0.2.10"
-num-derive = "0.3.0"
+num-traits = "0.2"
+num-derive = "0.3"
 winstructs = "0.2.3"
 lru = "0.4.3"
-itertools = "0.8.2"
-rand = "0.7.2"
+itertools = "0.8"
+rand = "0.7"
 
 # `mft_dump` dependencies
+clap = {version = "2.33.0", optional = true}
 anyhow = {version = "1.0", optional = true}
 simplelog = {version = "0.7.4", optional = true}
 dialoguer = {version = "0.5.0", optional = true}
 indoc = {version = "0.3.4", optional = true}
 
 [features]
-default = ["mft-dump"]
-mft-dump = ["anyhow", "simplelog", "dialoguer", "indoc"]
+default = ["mft_dump"]
+mft_dump = ["anyhow", "simplelog", "dialoguer", "indoc", "clap"]
 
 [dependencies.chrono]
 version = "0.4.10"
@@ -58,6 +58,7 @@ skeptic = "0.13.4"
 
 [[bin]]
 name = "mft_dump"
+required-features = ["mft_dump"]
 
 [[bench]]
 name = "benchmark"
