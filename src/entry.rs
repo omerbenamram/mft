@@ -1,4 +1,4 @@
-use crate::err::{self, Error, Result};
+use crate::err::{Error, Result};
 use crate::impl_serialize_for_bitflags;
 
 use log::trace;

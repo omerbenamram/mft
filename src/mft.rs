@@ -180,6 +180,8 @@ mod tests {
                 count += 1;
             }
         }
+
+        assert!(count > 0)
     }
 
     #[test]

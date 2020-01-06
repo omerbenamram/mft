@@ -1,4 +1,4 @@
-use crate::err::{self, Result};
+use crate::err::{Result};
 use crate::{utils, ReadSeek};
 use serde::ser;
 

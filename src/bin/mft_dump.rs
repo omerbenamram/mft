@@ -13,7 +13,6 @@ use anyhow::{anyhow, Context, Error, Result};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::exit;
 
 use mft::entry::ZERO_HEADER;
 use std::fmt::Write as FmtWrite;
@@ -136,7 +135,6 @@ struct MftDump {
     verbosity_level: Option<Level>,
     output_format: OutputFormat,
     ranges: Option<Ranges>,
-    backtraces: bool,
 }
 
 impl MftDump {
@@ -145,7 +143,9 @@ impl MftDump {
             OutputFormat::from_str(matches.value_of("output-format").unwrap_or_default())
                 .expect("Validated with clap default values");
 
-        let backtraces = matches.is_present("backtraces");
+        if matches.is_present("backtraces") {
+            std::env::set_var("RUST_LIB_BACKTRACE", "1");
+        }
 
         let output: Option<Box<dyn Write>> = if let Some(path) = matches.value_of("output-target") {
             match Self::create_output_file(path, !matches.is_present("no-confirm-overwrite")) {
@@ -193,7 +193,6 @@ impl MftDump {
             verbosity_level,
             output_format,
             ranges,
-            backtraces,
         })
     }
 
@@ -268,16 +267,7 @@ impl MftDump {
     pub fn run(&mut self) -> Result<()> {
         self.try_to_initialize_logging();
 
-        let mut parser = match MftParser::from_path(&self.filepath) {
-            Ok(parser) => parser,
-            Err(e) => {
-                return Err(anyhow!(
-                    "Failed to open file {}.\n\tcaused by: {}",
-                    self.filepath.display(),
-                    &e
-                ))
-            }
-        };
+        let mut parser = MftParser::from_path(&self.filepath)?;
 
         // Since the JSON parser can do away with a &mut Write, but the csv parser needs ownership
         // of `Write`, we eagerly create the csv writer here, moving the Box<Write> out from
@@ -456,7 +446,7 @@ pub fn sanitized(component: &str) -> String {
     buf
 }
 
-fn main() {
+fn main() -> Result<()> {
     let matches = App::new("MFT Parser")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Omer B. <omerbenamram@gmail.com>")
@@ -520,19 +510,8 @@ fn main() {
                 .help("If set, a backtrace will be printed with some errors if available"))
         .get_matches();
 
-    let mut app = match MftDump::from_cli_matches(&matches) {
-        Ok(app) => app,
-        Err(e) => {
-            eprintln!("An error occurred while setting up the app: {}", &e);
-            exit(1);
-        }
-    };
+    let mut app = MftDump::from_cli_matches(&matches).context("Failed setting up the app")?;
+    app.run().context("A runtime error has occurred")?;
 
-    match app.run() {
-        Ok(()) => {}
-        Err(e) => {
-            eprintln!("A runtime error has occurred: {}", &e);
-            exit(1);
-        }
-    };
+    Ok(())
 }

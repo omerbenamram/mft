@@ -1,5 +1,5 @@
 use crate::attribute::FileAttributeFlags;
-use crate::err::{self, Error, Result};
+use crate::err::{Error, Result};
 use crate::ReadSeek;
 use log::trace;
 

@@ -5,12 +5,12 @@ pub type Result<T> = ::std::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("An I/O error has occurred: {}", source)]
+    #[error("An I/O error has occurred")]
     IoError {
         #[from]
         source: std::io::Error,
     },
-    #[error("Failed to open file {}: {}", path.display(), source)]
+    #[error("Failed to open file {}", path.display())]
     FailedToOpenFile {
         path: PathBuf,
         source: std::io::Error,
@@ -39,11 +39,11 @@ pub enum Error {
         end_of_sector_bytes: Vec<u8>,
         fixup_bytes: Vec<u8>,
     },
-    #[error("Failed to read MftReference: `{}`", source)]
+    #[error("Failed to read MftReference")]
     FailedToReadMftReference { source: winstructs::err::Error },
-    #[error("Failed to read WindowsTime: `{}`", source)]
+    #[error("Failed to read WindowsTime")]
     FailedToReadWindowsTime { source: winstructs::err::Error },
-    #[error("Failed to read GUID: `{}`", source)]
+    #[error("Failed to read GUID")]
     FailedToReadGuid { source: winstructs::err::Error },
     #[error("An unexpected error has occurred: {}", detail)]
     Any { detail: String },
