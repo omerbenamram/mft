@@ -5,7 +5,7 @@
  
 This is a parser for the MFT (master file table) format.
 
-Supported rust version is latest stable rust (minimum 1.34) or nightly.
+MSRV is latest stable rust.
 
 [Documentation](https://docs.rs/mft)
 
