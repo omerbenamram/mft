@@ -92,10 +92,7 @@ impl FlatMftEntryWithName {
 
         let has_ads = entry_attributes
             .iter()
-            .any(|a| {
-                a.header.type_code == MftAttributeType::DATA && !a.header.name.is_empty()
-            });
-
+            .any(|a| a.header.type_code == MftAttributeType::DATA && !a.header.name.is_empty());
 
         FlatMftEntryWithName {
             entry_id: entry.header.record_number,

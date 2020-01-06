@@ -4,13 +4,6 @@
 
 mod fixtures;
 
-
-
-
-
-
-
-
 #[cfg(not(target_os = "windows"))]
 use rexpect::spawn;
 
