@@ -9,8 +9,7 @@ use mft::{MftEntry, ReadSeek};
 use dialoguer::Confirmation;
 use mft::csv::FlatMftEntryWithName;
 
-use snafu::ErrorCompat;
-use std::error::Error;
+use anyhow::{anyhow, Context, Error, Result};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -21,13 +20,6 @@ use std::fmt::Write as FmtWrite;
 use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::{fs, io, path};
-
-/// Simple error macro for use inside of internal errors in `MftDump`
-macro_rules! err {
-    ($($tt:tt)*) => { Err(Box::<dyn std::error::Error>::from(format!($($tt)*))) }
-}
-
-type StdErr = Box<dyn std::error::Error>;
 
 #[derive(Debug, PartialOrd, PartialEq)]
 enum OutputFormat {
@@ -56,19 +48,19 @@ impl Ranges {
 }
 
 impl FromStr for Ranges {
-    type Err = StdErr;
+    type Err = Error;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self> {
         let mut ranges = vec![];
         for x in s.split(',') {
             // range
             if x.contains('-') {
                 let range: Vec<&str> = x.split('-').collect();
                 if range.len() != 2 {
-                    return err!(
+                    return Err(anyhow!(
                         "Failed to parse ranges: Range should contain exactly one `-`, found {}",
                         x
-                    );
+                    ));
                 }
 
                 ranges.push(range[0].parse()?..=range[1].parse()?);
@@ -148,7 +140,7 @@ struct MftDump {
 }
 
 impl MftDump {
-    pub fn from_cli_matches(matches: &ArgMatches) -> Result<Self, StdErr> {
+    pub fn from_cli_matches(matches: &ArgMatches) -> Result<Self> {
         let output_format =
             OutputFormat::from_str(matches.value_of("output-format").unwrap_or_default())
                 .expect("Validated with clap default values");
@@ -159,11 +151,11 @@ impl MftDump {
             match Self::create_output_file(path, !matches.is_present("no-confirm-overwrite")) {
                 Ok(f) => Some(Box::new(f)),
                 Err(e) => {
-                    return err!(
+                    return Err(anyhow!(
                         "An error occurred while creating output file at `{}` - `{}`",
                         path,
                         e
-                    );
+                    ));
                 }
             }
         } else {
@@ -205,12 +197,15 @@ impl MftDump {
         })
     }
 
-    fn create_output_dir(path: impl AsRef<Path>) -> Result<(), StdErr> {
+    fn create_output_dir(path: impl AsRef<Path>) -> Result<()> {
         let p = path.as_ref();
 
         if p.exists() {
             if !p.is_dir() {
-                return err!("There is a file at {}, refusing to overwrite", p.display());
+                return Err(anyhow!(
+                    "There is a file at {}, refusing to overwrite",
+                    p.display()
+                ));
             }
         // p exists and is a directory, it's ok to add files.
         } else {
@@ -221,17 +216,14 @@ impl MftDump {
     }
 
     /// If `prompt` is passed, will display a confirmation prompt before overwriting files.
-    fn create_output_file(
-        path: impl AsRef<Path>,
-        prompt: bool,
-    ) -> Result<File, Box<dyn std::error::Error>> {
+    fn create_output_file(path: impl AsRef<Path>, prompt: bool) -> Result<File> {
         let p = path.as_ref();
 
         if p.is_dir() {
-            return err!(
+            return Err(anyhow!(
                 "There is a directory at {}, refusing to overwrite",
                 p.display()
-            );
+            ));
         }
 
         if p.exists() {
@@ -245,11 +237,11 @@ impl MftDump {
                     .interact()
                 {
                     Ok(true) => Ok(File::create(p)?),
-                    Ok(false) => err!("Cancelled"),
-                    Err(e) => err!(
+                    Ok(false) => Err(anyhow!("Cancelled")),
+                    Err(e) => Err(anyhow!(
                         "Failed to write confirmation prompt to term caused by\n{}",
                         e
-                    ),
+                    )),
                 }
             } else {
                 Ok(File::create(p)?)
@@ -267,23 +259,23 @@ impl MftDump {
                         Ok(File::create(p)?)
                     }
                 }
-                None => err!("Output file cannot be root."),
+                None => Err(anyhow!("Output file cannot be root.")),
             }
         }
     }
 
     /// Main entry point for `EvtxDump`
-    pub fn run(&mut self) -> Result<(), StdErr> {
+    pub fn run(&mut self) -> Result<()> {
         self.try_to_initialize_logging();
 
         let mut parser = match MftParser::from_path(&self.filepath) {
             Ok(parser) => parser,
             Err(e) => {
-                return err!(
+                return Err(anyhow!(
                     "Failed to open file {}.\n\tcaused by: {}",
                     self.filepath.display(),
                     &e
-                )
+                ))
             }
         };
 
@@ -320,12 +312,6 @@ impl MftDump {
                 },
                 Err(error) => {
                     eprintln!("{}", error);
-
-                    if self.backtraces {
-                        if let Some(bt) = error.backtrace() {
-                            eprintln!("{}", bt);
-                        }
-                    }
                     continue;
                 }
             };
@@ -371,11 +357,11 @@ impl MftDump {
                         );
 
                         if PathBuf::from(&data_stream_path).exists() {
-                            return err!(
+                            return Err(anyhow!(
                                 "Tried to override an existing stream {} already exists!\
                                  This is a bug, please report to github!",
                                 data_stream_path
-                            );
+                            ));
                         }
 
                         let mut f = File::create(&data_stream_path)?;
@@ -407,12 +393,12 @@ impl MftDump {
                 io::stderr(),
             ) {
                 Ok(_) => {}
-                Err(e) => eprintln!("Failed to initialize logging: {}", e.description()),
+                Err(e) => eprintln!("Failed to initialize logging: {}", e),
             };
         }
     }
 
-    pub fn print_json_entry(&mut self, entry: &MftEntry) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn print_json_entry(&mut self, entry: &MftEntry) -> Result<()> {
         let out = self
             .output
             .as_mut()
@@ -435,7 +421,7 @@ impl MftDump {
         entry: &MftEntry,
         parser: &mut MftParser<impl ReadSeek>,
         writer: &mut csv::Writer<W>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<()> {
         let flat_entry = FlatMftEntryWithName::from_entry(&entry, parser);
 
         writer.serialize(flat_entry)?;

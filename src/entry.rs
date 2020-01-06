@@ -1,8 +1,7 @@
-use crate::err::{self, Result};
+use crate::err::{self, Error, Result};
 use crate::impl_serialize_for_bitflags;
 
 use log::trace;
-use snafu::{ensure, ResultExt};
 
 use winstructs::ntfs::mft_reference::MftReference;
 
@@ -98,12 +97,11 @@ impl EntryHeader {
 
         let header_is_valid = [FILE_HEADER, BAAD_HEADER, ZERO_HEADER].contains(&&signature);
 
-        ensure!(
-            header_is_valid,
-            err::InvalidEntrySignature {
-                bad_sig: signature.to_vec()
-            }
-        );
+        if !header_is_valid {
+            return Err(Error::InvalidEntrySignature {
+                bad_sig: signature.to_vec(),
+            });
+        }
 
         if signature == *ZERO_HEADER {
             return Ok(Self::zero());
@@ -120,7 +118,7 @@ impl EntryHeader {
         let entry_size_allocated = reader.read_u32::<LittleEndian>()?;
 
         let base_reference =
-            MftReference::from_reader(reader).context(err::FailedToReadMftReference)?;
+            MftReference::from_reader(reader).map_err(Error::failed_to_read_mft_reference)?;
 
         let first_attribute_id = reader.read_u16::<LittleEndian>()?;
 
@@ -187,8 +185,8 @@ impl MftEntry {
         })
     }
 
-    /// Initializes an MFT Entry from a buffer but skips checking and fixing the 
-    /// fixup array. This will throw InvalidEntrySignature error if the entry header 
+    /// Initializes an MFT Entry from a buffer but skips checking and fixing the
+    /// fixup array. This will throw InvalidEntrySignature error if the entry header
     /// is not valid.
     pub fn from_buffer_skip_fixup(buffer: Vec<u8>, entry_number: u64) -> Result<MftEntry> {
         let mut cursor = Cursor::new(&buffer);
@@ -196,12 +194,11 @@ impl MftEntry {
         let entry_header = EntryHeader::from_reader(&mut cursor, entry_number)?;
         trace!("Number of sectors: {:#?}", entry_header);
 
-        ensure!(
-            entry_header.is_valid(),
-            err::InvalidEntrySignature {
-                bad_sig: entry_header.signature.to_vec()
-            }
-        );
+        if !entry_header.is_valid() {
+            return Err(Error::InvalidEntrySignature {
+                bad_sig: entry_header.signature.to_vec(),
+            });
+        }
 
         Ok(MftEntry {
             header: entry_header,
@@ -264,14 +261,13 @@ impl MftEntry {
             let end_of_sector_bytes =
                 &mut buffer[end_of_sector_bytes_start_offset..end_of_sector_bytes_end_offset];
 
-            ensure!(
-                end_of_sector_bytes == update_sequence,
-                err::FailedToApplyFixup {
+            if end_of_sector_bytes != update_sequence {
+                return Err(Error::FailedToApplyFixup {
                     stride_number,
                     end_of_sector_bytes: end_of_sector_bytes.to_vec(),
-                    fixup_bytes: fixup_bytes.to_vec()
-                }
-            );
+                    fixup_bytes: fixup_bytes.to_vec(),
+                });
+            }
 
             end_of_sector_bytes.copy_from_slice(&fixup_bytes);
         }
@@ -308,12 +304,9 @@ impl MftEntry {
                     return None;
                 }
 
-                match cursor.seek(SeekFrom::Start(offset)).context(err::IoError) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        exhausted = true;
-                        return Some(Err(e));
-                    }
+                if let Err(e) = cursor.seek(SeekFrom::Start(offset)) {
+                    exhausted = true;
+                    return Some(Err(e.into()));
                 };
 
                 let header = MftAttributeHeader::from_stream(&mut cursor);

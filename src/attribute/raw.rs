@@ -2,7 +2,6 @@ use crate::attribute::MftAttributeType;
 use crate::err::{self, Result};
 use crate::{utils, ReadSeek};
 use serde::{ser, Serialize};
-use snafu::ResultExt;
 
 /// Placeholder attribute for currently unparsed attributes.
 #[derive(Serialize, Clone, Debug)]
@@ -20,7 +19,7 @@ impl RawAttribute {
     ) -> Result<Self> {
         let mut data = vec![0_u8; data_size];
 
-        stream.read_exact(&mut data).context(err::IoError)?;
+        stream.read_exact(&mut data)?;
 
         Ok(RawAttribute {
             attribute_type,

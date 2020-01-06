@@ -1,61 +1,71 @@
-use snafu::{Backtrace, Snafu};
-use std::path::PathBuf;
-use std::{io, result};
+use std::path::{Path, PathBuf};
+use thiserror::Error;
 
-pub type Result<T> = result::Result<T, Error>;
+pub type Result<T> = ::std::result::Result<T, Error>;
 
-#[derive(Debug, Snafu)]
-#[snafu(visibility(pub(crate)))]
+#[derive(Debug, Error)]
 pub enum Error {
-    #[snafu(display("An I/O error has occurred: {}", source))]
+    #[error("An I/O error has occurred: {}", source)]
     IoError {
+        #[from]
         source: std::io::Error,
-        backtrace: Backtrace,
     },
-    #[snafu(display("Failed to open file {}: {}", path.display(), source))]
+    #[error("Failed to open file {}: {}", path.display(), source)]
     FailedToOpenFile {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[snafu(display("Error while decoding name in filename attribute"))]
+    #[error("Error while decoding name in filename attribute")]
     InvalidFilename,
-    #[snafu(display(
+    #[error(
         "Bad signature: {:x?}, expected one of [b\"FILE\", b\"BAAD\", b\"0000\"]",
         bad_sig
-    ))]
+    )]
     InvalidEntrySignature { bad_sig: Vec<u8> },
-    #[snafu(display("Unknown `AttributeType`: {:04X}", attribute_type))]
+    #[error("Unknown `AttributeType`: {:04X}", attribute_type)]
     UnknownAttributeType { attribute_type: u32 },
-    #[snafu(display("Unknown filename namespace {}", namespace))]
+    #[error("Unknown filename namespace {}", namespace)]
     UnknownNamespace { namespace: u8 },
-    #[snafu(display("Unhandled resident flag: {} (offset: {})", flag, offset))]
+    #[error("Unhandled resident flag: {} (offset: {})", flag, offset)]
     UnhandledResidentFlag { flag: u8, offset: u64 },
-    #[snafu(display(
+    #[error(
         "Fixup bytes do not match bytes at end of stride {} {:x?}: {:x?}",
         stride_number,
         end_of_sector_bytes,
         fixup_bytes
-    ))]
+    )]
     FailedToApplyFixup {
         stride_number: usize,
         end_of_sector_bytes: Vec<u8>,
         fixup_bytes: Vec<u8>,
     },
-    #[snafu(display("Failed to read MftReference: `{}`", source))]
+    #[error("Failed to read MftReference: `{}`", source)]
     FailedToReadMftReference { source: winstructs::err::Error },
-    #[snafu(display("Failed to read WindowsTime: `{}`", source))]
+    #[error("Failed to read WindowsTime: `{}`", source)]
     FailedToReadWindowsTime { source: winstructs::err::Error },
-    #[snafu(display("Failed to read GUID: `{}`", source))]
+    #[error("Failed to read GUID: `{}`", source)]
     FailedToReadGuid { source: winstructs::err::Error },
-    #[snafu(display("An unexpected error has occurred: {}", detail))]
+    #[error("An unexpected error has occurred: {}", detail)]
     Any { detail: String },
 }
 
-impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Self {
-        Error::IoError {
-            source: err,
-            backtrace: Backtrace::new(),
+impl Error {
+    pub fn failed_to_read_windows_time(source: winstructs::err::Error) -> Error {
+        Error::FailedToReadWindowsTime { source }
+    }
+
+    pub fn failed_to_read_mft_reference(source: winstructs::err::Error) -> Error {
+        Error::FailedToReadMftReference { source }
+    }
+
+    pub fn failed_to_read_guid(source: winstructs::err::Error) -> Error {
+        Error::FailedToReadGuid { source }
+    }
+
+    pub fn failed_to_open_file(path: impl AsRef<Path>, source: std::io::Error) -> Error {
+        Error::FailedToOpenFile {
+            path: path.as_ref().to_path_buf(),
+            source,
         }
     }
 }

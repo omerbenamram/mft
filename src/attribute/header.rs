@@ -1,5 +1,5 @@
 use crate::attribute::{AttributeDataFlags, MftAttributeType};
-use crate::err::{self, Result};
+use crate::err::{Error, Result};
 use crate::utils::read_utf16_string;
 use crate::ReadSeek;
 
@@ -54,10 +54,9 @@ impl MftAttributeHeader {
         let type_code = match MftAttributeType::from_u32(type_code_value) {
             Some(attribute_type) => attribute_type,
             None => {
-                return err::UnknownAttributeType {
+                return Err(Error::UnknownAttributeType {
                     attribute_type: type_code_value,
-                }
-                .fail()
+                })
             }
         };
 
@@ -81,11 +80,10 @@ impl MftAttributeHeader {
             0 => ResidentialHeader::Resident(ResidentHeader::from_stream(stream)?),
             1 => ResidentialHeader::NonResident(NonResidentHeader::from_stream(stream)?),
             _ => {
-                return err::UnhandledResidentFlag {
+                return Err(Error::UnhandledResidentFlag {
                     flag: resident_flag,
                     offset: stream.tell()?,
-                }
-                .fail();
+                })
             }
         };
 

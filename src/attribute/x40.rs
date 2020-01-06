@@ -1,7 +1,6 @@
-use crate::err::{self, Result};
+use crate::err::{Error, Result};
 use crate::ReadSeek;
 use serde::Serialize;
-use snafu::ResultExt;
 use winstructs::guid::Guid;
 
 /// $Data Attribute
@@ -20,11 +19,11 @@ pub struct ObjectIdAttr {
 impl ObjectIdAttr {
     /// Data size should be either 16 or 64
     pub fn from_stream<S: ReadSeek>(stream: &mut S, data_size: usize) -> Result<ObjectIdAttr> {
-        let object_id = Guid::from_stream(stream).context(err::FailedToReadGuid)?;
+        let object_id = Guid::from_reader(stream).map_err(Error::failed_to_read_guid)?;
         let (birth_volume_id, birth_object_id, domain_id) = if data_size == 64 {
-            let g1 = Guid::from_stream(stream).context(err::FailedToReadGuid)?;
-            let g2 = Guid::from_stream(stream).context(err::FailedToReadGuid)?;
-            let g3 = Guid::from_stream(stream).context(err::FailedToReadGuid)?;
+            let g1 = Guid::from_reader(stream).map_err(Error::failed_to_read_guid)?;
+            let g2 = Guid::from_reader(stream).map_err(Error::failed_to_read_guid)?;
+            let g3 = Guid::from_reader(stream).map_err(Error::failed_to_read_guid)?;
             (Some(g1), Some(g2), Some(g3))
         } else {
             (None, None, None)

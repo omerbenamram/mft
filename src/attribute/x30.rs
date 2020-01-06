@@ -1,8 +1,7 @@
 use crate::attribute::FileAttributeFlags;
-use crate::err::{self, Result};
+use crate::err::{self, Error, Result};
 use crate::ReadSeek;
 use log::trace;
-use snafu::OptionExt;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use encoding::all::UTF_16LE;
@@ -12,7 +11,6 @@ use chrono::{DateTime, Utc};
 use num_traits::FromPrimitive;
 use serde::Serialize;
 
-use snafu::ResultExt;
 use winstructs::ntfs::mft_reference::MftReference;
 use winstructs::timestamp::WinTimestamp;
 
@@ -77,18 +75,19 @@ impl FileNameAttr {
     /// ```
     pub fn from_stream<S: ReadSeek>(stream: &mut S) -> Result<FileNameAttr> {
         trace!("Offset {}: FilenameAttr", stream.tell()?);
-        let parent = MftReference::from_reader(stream).context(err::FailedToReadMftReference)?;
+        let parent =
+            MftReference::from_reader(stream).map_err(Error::failed_to_read_mft_reference)?;
         let created = WinTimestamp::from_reader(stream)
-            .context(err::FailedToReadWindowsTime)?
+            .map_err(Error::failed_to_read_windows_time)?
             .to_datetime();
         let modified = WinTimestamp::from_reader(stream)
-            .context(err::FailedToReadWindowsTime)?
+            .map_err(Error::failed_to_read_windows_time)?
             .to_datetime();
         let mft_modified = WinTimestamp::from_reader(stream)
-            .context(err::FailedToReadWindowsTime)?
+            .map_err(Error::failed_to_read_windows_time)?
             .to_datetime();
         let accessed = WinTimestamp::from_reader(stream)
-            .context(err::FailedToReadWindowsTime)?
+            .map_err(Error::failed_to_read_windows_time)?
             .to_datetime();
 
         let logical_size = stream.read_u64::<LittleEndian>()?;
@@ -98,14 +97,14 @@ impl FileNameAttr {
         let name_length = stream.read_u8()?;
         let namespace = stream.read_u8()?;
         let namespace =
-            FileNamespace::from_u8(namespace).context(err::UnknownNamespace { namespace })?;
+            FileNamespace::from_u8(namespace).ok_or(Error::UnknownNamespace { namespace })?;
 
         let mut name_buffer = vec![0; (name_length as usize * 2) as usize];
         stream.read_exact(&mut name_buffer)?;
 
         let name = match UTF_16LE.decode(&name_buffer, DecoderTrap::Ignore) {
             Ok(s) => s,
-            Err(_e) => return err::InvalidFilename {}.fail(),
+            Err(_e) => return Err(Error::InvalidFilename {}),
         };
 
         Ok(FileNameAttr {

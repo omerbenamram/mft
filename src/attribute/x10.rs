@@ -1,12 +1,11 @@
 use crate::attribute::FileAttributeFlags;
-use crate::err::{self, Result};
+use crate::err::{Error, Result};
 use crate::ReadSeek;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::{DateTime, Utc};
 use log::trace;
 use serde::Serialize;
-use snafu::ResultExt;
 use winstructs::timestamp::WinTimestamp;
 
 #[derive(Serialize, Debug, Clone)]
@@ -62,16 +61,16 @@ impl StandardInfoAttr {
     pub fn from_reader<S: ReadSeek>(reader: &mut S) -> Result<StandardInfoAttr> {
         trace!("Offset {}: StandardInfoAttr", reader.tell()?);
         let created = WinTimestamp::from_reader(reader)
-            .context(err::FailedToReadWindowsTime)?
+            .map_err(Error::failed_to_read_windows_time)?
             .to_datetime();
         let modified = WinTimestamp::from_reader(reader)
-            .context(err::FailedToReadWindowsTime)?
+            .map_err(Error::failed_to_read_windows_time)?
             .to_datetime();
         let mft_modified = WinTimestamp::from_reader(reader)
-            .context(err::FailedToReadWindowsTime)?
+            .map_err(Error::failed_to_read_windows_time)?
             .to_datetime();
         let accessed = WinTimestamp::from_reader(reader)
-            .context(err::FailedToReadWindowsTime)?
+            .map_err(Error::failed_to_read_windows_time)?
             .to_datetime();
 
         Ok(StandardInfoAttr {
