@@ -92,10 +92,7 @@ impl FlatMftEntryWithName {
 
         let has_ads = entry_attributes
             .iter()
-            .any(|a| {
-                a.header.type_code == MftAttributeType::DATA && a.header.name.len() > 0
-            });
-
+            .any(|a| a.header.type_code == MftAttributeType::DATA && !a.header.name.is_empty());
 
         FlatMftEntryWithName {
             entry_id: entry.header.record_number,
@@ -111,14 +108,14 @@ impl FlatMftEntryWithName {
             is_a_directory: entry.is_dir(),
             is_deleted: !entry.header.flags.contains(EntryFlags::ALLOCATED),
             has_alternate_data_streams: has_ads,
-            standard_info_flags: standard_info.as_ref().and_then(|i| Some(i.file_flags)),
-            standard_info_last_modified: standard_info.as_ref().and_then(|i| Some(i.modified)),
-            standard_info_last_access: standard_info.as_ref().and_then(|i| Some(i.accessed)),
-            standard_info_created: standard_info.as_ref().and_then(|i| Some(i.created)),
-            file_name_flags: file_name.as_ref().and_then(|i| Some(i.flags)),
-            file_name_last_modified: file_name.as_ref().and_then(|i| Some(i.modified)),
-            file_name_last_access: file_name.as_ref().and_then(|i| Some(i.accessed)),
-            file_name_created: file_name.as_ref().and_then(|i| Some(i.created)),
+            standard_info_flags: standard_info.as_ref().map(|i| i.file_flags),
+            standard_info_last_modified: standard_info.as_ref().map(|i| i.modified),
+            standard_info_last_access: standard_info.as_ref().map(|i| i.accessed),
+            standard_info_created: standard_info.as_ref().map(|i| i.created),
+            file_name_flags: file_name.as_ref().map(|i| i.flags),
+            file_name_last_modified: file_name.as_ref().map(|i| i.modified),
+            file_name_last_access: file_name.as_ref().map(|i| i.accessed),
+            file_name_created: file_name.as_ref().map(|i| i.created),
             file_size,
             full_path: parser
                 .get_full_path_for_entry(entry)

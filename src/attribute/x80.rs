@@ -1,7 +1,6 @@
-use crate::err::{self, Result};
+use crate::err::Result;
 use crate::{utils, ReadSeek};
 use serde::ser;
-use snafu::ResultExt;
 
 /// $Data Attribute
 #[derive(Clone, Debug)]
@@ -11,7 +10,7 @@ impl DataAttr {
     pub fn from_stream<S: ReadSeek>(stream: &mut S, data_size: usize) -> Result<DataAttr> {
         let mut data = vec![0_u8; data_size];
 
-        stream.read_exact(&mut data).context(err::IoError)?;
+        stream.read_exact(&mut data)?;
 
         Ok(DataAttr(data))
     }
@@ -26,6 +25,6 @@ impl ser::Serialize for DataAttr {
     where
         S: ser::Serializer,
     {
-        serializer.serialize_str(&utils::to_hex_string(&self.0).to_string())
+        serializer.serialize_str(&utils::to_hex_string(&self.0))
     }
 }

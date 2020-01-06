@@ -11,48 +11,54 @@ authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-log = {version = "^0.4", features=["release_max_level_debug"]}
-clap = "2.33.0"
-encoding = "0.2.33"
-byteorder = "1.3.1"
-bitflags = "1.0.4"
-serde = {version = "1.0.91", features = ["derive"]}
-serde_json = "1.0.39"
-csv = "1.0.7"
-snafu = {version="0.5.0", features = ["backtraces", "rust_1_30"]}
+log = { version = "0.4", features = ["release_max_level_debug"] }
+encoding = "0.2"
+byteorder = "1.3"
+bitflags = "1.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+csv = "1.1"
+thiserror = "1.0"
 num-traits = "0.2"
 num-derive = "0.3"
-winstructs = "0.2.0"
+winstructs = "0.3.0"
 lru = "0.4.3"
-itertools = "0.8.0"
-rand = "0.7.0"
+itertools = "0.8"
+rand = "0.7"
 
 # `mft_dump` dependencies
-simplelog = "0.7.1"
-dialoguer = "0.4.0"
-indoc = "0.3"
+clap = {version = "2.33.0", optional = true}
+anyhow = {version = "1.0", optional = true}
+simplelog = {version = "0.7.4", optional = true}
+dialoguer = {version = "0.5.0", optional = true}
+indoc = {version = "0.3.4", optional = true}
+
+[features]
+default = ["mft_dump"]
+mft_dump = ["anyhow", "simplelog", "dialoguer", "indoc", "clap"]
 
 [dependencies.chrono]
-version = "0.4.6"
+version = "0.4.10"
 features = ["serde"]
 
 [dev-dependencies]
-criterion = "0.3"
-skeptic = "0.13"
-assert_cmd = "0.12"
-predicates = "1"
-env_logger = "0.7.0"
-tempfile = "3"
+criterion = "0.3.0"
+skeptic = "0.13.4"
+assert_cmd = "0.12.0"
+predicates = "1.0.2"
+env_logger = "0.7.1"
+tempfile = "3.1.0"
 
 # rexpect relies on unix process semantics, but it's only used for process interaction tests.
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]
-rexpect = "0.3"
+rexpect = "0.3.0"
 
 [build-dependencies]
-skeptic = "0.13"
+skeptic = "0.13.4"
 
 [[bin]]
 name = "mft_dump"
+required-features = ["mft_dump"]
 
 [[bench]]
 name = "benchmark"

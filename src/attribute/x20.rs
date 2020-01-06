@@ -1,4 +1,4 @@
-use crate::err::{self, Result};
+use crate::err::{Error, Result};
 use crate::ReadSeek;
 use log::trace;
 
@@ -8,7 +8,6 @@ use encoding::{DecoderTrap, Encoding};
 
 use serde::Serialize;
 
-use snafu::ResultExt;
 use std::io::SeekFrom;
 use winstructs::ntfs::mft_reference::MftReference;
 
@@ -34,7 +33,7 @@ impl AttributeListAttr {
         let name_offset = stream.read_u8()?;
         let first_vcn = stream.read_u64::<LittleEndian>()?;
         let base_reference =
-            MftReference::from_reader(stream).context(err::FailedToReadMftReference)?;
+            MftReference::from_reader(stream).map_err(Error::failed_to_read_mft_reference)?;
         let attribute_id = stream.read_u16::<LittleEndian>()?;
 
         let name = if name_length > 0 {
@@ -45,7 +44,7 @@ impl AttributeListAttr {
 
             match UTF_16LE.decode(&name_buffer, DecoderTrap::Ignore) {
                 Ok(s) => s,
-                Err(_e) => return err::InvalidFilename {}.fail(),
+                Err(_e) => return Err(Error::InvalidFilename {}),
             }
         } else {
             String::new()

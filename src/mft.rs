@@ -1,9 +1,8 @@
 use crate::entry::MftEntry;
-use crate::err::{self, Result};
+use crate::err::{Error, Result};
 
 use crate::{EntryHeader, ReadSeek};
 use log::{debug, trace};
-use snafu::ResultExt;
 
 use lru::LruCache;
 use std::fs::{self, File};
@@ -25,7 +24,7 @@ impl MftParser<BufReader<File>> {
     pub fn from_path(filename: impl AsRef<Path>) -> Result<Self> {
         let f = filename.as_ref();
 
-        let mft_fh = File::open(f).context(err::FailedToOpenFile { path: f.to_owned() })?;
+        let mft_fh = File::open(f).map_err(|e| Error::failed_to_open_file(f, e))?;
         let size = fs::metadata(f)?.len();
 
         Self::from_read_seek(BufReader::with_capacity(4096, mft_fh), Some(size))
@@ -181,6 +180,8 @@ mod tests {
                 count += 1;
             }
         }
+
+        assert!(count > 0)
     }
 
     #[test]
