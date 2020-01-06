@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2020-01-06
+
+### Changed
+- Bumped dependencies.
+- `mft_dump` is now an optional features so consumers of the library can enjoy faster compilation time.
+- Changed error handling to `anyhow` + `thiserror` from `snafu`.
+
 ## [0.4.4] - 2019-06-19
 
 ### Fixed
