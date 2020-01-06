@@ -26,6 +26,6 @@ impl ser::Serialize for DataAttr {
     where
         S: ser::Serializer,
     {
-        serializer.serialize_str(&utils::to_hex_string(&self.0).to_string())
+        serializer.serialize_str(&utils::to_hex_string(&self.0))
     }
 }

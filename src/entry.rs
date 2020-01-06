@@ -22,9 +22,9 @@ use std::io::{Cursor, Seek};
 
 const SEQUENCE_NUMBER_STRIDE: usize = 512;
 
-pub const ZERO_HEADER: &'static [u8; 4] = b"\x00\x00\x00\x00";
-pub const BAAD_HEADER: &'static [u8; 4] = b"BAAD";
-pub const FILE_HEADER: &'static [u8; 4] = b"FILE";
+pub const ZERO_HEADER: &[u8; 4] = b"\x00\x00\x00\x00";
+pub const BAAD_HEADER: &[u8; 4] = b"BAAD";
+pub const FILE_HEADER: &[u8; 4] = b"FILE";
 
 #[derive(Debug, Clone)]
 pub struct MftEntry {
@@ -239,7 +239,6 @@ impl MftEntry {
     /// https://docs.microsoft.com/en-us/windows/desktop/devnotes/multi-sector-header
     /// **Note**: The fixup will be written at the end of each 512-byte stride,
     /// even if the device has more (or less) than 512 bytes per sector.
-    #[must_use]
     fn apply_fixups(header: &EntryHeader, buffer: &mut [u8]) -> Result<()> {
         let number_of_fixups = u32::from(header.usa_size - 1);
         trace!("Number of fixups: {}", number_of_fixups);
@@ -313,7 +312,7 @@ impl MftEntry {
                     Ok(_) => {}
                     Err(e) => {
                         exhausted = true;
-                        return Some(Err(e.into()));
+                        return Some(Err(e));
                     }
                 };
 
