@@ -2,11 +2,12 @@
 // since they use `rexpect`, which internally uses quirky fork semantics to open a pty.
 // They will fail if tried to be executed concurrently any other CLI test.
 
+#[cfg(not(target_os = "windows"))]
 mod fixtures;
 
 #[cfg(not(target_os = "windows"))]
-mod tests {
-    use fixtures::*;
+mod cli_tests {
+    use super::fixtures::*;
 
     use std::fs::File;
     use std::io::{Read, Write};
