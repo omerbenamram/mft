@@ -149,6 +149,12 @@ pub enum MftAttributeType {
     BITMAP = 0xB0_u32,
     /// The reparse point data.
     ReparsePoint = 0xC0_u32,
+    /// Used for backward compatibility with OS/2 applications (HPFS)
+    EaInformation = 0xD0_u32,
+    /// Used for backward compatibility with OS/2 applications (HPFS)
+    EA = 0xE0_u32,
+    /// Keys and other information about encrypted attributes (NTFS 3.0+; Windows 2000+)
+    LoggedUtilityStream = 0x100_u32,
 }
 
 bitflags! {
