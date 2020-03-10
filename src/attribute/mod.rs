@@ -136,11 +136,11 @@ impl MftAttributeContent {
 #[serde(untagged)]
 pub enum MftAttributeContent {
     Raw(RawAttribute),
-    AttrX80(DataAttr),
     AttrX10(StandardInfoAttr),
     AttrX20(AttributeListAttr),
     AttrX30(FileNameAttr),
     AttrX40(ObjectIdAttr),
+    AttrX80(DataAttr),
     AttrX90(IndexRootAttr),
     /// Empty - used when data is non resident.
     None,
