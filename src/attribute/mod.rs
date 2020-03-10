@@ -10,6 +10,8 @@ pub mod x90;
 use crate::err::Result;
 use crate::{impl_serialize_for_bitflags, ReadSeek};
 
+use std::io::Cursor;
+
 use bitflags::bitflags;
 
 use crate::attribute::raw::RawAttribute;
@@ -39,9 +41,26 @@ impl MftAttributeContent {
             MftAttributeType::StandardInformation => Ok(MftAttributeContent::AttrX10(
                 StandardInfoAttr::from_reader(stream)?,
             )),
-            MftAttributeType::AttributeList => Ok(MftAttributeContent::AttrX20(
-                AttributeListAttr::from_stream(stream)?,
-            )),
+            MftAttributeType::AttributeList => {
+                // An attribute list is a buffer of attribute entries which are varying sizes if 
+                // the attributes contain names. Thus, we must know when to stop reading. To
+                // do this, we will create a buffer of the attribute, and stop reading attribute
+                // entries when we reach the end of the buffer.
+                let content_size = resident.data_size;
+                
+                let mut attribute_buffer = vec![0; content_size as usize];
+                stream.read_exact(&mut attribute_buffer)?;
+
+                // Create a new stream that the attribute will read from.
+                let mut new_stream = Cursor::new(attribute_buffer);
+
+                let attr_list = AttributeListAttr::from_stream(
+                    &mut new_stream, 
+                    Some(content_size as u64)
+                )?;
+
+                Ok(MftAttributeContent::AttrX20(attr_list))
+            },
             MftAttributeType::FileName => Ok(MftAttributeContent::AttrX30(
                 FileNameAttr::from_stream(stream)?,
             )),
@@ -64,6 +83,14 @@ impl MftAttributeContent {
                 header.type_code.clone(),
                 resident.data_size as usize,
             )?)),
+        }
+    }
+
+    /// Converts the given attributes into a 'AttributeListAttr', consuming the object attribute object.
+    pub fn into_attribute_list(self) -> Option<AttributeListAttr> {
+        match self {
+            MftAttributeContent::AttrX20(content) => Some(content),
+            _ => None,
         }
     }
 
