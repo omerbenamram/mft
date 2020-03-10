@@ -185,10 +185,15 @@ pub enum MftAttributeType {
 }
 
 bitflags! {
+    /// Flag sources:
+    /// https://github.com/EricZimmerman/MFT/blob/3bed2626ee85e9a96a6db70a17407d0c3696056a/MFT/Attributes/StandardInfo.cs#L10
+    /// https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ca28ec38-f155-4768-81d6-4bfeb8586fc9
+    /// 
     pub struct FileAttributeFlags: u32 {
         const FILE_ATTRIBUTE_READONLY             = 0x0000_0001;
         const FILE_ATTRIBUTE_HIDDEN               = 0x0000_0002;
         const FILE_ATTRIBUTE_SYSTEM               = 0x0000_0004;
+        const FILE_ATTRIBUTE_DIRECTORY            = 0x0000_0010;
         const FILE_ATTRIBUTE_ARCHIVE              = 0x0000_0020;
         const FILE_ATTRIBUTE_DEVICE               = 0x0000_0040;
         const FILE_ATTRIBUTE_NORMAL               = 0x0000_0080;
@@ -199,6 +204,11 @@ bitflags! {
         const FILE_ATTRIBUTE_OFFLINE              = 0x0000_1000;
         const FILE_ATTRIBUTE_NOT_CONTENT_INDEXED  = 0x0000_2000;
         const FILE_ATTRIBUTE_ENCRYPTED            = 0x0000_4000;
+        const FILE_ATTRIBUTE_INTEGRITY_STREAM     = 0x0000_8000;
+        const FILE_ATTRIBUTE_NO_SCRUB_DATA        = 0x0002_0000;
+        const FILE_ATTRIBUTE_HAS_EA               = 0x0004_0000;
+        const FILE_ATTRIBUTE_IS_DIRECTORY         = 0x1000_0000;
+        const FILE_ATTRIBUTE_INDEX_VIEW           = 0x2000_0000;
     }
 }
 
