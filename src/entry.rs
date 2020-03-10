@@ -36,7 +36,7 @@ impl ser::Serialize for MftEntry {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("Color", 2)?;
+        let mut state = serializer.serialize_struct("MftEntry", 2)?;
         let attributes: Vec<MftAttribute> = self.iter_attributes().filter_map(Result::ok).collect();
         state.serialize_field("header", &self.header)?;
         state.serialize_field("attributes", &attributes)?;
