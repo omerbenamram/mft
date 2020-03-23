@@ -9,8 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Attribute list parsing
 
+### Changed
+- Warn on fixup mismatch instead of fail
+
 ### Added
 - Additional File Attribute flags
+- `valid_fixup` field to MftEntry
 
 ## [0.5.1] - 2020-02-06
 

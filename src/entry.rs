@@ -1,7 +1,7 @@
 use crate::err::{Error, Result};
 use crate::impl_serialize_for_bitflags;
 
-use log::trace;
+use log::{trace, warn};
 
 use winstructs::ntfs::mft_reference::MftReference;
 
@@ -29,6 +29,10 @@ pub const FILE_HEADER: &[u8; 4] = b"FILE";
 pub struct MftEntry {
     pub header: EntryHeader,
     pub data: Vec<u8>,
+    /// Valid fixup allows you to check if the fixup value in the entry's blocks
+    /// matched the fixup array value. It is optional because in the case of 
+    /// from_buffer_skip_fixup(), no fixup is even checked, thus, valid_fixup is None
+    pub valid_fixup: Option<bool>
 }
 
 impl ser::Serialize for MftEntry {
@@ -40,6 +44,7 @@ impl ser::Serialize for MftEntry {
         let attributes: Vec<MftAttribute> = self.iter_attributes().filter_map(Result::ok).collect();
         state.serialize_field("header", &self.header)?;
         state.serialize_field("attributes", &attributes)?;
+        state.serialize_field("valid_fixup", &self.valid_fixup)?;
         state.end()
     }
 }
@@ -175,13 +180,16 @@ impl MftEntry {
         let entry_header = EntryHeader::from_reader(&mut cursor, entry_number)?;
         trace!("Number of sectors: {:#?}", entry_header);
 
-        if entry_header.is_valid() {
-            Self::apply_fixups(&entry_header, &mut buffer)?;
-        }
+        let valid_fixup = if entry_header.is_valid() {
+            Some(Self::apply_fixups(&entry_header, &mut buffer)?)
+        } else {
+            None
+        };
 
         Ok(MftEntry {
             header: entry_header,
             data: buffer,
+            valid_fixup
         })
     }
 
@@ -203,6 +211,7 @@ impl MftEntry {
         Ok(MftEntry {
             header: entry_header,
             data: buffer,
+            valid_fixup: None
         })
     }
 
@@ -236,7 +245,10 @@ impl MftEntry {
     /// https://docs.microsoft.com/en-us/windows/desktop/devnotes/multi-sector-header
     /// **Note**: The fixup will be written at the end of each 512-byte stride,
     /// even if the device has more (or less) than 512 bytes per sector.
-    fn apply_fixups(header: &EntryHeader, buffer: &mut [u8]) -> Result<()> {
+    /// The returned result is true if all fixup blocks had the fixup array value, or
+    /// false if a block's fixup value did not match the array's value.
+    fn apply_fixups(header: &EntryHeader, buffer: &mut [u8]) -> Result<bool> {
+        let mut valid_fixup = true;
         let number_of_fixups = u32::from(header.usa_size - 1);
         trace!("Number of fixups: {}", number_of_fixups);
 
@@ -262,17 +274,22 @@ impl MftEntry {
                 &mut buffer[end_of_sector_bytes_start_offset..end_of_sector_bytes_end_offset];
 
             if end_of_sector_bytes != update_sequence {
-                return Err(Error::FailedToApplyFixup {
+                // An item in the block did not match the fixup array value
+                warn!(
+                    "[entry: {}] fixup bytes are not equal to update sequence value - stride_number: {}, end_of_sector_bytes: {:?}, fixup_bytes: {:?}",
+                    header.record_number,
                     stride_number,
-                    end_of_sector_bytes: end_of_sector_bytes.to_vec(),
-                    fixup_bytes: fixup_bytes.to_vec(),
-                });
+                    end_of_sector_bytes.to_vec(),
+                    fixup_bytes.to_vec()
+                );
+
+                valid_fixup = false;
             }
 
             end_of_sector_bytes.copy_from_slice(&fixup_bytes);
         }
 
-        Ok(())
+        Ok(valid_fixup)
     }
 
     pub fn is_allocated(&self) -> bool {
