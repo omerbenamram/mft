@@ -11,7 +11,7 @@ strategy:
       target: 'x86_64-pc-windows-msvc'
       rustup_toolchain: stable
     mac-stable:
-      imageName: 'macos-10.13'
+      imageName: 'macOS-10.14'
       target: 'x86_64-apple-darwin'
       rustup_toolchain: stable
     linux-stable:
