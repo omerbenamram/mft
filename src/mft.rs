@@ -99,7 +99,8 @@ impl<T: ReadSeek> MftParser<T> {
         } else {
             let path = match self.get_entry(parent_entry_id).ok() {
                 Some(parent) => match self.get_full_path_for_entry(&parent) {
-                    Ok(Some(path)) => path,
+                    Ok(Some(path)) if parent.is_dir() => path,
+                    Ok(Some(_)) => PathBuf::from("[Unknown]"),
                     // I have a parent, which doesn't have a filename attribute.
                     // Default to root.
                     _ => PathBuf::new(),
