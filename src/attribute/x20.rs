@@ -17,6 +17,7 @@ pub struct AttributeListAttr {
     /// A list of AttributeListEntry that make up this AttributeListAttr
     pub entries: Vec<AttributeListEntry>,
 }
+
 impl AttributeListAttr {
     /// Read AttributeListAttr from stream. Stream should be the size of the attribute's data itself
     /// if no stream_size is passed in.

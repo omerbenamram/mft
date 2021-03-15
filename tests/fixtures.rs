@@ -23,5 +23,9 @@ pub fn samples_dir() -> PathBuf {
 }
 
 pub fn mft_sample() -> PathBuf {
-    samples_dir().join("MFT")
+    mft_sample_name("MFT")
+}
+
+pub fn mft_sample_name(filename: &str) -> PathBuf {
+    samples_dir().join(filename)
 }
