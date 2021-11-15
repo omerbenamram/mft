@@ -29,7 +29,7 @@ rand = "0.7"
 # `mft_dump` dependencies
 clap = {version = "2.33.0", optional = true}
 anyhow = {version = "1.0", optional = true}
-simplelog = {version = "0.7.4", optional = true}
+simplelog = {version = "0.11.0", optional = true}
 dialoguer = {version = "0.5.0", optional = true}
 indoc = {version = "0.3.4", optional = true}
 
