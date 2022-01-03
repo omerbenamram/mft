@@ -49,7 +49,7 @@ impl ser::Serialize for MftEntry {
     }
 }
 
-/// https://docs.microsoft.com/en-us/windows/desktop/devnotes/file-record-segment-header
+/// <https://docs.microsoft.com/en-us/windows/desktop/devnotes/file-record-segment-header>
 /// The MFT entry can be filled entirely with 0-byte values.
 #[derive(Serialize, Debug, Clone)]
 pub struct EntryHeader {

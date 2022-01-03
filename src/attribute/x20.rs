@@ -99,7 +99,7 @@ impl AttributeListAttr {
 }
 
 /// An AttributeListAttr is made up off multiple AttributeListEntry structs.
-/// https://docs.microsoft.com/en-us/windows/win32/devnotes/attribute-list-entry
+/// <https://docs.microsoft.com/en-us/windows/win32/devnotes/attribute-list-entry>
 ///
 #[derive(Serialize, Clone, Debug)]
 pub struct AttributeListEntry {

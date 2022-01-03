@@ -144,7 +144,7 @@ pub enum MftAttributeContent {
     None,
 }
 
-/// MFT Possible attribute types, from https://docs.microsoft.com/en-us/windows/desktop/devnotes/attribute-list-entry
+/// MFT Possible attribute types, from <https://docs.microsoft.com/en-us/windows/desktop/devnotes/attribute-list-entry>
 #[derive(Serialize, Debug, Clone, FromPrimitive, ToPrimitive, PartialOrd, PartialEq)]
 #[repr(u32)]
 pub enum MftAttributeType {
@@ -184,8 +184,8 @@ pub enum MftAttributeType {
 
 bitflags! {
     /// Flag sources:
-    /// https://github.com/EricZimmerman/MFT/blob/3bed2626ee85e9a96a6db70a17407d0c3696056a/MFT/Attributes/StandardInfo.cs#L10
-    /// https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ca28ec38-f155-4768-81d6-4bfeb8586fc9
+    /// <https://github.com/EricZimmerman/MFT/blob/3bed2626ee85e9a96a6db70a17407d0c3696056a/MFT/Attributes/StandardInfo.cs#L10>
+    /// <https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ca28ec38-f155-4768-81d6-4bfeb8586fc9>
     ///
     pub struct FileAttributeFlags: u32 {
         const FILE_ATTRIBUTE_READONLY             = 0x0000_0001;
