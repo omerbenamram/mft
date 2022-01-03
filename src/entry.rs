@@ -233,10 +233,7 @@ impl MftEntry {
             Some(filename) => Some(filename.clone()),
             None => {
                 // Try to take anything
-                match file_name_attributes.iter().next() {
-                    Some(filename) => Some(filename.clone()),
-                    None => None,
-                }
+                file_name_attributes.get(0).cloned()
             }
         }
     }
@@ -286,7 +283,7 @@ impl MftEntry {
                 valid_fixup = false;
             }
 
-            end_of_sector_bytes.copy_from_slice(&fixup_bytes);
+            end_of_sector_bytes.copy_from_slice(fixup_bytes);
         }
 
         Ok(valid_fixup)

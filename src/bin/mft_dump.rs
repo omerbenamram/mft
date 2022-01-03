@@ -21,6 +21,7 @@ use std::str::FromStr;
 use std::{fs, io, path};
 
 #[derive(Debug, PartialOrd, PartialEq)]
+#[allow(clippy::upper_case_acronyms)]
 enum OutputFormat {
     JSON,
     JSONL,
@@ -317,11 +318,7 @@ impl MftDump {
                             if a.header.type_code == MftAttributeType::DATA {
                                 // resident
                                 let name = a.header.name.clone();
-                                if let Some(data) = a.data.into_data() {
-                                    Some((name, data))
-                                } else {
-                                    None
-                                }
+                                a.data.into_data().map(|data| (name, data))
                             } else {
                                 None
                             }
@@ -412,7 +409,7 @@ impl MftDump {
         parser: &mut MftParser<impl ReadSeek>,
         writer: &mut csv::Writer<W>,
     ) -> Result<()> {
-        let flat_entry = FlatMftEntryWithName::from_entry(&entry, parser);
+        let flat_entry = FlatMftEntryWithName::from_entry(entry, parser);
 
         writer.serialize(flat_entry)?;
 
