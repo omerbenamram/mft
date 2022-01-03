@@ -6,7 +6,7 @@ use mft::attribute::MftAttributeType;
 use mft::mft::MftParser;
 use mft::{MftEntry, ReadSeek};
 
-use dialoguer::Confirmation;
+use dialoguer::Confirm;
 use mft::csv::FlatMftEntryWithName;
 
 use anyhow::{anyhow, Context, Error, Result};
@@ -227,8 +227,8 @@ impl MftDump {
 
         if p.exists() {
             if prompt {
-                match Confirmation::new()
-                    .with_text(&format!(
+                match Confirm::new()
+                    .with_prompt(&format!(
                         "Are you sure you want to override output file at {}",
                         p.display()
                     ))
@@ -451,10 +451,10 @@ fn main() -> Result<()> {
         .version(env!("CARGO_PKG_VERSION"))
         .author("Omer B. <omerbenamram@gmail.com>")
         .about("Utility for parsing MFT snapshots")
-        .arg(Arg::with_name("INPUT").required(true))
+        .arg(Arg::new("INPUT").required(true))
         .arg(
-            Arg::with_name("output-format")
-                .short("-o")
+            Arg::new("output-format")
+                .short('o')
                 .long("--output-format")
                 .takes_value(true)
                 .possible_values(&["csv", "json", "jsonl"])
@@ -462,39 +462,39 @@ fn main() -> Result<()> {
                 .help("Output format."),
         )
         .arg(
-            Arg::with_name("entry-range")
+            Arg::new("entry-range")
                 .long("--ranges")
-                .short("-r")
+                .short('r')
                 .takes_value(true)
                 .help(indoc!("Dumps only the given entry range(s), for example, `1-15,30` will dump entries 1-15, and 30")),
         )
         .arg(
-            Arg::with_name("output-target")
+            Arg::new("output-target")
                 .long("--output")
-                .short("-f")
+                .short('f')
                 .takes_value(true)
                 .help(indoc!("Writes output to the file specified instead of stdout, errors will still be printed to stderr.
                        Will ask for confirmation before overwriting files, to allow overwriting, pass `--no-confirm-overwrite`
                        Will create parent directories if needed.")),
         )
         .arg(
-            Arg::with_name("data-streams-target")
+            Arg::new("data-streams-target")
                 .long("--extract-resident-streams")
-                .short("-e")
+                .short('e')
                 .takes_value(true)
                 .help(indoc!("Writes resident data streams to the given directory.
                              Resident streams will be named like - `{path}__<random_bytes>_{stream_number}_{stream_name}.dontrun`
                              random is added to prevent collisions.")),
         )
         .arg(
-            Arg::with_name("no-confirm-overwrite")
+            Arg::new("no-confirm-overwrite")
                 .long("--no-confirm-overwrite")
                 .takes_value(false)
                 .help(indoc!("When set, will not ask for confirmation before overwriting files, useful for automation")),
         )
-        .arg(Arg::with_name("verbose")
-            .short("-v")
-            .multiple(true)
+        .arg(Arg::new("verbose")
+            .short('v')
+            .multiple_occurrences(true)
             .takes_value(false)
             .help(indoc!(r#"
             Sets debug prints level for the application:
@@ -504,7 +504,7 @@ fn main() -> Result<()> {
             NOTE: trace output is only available in debug builds, as it is extremely verbose."#))
         )
         .arg(
-            Arg::with_name("backtraces")
+            Arg::new("backtraces")
                 .long("--backtraces")
                 .takes_value(false)
                 .help("If set, a backtrace will be printed with some errors if available"))
