@@ -10,14 +10,13 @@ use serde::Serialize;
 use std::io::SeekFrom;
 use winstructs::ntfs::mft_reference::MftReference;
 
-
 /// The AttributeListAttr represents the $20 attribute, which contains a list
 /// of attribute entries in child entries.
 ///
 #[derive(Serialize, Clone, Debug)]
 pub struct AttributeListAttr {
     /// A list of AttributeListEntry that make up this AttributeListAttr
-    pub entries: Vec<AttributeListEntry>
+    pub entries: Vec<AttributeListEntry>,
 }
 impl AttributeListAttr {
     /// Read AttributeListAttr from stream. Stream should be the size of the attribute's data itself
@@ -59,7 +58,7 @@ impl AttributeListAttr {
     /// ```
     pub fn from_stream<S: ReadSeek>(
         mut stream: &mut S,
-        stream_size: Option<u64>
+        stream_size: Option<u64>,
     ) -> Result<AttributeListAttr> {
         let mut start_offset = stream.tell()?;
         let end_offset = match stream_size {
@@ -68,15 +67,11 @@ impl AttributeListAttr {
                 // If no stream size was passed in we seek to the end of the stream,
                 // then tell to get the ending offset, then seek back to the start,
                 // thus, its better to just pass the stream size.
-                stream.seek(
-                    SeekFrom::End(0)
-                )?;
+                stream.seek(SeekFrom::End(0))?;
 
                 let offset = stream.tell()?;
 
-                stream.seek(
-                    SeekFrom::Start(0)
-                )?;
+                stream.seek(SeekFrom::Start(0))?;
 
                 offset
             }
@@ -87,9 +82,7 @@ impl AttributeListAttr {
         // iterate attribute content parsing attribute list entries
         while start_offset < end_offset {
             // parse the entry from the stream
-            let attr_entry = AttributeListEntry::from_stream(
-                &mut stream
-            )?;
+            let attr_entry = AttributeListEntry::from_stream(&mut stream)?;
 
             // update the starting offset
             start_offset += attr_entry.record_length as u64;
@@ -98,17 +91,12 @@ impl AttributeListAttr {
             entries.push(attr_entry);
 
             // seek the stream to next start offset to avoid padding
-            stream.seek(
-                SeekFrom::Start(start_offset)
-            )?;
+            stream.seek(SeekFrom::Start(start_offset))?;
         }
 
-        Ok(Self{
-            entries
-        })
+        Ok(Self { entries })
     }
 }
-
 
 /// An AttributeListAttr is made up off multiple AttributeListEntry structs.
 /// https://docs.microsoft.com/en-us/windows/win32/devnotes/attribute-list-entry
@@ -165,9 +153,7 @@ impl AttributeListEntry {
     /// assert_eq!(attribute_entry.reserved, 0);
     /// assert_eq!(attribute_entry.name, "".to_string());
     /// ```
-    pub fn from_stream<S: ReadSeek>(
-        stream: &mut S
-    ) -> Result<AttributeListEntry> {
+    pub fn from_stream<S: ReadSeek>(stream: &mut S) -> Result<AttributeListEntry> {
         let start_offset = stream.tell()?;
 
         let attribute_type = stream.read_u32::<LittleEndian>()?;
@@ -175,8 +161,8 @@ impl AttributeListEntry {
         let name_length = stream.read_u8()?;
         let name_offset = stream.read_u8()?;
         let lowest_vcn = stream.read_u64::<LittleEndian>()?;
-        let segment_reference = MftReference::from_reader(stream)
-            .map_err(Error::failed_to_read_mft_reference)?;
+        let segment_reference =
+            MftReference::from_reader(stream).map_err(Error::failed_to_read_mft_reference)?;
         let reserved = stream.read_u16::<LittleEndian>()?;
 
         let name = if name_length > 0 {

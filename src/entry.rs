@@ -30,9 +30,9 @@ pub struct MftEntry {
     pub header: EntryHeader,
     pub data: Vec<u8>,
     /// Valid fixup allows you to check if the fixup value in the entry's blocks
-    /// matched the fixup array value. It is optional because in the case of 
+    /// matched the fixup array value. It is optional because in the case of
     /// from_buffer_skip_fixup(), no fixup is even checked, thus, valid_fixup is None
-    pub valid_fixup: Option<bool>
+    pub valid_fixup: Option<bool>,
 }
 
 impl ser::Serialize for MftEntry {
@@ -189,7 +189,7 @@ impl MftEntry {
         Ok(MftEntry {
             header: entry_header,
             data: buffer,
-            valid_fixup
+            valid_fixup,
         })
     }
 
@@ -211,7 +211,7 @@ impl MftEntry {
         Ok(MftEntry {
             header: entry_header,
             data: buffer,
-            valid_fixup: None
+            valid_fixup: None,
         })
     }
 
