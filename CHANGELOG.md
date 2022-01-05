@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
+## [0.6.0] - 2022-01-05
+
+### Changed
+- Happy new year! lots of dependencies have been updated.
+- update to rust edition 2021
+
 ## [0.5.2] - 2020-03-10
 
 ### Fixed
@@ -56,11 +63,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.0] - 2019-06-04
 
 ### Added
-- `mft_dump` can now export resident streams to a directory.  
+- `mft_dump` can now export resident streams to a directory.
 
 ## [0.3.0] - 2019-06-02
 
-Fixed parsing of entries which are spread over multiple sectors.  
+Fixed parsing of entries which are spread over multiple sectors.
 
 ## [0.2.0] - 2019-05-23
 
