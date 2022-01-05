@@ -42,25 +42,23 @@ impl MftAttributeContent {
                 StandardInfoAttr::from_reader(stream)?,
             )),
             MftAttributeType::AttributeList => {
-                // An attribute list is a buffer of attribute entries which are varying sizes if 
+                // An attribute list is a buffer of attribute entries which are varying sizes if
                 // the attributes contain names. Thus, we must know when to stop reading. To
                 // do this, we will create a buffer of the attribute, and stop reading attribute
                 // entries when we reach the end of the buffer.
                 let content_size = resident.data_size;
-                
+
                 let mut attribute_buffer = vec![0; content_size as usize];
                 stream.read_exact(&mut attribute_buffer)?;
 
                 // Create a new stream that the attribute will read from.
                 let mut new_stream = Cursor::new(attribute_buffer);
 
-                let attr_list = AttributeListAttr::from_stream(
-                    &mut new_stream, 
-                    Some(content_size as u64)
-                )?;
+                let attr_list =
+                    AttributeListAttr::from_stream(&mut new_stream, Some(content_size as u64))?;
 
                 Ok(MftAttributeContent::AttrX20(attr_list))
-            },
+            }
             MftAttributeType::FileName => Ok(MftAttributeContent::AttrX30(
                 FileNameAttr::from_stream(stream)?,
             )),
@@ -146,7 +144,7 @@ pub enum MftAttributeContent {
     None,
 }
 
-/// MFT Possible attribute types, from https://docs.microsoft.com/en-us/windows/desktop/devnotes/attribute-list-entry
+/// MFT Possible attribute types, from <https://docs.microsoft.com/en-us/windows/desktop/devnotes/attribute-list-entry>
 #[derive(Serialize, Debug, Clone, FromPrimitive, ToPrimitive, PartialOrd, PartialEq)]
 #[repr(u32)]
 pub enum MftAttributeType {
@@ -186,9 +184,9 @@ pub enum MftAttributeType {
 
 bitflags! {
     /// Flag sources:
-    /// https://github.com/EricZimmerman/MFT/blob/3bed2626ee85e9a96a6db70a17407d0c3696056a/MFT/Attributes/StandardInfo.cs#L10
-    /// https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ca28ec38-f155-4768-81d6-4bfeb8586fc9
-    /// 
+    /// <https://github.com/EricZimmerman/MFT/blob/3bed2626ee85e9a96a6db70a17407d0c3696056a/MFT/Attributes/StandardInfo.cs#L10>
+    /// <https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ca28ec38-f155-4768-81d6-4bfeb8586fc9>
+    ///
     pub struct FileAttributeFlags: u32 {
         const FILE_ATTRIBUTE_READONLY             = 0x0000_0001;
         const FILE_ATTRIBUTE_HIDDEN               = 0x0000_0002;

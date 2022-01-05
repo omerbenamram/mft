@@ -76,7 +76,7 @@ impl<T: ReadSeek> MftParser<T> {
 
         self.data.read_exact(&mut entry_buffer)?;
 
-        Ok(MftEntry::from_buffer(entry_buffer, entry_number)?)
+        MftEntry::from_buffer(entry_buffer, entry_number)
     }
 
     /// Iterates over all the entries in the MFT.

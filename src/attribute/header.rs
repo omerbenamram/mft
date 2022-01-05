@@ -9,7 +9,7 @@ use serde::Serialize;
 use std::io::{Read, SeekFrom};
 
 /// Represents the union defined in
-/// https://docs.microsoft.com/en-us/windows/desktop/devnotes/attribute-record-header
+/// <https://docs.microsoft.com/en-us/windows/desktop/devnotes/attribute-record-header>
 #[derive(Serialize, Clone, Debug)]
 pub struct MftAttributeHeader {
     pub type_code: MftAttributeType,
@@ -145,7 +145,7 @@ pub struct NonResidentHeader {
     #[serde(skip_serializing)]
     /// The offset to the mapping pairs array from the start of the attribute record, in bytes. For more information, see Remarks.
     pub datarun_offset: u16,
-    /// Reserved UCHAR[6]
+    /// Reserved UCHAR\[6]
     pub unit_compression_size: u16,
     #[serde(skip_serializing)]
     pub padding: u32,

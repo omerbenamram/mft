@@ -30,9 +30,9 @@ pub struct MftEntry {
     pub header: EntryHeader,
     pub data: Vec<u8>,
     /// Valid fixup allows you to check if the fixup value in the entry's blocks
-    /// matched the fixup array value. It is optional because in the case of 
+    /// matched the fixup array value. It is optional because in the case of
     /// from_buffer_skip_fixup(), no fixup is even checked, thus, valid_fixup is None
-    pub valid_fixup: Option<bool>
+    pub valid_fixup: Option<bool>,
 }
 
 impl ser::Serialize for MftEntry {
@@ -49,7 +49,7 @@ impl ser::Serialize for MftEntry {
     }
 }
 
-/// https://docs.microsoft.com/en-us/windows/desktop/devnotes/file-record-segment-header
+/// <https://docs.microsoft.com/en-us/windows/desktop/devnotes/file-record-segment-header>
 /// The MFT entry can be filled entirely with 0-byte values.
 #[derive(Serialize, Debug, Clone)]
 pub struct EntryHeader {
@@ -189,7 +189,7 @@ impl MftEntry {
         Ok(MftEntry {
             header: entry_header,
             data: buffer,
-            valid_fixup
+            valid_fixup,
         })
     }
 
@@ -211,7 +211,7 @@ impl MftEntry {
         Ok(MftEntry {
             header: entry_header,
             data: buffer,
-            valid_fixup: None
+            valid_fixup: None,
         })
     }
 
@@ -233,10 +233,7 @@ impl MftEntry {
             Some(filename) => Some(filename.clone()),
             None => {
                 // Try to take anything
-                match file_name_attributes.iter().next() {
-                    Some(filename) => Some(filename.clone()),
-                    None => None,
-                }
+                file_name_attributes.get(0).cloned()
             }
         }
     }
@@ -286,7 +283,7 @@ impl MftEntry {
                 valid_fixup = false;
             }
 
-            end_of_sector_bytes.copy_from_slice(&fixup_bytes);
+            end_of_sector_bytes.copy_from_slice(fixup_bytes);
         }
 
         Ok(valid_fixup)
