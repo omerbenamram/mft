@@ -43,7 +43,7 @@ default-features = false
 features = ["clock", "serde", "std"]
 
 [dev-dependencies]
-criterion = "0.3"
+criterion = "0.4"
 skeptic = "0.13"
 assert_cmd = "2.0"
 predicates = "2.1"
