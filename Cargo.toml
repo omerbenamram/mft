@@ -52,7 +52,7 @@ tempfile = "3.2"
 
 # rexpect relies on unix process semantics, but it's only used for process interaction tests.
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]
-rexpect = "0.4"
+rexpect = "0.5"
 
 [build-dependencies]
 skeptic = "0.13"
