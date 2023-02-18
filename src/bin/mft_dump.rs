@@ -1,17 +1,17 @@
-use clap::{App, Arg, ArgMatches};
+use clap::{Arg, ArgAction, ArgMatches};
 use indoc::indoc;
 use log::Level;
 
 use mft::attribute::MftAttributeType;
 use mft::mft::MftParser;
-use mft::{MftEntry, ReadSeek};
+use mft::MftEntry;
 
 use dialoguer::Confirm;
 use mft::csv::FlatMftEntryWithName;
 
 use anyhow::{anyhow, Context, Error, Result};
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use mft::entry::ZERO_HEADER;
@@ -140,16 +140,20 @@ struct MftDump {
 
 impl MftDump {
     pub fn from_cli_matches(matches: &ArgMatches) -> Result<Self> {
-        let output_format =
-            OutputFormat::from_str(matches.value_of("output-format").unwrap_or_default())
-                .expect("Validated with clap default values");
+        let output_format: &String = matches.get_one("output-format").expect("has default");
+        let output_target: Option<&String> = matches.get_one("output-target");
+        let data_streams_target: Option<&String> = matches.get_one("data-streams-target");
+        let input: &String = matches.get_one("INPUT").expect("required");
 
-        if matches.is_present("backtraces") {
+        let output_format =
+            OutputFormat::from_str(output_format).expect("Validated with clap default values");
+
+        if matches.get_flag("backtraces") {
             std::env::set_var("RUST_LIB_BACKTRACE", "1");
         }
 
-        let output: Option<Box<dyn Write>> = if let Some(path) = matches.value_of("output-target") {
-            match Self::create_output_file(path, !matches.is_present("no-confirm-overwrite")) {
+        let output: Option<Box<dyn Write>> = if let Some(path) = output_target {
+            match Self::create_output_file(path, !matches.get_flag("no-confirm-overwrite")) {
                 Ok(f) => Some(Box::new(f)),
                 Err(e) => {
                     return Err(anyhow!(
@@ -163,7 +167,7 @@ impl MftDump {
             Some(Box::new(io::stdout()))
         };
 
-        let data_streams_output = if let Some(path) = matches.value_of("data-streams-target") {
+        let data_streams_output = if let Some(path) = data_streams_target {
             let path = PathBuf::from(path);
             Self::create_output_dir(&path)?;
             Some(path)
@@ -171,7 +175,7 @@ impl MftDump {
             None
         };
 
-        let verbosity_level = match matches.occurrences_of("verbose") {
+        let verbosity_level = match matches.get_count("verbose") {
             0 => None,
             1 => Some(Level::Info),
             2 => Some(Level::Debug),
@@ -182,13 +186,13 @@ impl MftDump {
             }
         };
 
-        let ranges = match matches.value_of("entry-range") {
+        let ranges = match matches.get_one::<&String>("entry-range") {
             Some(range) => Some(Ranges::from_str(range)?),
             None => None,
         };
 
         Ok(MftDump {
-            filepath: PathBuf::from(matches.value_of("INPUT").expect("Required argument")),
+            filepath: PathBuf::from(input),
             output,
             data_streams_output,
             verbosity_level,
@@ -309,7 +313,7 @@ impl MftDump {
 
             if let Some(data_streams_dir) = &self.data_streams_output {
                 if let Ok(Some(path)) = parser.get_full_path_for_entry(&entry) {
-                    let sanitized_path = sanitized(&path.to_string_lossy().to_string());
+                    let sanitized_path = sanitized(&path.to_string_lossy());
 
                     for (i, (name, stream)) in entry
                         .iter_attributes()
@@ -406,7 +410,7 @@ impl MftDump {
     pub fn print_csv_entry<W: Write>(
         &self,
         entry: &MftEntry,
-        parser: &mut MftParser<impl ReadSeek>,
+        parser: &mut MftParser<impl Read + Seek>,
         writer: &mut csv::Writer<W>,
     ) -> Result<()> {
         let flat_entry = FlatMftEntryWithName::from_entry(entry, parser);
@@ -444,7 +448,7 @@ pub fn sanitized(component: &str) -> String {
 }
 
 fn main() -> Result<()> {
-    let matches = App::new("MFT Parser")
+    let matches = clap::Command::new("MFT Parser")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Omer B. <omerbenamram@gmail.com>")
         .about("Utility for parsing MFT snapshots")
@@ -452,47 +456,46 @@ fn main() -> Result<()> {
         .arg(
             Arg::new("output-format")
                 .short('o')
-                .long("--output-format")
-                .takes_value(true)
-                .possible_values(&["csv", "json", "jsonl"])
+                .long("output-format")
+                .action(ArgAction::Set)
+                .value_parser(clap::builder::PossibleValuesParser::new(["csv", "json", "jsonl"]))
                 .default_value("json")
                 .help("Output format."),
         )
         .arg(
             Arg::new("entry-range")
-                .long("--ranges")
+                .long("ranges")
                 .short('r')
-                .takes_value(true)
+                .action(ArgAction::Set)
                 .help(indoc!("Dumps only the given entry range(s), for example, `1-15,30` will dump entries 1-15, and 30")),
         )
         .arg(
             Arg::new("output-target")
-                .long("--output")
+                .long("output")
                 .short('f')
-                .takes_value(true)
+                .action(ArgAction::Set)
                 .help(indoc!("Writes output to the file specified instead of stdout, errors will still be printed to stderr.
                        Will ask for confirmation before overwriting files, to allow overwriting, pass `--no-confirm-overwrite`
                        Will create parent directories if needed.")),
         )
         .arg(
             Arg::new("data-streams-target")
-                .long("--extract-resident-streams")
+                .long("extract-resident-streams")
                 .short('e')
-                .takes_value(true)
+                .action(ArgAction::Set)
                 .help(indoc!("Writes resident data streams to the given directory.
                              Resident streams will be named like - `{path}__<random_bytes>_{stream_number}_{stream_name}.dontrun`
                              random is added to prevent collisions.")),
         )
         .arg(
             Arg::new("no-confirm-overwrite")
-                .long("--no-confirm-overwrite")
-                .takes_value(false)
+                .long("no-confirm-overwrite")
+                .action(ArgAction::SetTrue)
                 .help(indoc!("When set, will not ask for confirmation before overwriting files, useful for automation")),
         )
         .arg(Arg::new("verbose")
             .short('v')
-            .multiple_occurrences(true)
-            .takes_value(false)
+            .action(ArgAction::Count)
             .help(indoc!(r#"
             Sets debug prints level for the application:
                 -v   - info
@@ -502,8 +505,8 @@ fn main() -> Result<()> {
         )
         .arg(
             Arg::new("backtraces")
-                .long("--backtraces")
-                .takes_value(false)
+                .long("backtraces")
+                .action(ArgAction::SetTrue)
                 .help("If set, a backtrace will be printed with some errors if available"))
         .get_matches();
 

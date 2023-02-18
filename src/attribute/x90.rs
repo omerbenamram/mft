@@ -1,5 +1,6 @@
+use std::io::{Read, Seek};
+
 use crate::err::Result;
-use crate::ReadSeek;
 use byteorder::{LittleEndian, ReadBytesExt};
 
 use serde::Serialize;
@@ -20,7 +21,7 @@ pub struct IndexRootAttr {
 
 impl IndexRootAttr {
     /// Data size should be either 16 or 64
-    pub fn from_stream<S: ReadSeek>(stream: &mut S) -> Result<IndexRootAttr> {
+    pub fn from_stream<S: Read + Seek>(stream: &mut S) -> Result<IndexRootAttr> {
         Ok(IndexRootAttr {
             attribute_type: stream.read_u32::<LittleEndian>()?,
             collation_rule: stream.read_u32::<LittleEndian>()?,

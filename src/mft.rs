@@ -1,15 +1,16 @@
 use crate::entry::MftEntry;
 use crate::err::{Error, Result};
 
-use crate::{EntryHeader, ReadSeek};
+use crate::EntryHeader;
 use log::{debug, trace};
 
 use lru::LruCache;
 use std::fs::{self, File};
-use std::io::{BufReader, Cursor, SeekFrom};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
-pub struct MftParser<T: ReadSeek> {
+pub struct MftParser<T: Read + Seek> {
     data: T,
     /// Entry size is present in the volume header, but this is not available to us.
     /// Instead this will be guessed by the entry size of the first entry.
@@ -42,7 +43,7 @@ impl MftParser<Cursor<Vec<u8>>> {
     }
 }
 
-impl<T: ReadSeek> MftParser<T> {
+impl<T: Read + Seek> MftParser<T> {
     pub fn from_read_seek(mut data: T, size: Option<u64>) -> Result<Self> {
         // We use the first entry to guess the entry size for all the other records.
         let first_entry = EntryHeader::from_reader(&mut data, 0)?;
@@ -52,13 +53,13 @@ impl<T: ReadSeek> MftParser<T> {
             None => data.seek(SeekFrom::End(0))?,
         };
 
-        data.seek(SeekFrom::Start(0))?;
+        data.rewind()?;
 
         Ok(Self {
             data,
             entry_size: first_entry.total_entry_size,
             size,
-            entries_cache: LruCache::new(1000),
+            entries_cache: LruCache::new(NonZeroUsize::new(1000).expect("1000 > 0")),
         })
     }
 

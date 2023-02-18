@@ -2,11 +2,12 @@ use crate::attribute::header::ResidentialHeader;
 
 use crate::attribute::{FileAttributeFlags, MftAttributeType};
 use crate::entry::EntryFlags;
-use crate::{MftAttribute, MftEntry, MftParser, ReadSeek};
+use crate::{MftAttribute, MftEntry, MftParser};
 
 use serde::Serialize;
 
 use chrono::{DateTime, Utc};
+use std::io::{Read, Seek};
 use std::path::PathBuf;
 
 /// Used for CSV output
@@ -57,7 +58,7 @@ pub struct FlatMftEntryWithName {
 impl FlatMftEntryWithName {
     pub fn from_entry(
         entry: &MftEntry,
-        parser: &mut MftParser<impl ReadSeek>,
+        parser: &mut MftParser<impl Read + Seek>,
     ) -> FlatMftEntryWithName {
         let entry_attributes: Vec<MftAttribute> = entry
             .iter_attributes_matching(Some(vec![

@@ -1,8 +1,7 @@
-use crate::ReadSeek;
 use byteorder::ReadBytesExt;
 use std::char::decode_utf16;
 use std::fmt::Write;
-use std::io;
+use std::io::{self, Read, Seek};
 
 pub fn to_hex_string(bytes: &[u8]) -> String {
     let len = bytes.len();
@@ -19,7 +18,7 @@ pub fn to_hex_string(bytes: &[u8]) -> String {
 /// Reads a utf16 string from the given stream.
 /// If `len` is given, exactly `len` u16 values are read from the stream.
 /// If `len` is None, the string is assumed to be null terminated and the stream will be read to the first null (0).
-pub fn read_utf16_string<T: ReadSeek>(stream: &mut T, len: Option<usize>) -> io::Result<String> {
+pub fn read_utf16_string<T: Read + Seek>(stream: &mut T, len: Option<usize>) -> io::Result<String> {
     let mut buffer = match len {
         Some(len) => Vec::with_capacity(len),
         None => Vec::new(),

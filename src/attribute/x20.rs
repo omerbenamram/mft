@@ -1,5 +1,4 @@
 use crate::err::{Error, Result};
-use crate::ReadSeek;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use encoding::all::UTF_16LE;
@@ -7,7 +6,7 @@ use encoding::{DecoderTrap, Encoding};
 
 use serde::Serialize;
 
-use std::io::SeekFrom;
+use std::io::{Read, Seek, SeekFrom};
 use winstructs::ntfs::mft_reference::MftReference;
 
 /// The AttributeListAttr represents the $20 attribute, which contains a list
@@ -56,11 +55,11 @@ impl AttributeListAttr {
     ///
     /// assert_eq!(attribute_list.entries.len(), 7);
     /// ```
-    pub fn from_stream<S: ReadSeek>(
+    pub fn from_stream<S: Read + Seek>(
         mut stream: &mut S,
         stream_size: Option<u64>,
     ) -> Result<AttributeListAttr> {
-        let mut start_offset = stream.tell()?;
+        let mut start_offset = stream.stream_position()?;
         let end_offset = match stream_size {
             Some(s) => s,
             None => {
@@ -69,9 +68,9 @@ impl AttributeListAttr {
                 // thus, its better to just pass the stream size.
                 stream.seek(SeekFrom::End(0))?;
 
-                let offset = stream.tell()?;
+                let offset = stream.stream_position()?;
 
-                stream.seek(SeekFrom::Start(0))?;
+                stream.rewind()?;
 
                 offset
             }
@@ -153,8 +152,8 @@ impl AttributeListEntry {
     /// assert_eq!(attribute_entry.reserved, 0);
     /// assert_eq!(attribute_entry.name, "".to_string());
     /// ```
-    pub fn from_stream<S: ReadSeek>(stream: &mut S) -> Result<AttributeListEntry> {
-        let start_offset = stream.tell()?;
+    pub fn from_stream<S: Read + Seek>(stream: &mut S) -> Result<AttributeListEntry> {
+        let start_offset = stream.stream_position()?;
 
         let attribute_type = stream.read_u32::<LittleEndian>()?;
         let record_length = stream.read_u16::<LittleEndian>()?;
@@ -168,7 +167,7 @@ impl AttributeListEntry {
         let name = if name_length > 0 {
             stream.seek(SeekFrom::Start(start_offset + u64::from(name_offset)))?;
 
-            let mut name_buffer = vec![0; (name_length as usize * 2) as usize];
+            let mut name_buffer = vec![0; name_length as usize * 2];
             stream.read_exact(&mut name_buffer)?;
 
             match UTF_16LE.decode(&name_buffer, DecoderTrap::Ignore) {

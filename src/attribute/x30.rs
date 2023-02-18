@@ -1,6 +1,7 @@
+use std::io::{Read, Seek};
+
 use crate::attribute::FileAttributeFlags;
 use crate::err::{Error, Result};
-use crate::ReadSeek;
 use log::trace;
 
 use byteorder::{LittleEndian, ReadBytesExt};
@@ -73,8 +74,8 @@ impl FileNameAttr {
     /// assert_eq!(attribute.namespace, FileNamespace::Win32AndDos);
     /// assert_eq!(attribute.name, "$LogFile");
     /// ```
-    pub fn from_stream<S: ReadSeek>(stream: &mut S) -> Result<FileNameAttr> {
-        trace!("Offset {}: FilenameAttr", stream.tell()?);
+    pub fn from_stream<S: Read + Seek>(stream: &mut S) -> Result<FileNameAttr> {
+        trace!("Offset {}: FilenameAttr", stream.stream_position()?);
         let parent =
             MftReference::from_reader(stream).map_err(Error::failed_to_read_mft_reference)?;
         let created = WinTimestamp::from_reader(stream)
@@ -99,7 +100,7 @@ impl FileNameAttr {
         let namespace =
             FileNamespace::from_u8(namespace).ok_or(Error::UnknownNamespace { namespace })?;
 
-        let mut name_buffer = vec![0; (name_length as usize * 2) as usize];
+        let mut name_buffer = vec![0; name_length as usize * 2];
         stream.read_exact(&mut name_buffer)?;
 
         let name = match UTF_16LE.decode(&name_buffer, DecoderTrap::Ignore) {

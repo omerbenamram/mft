@@ -1,6 +1,8 @@
+use std::io::{Read, Seek};
+
 use crate::attribute::MftAttributeType;
 use crate::err::Result;
-use crate::{utils, ReadSeek};
+use crate::utils;
 use serde::{ser, Serialize};
 
 /// Placeholder attribute for currently unparsed attributes.
@@ -12,7 +14,7 @@ pub struct RawAttribute {
 }
 
 impl RawAttribute {
-    pub fn from_stream<S: ReadSeek>(
+    pub fn from_stream<S: Read + Seek>(
         stream: &mut S,
         attribute_type: MftAttributeType,
         data_size: usize,

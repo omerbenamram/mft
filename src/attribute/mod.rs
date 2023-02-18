@@ -8,9 +8,9 @@ pub mod x80;
 pub mod x90;
 
 use crate::err::Result;
-use crate::{impl_serialize_for_bitflags, ReadSeek};
+use crate::impl_serialize_for_bitflags;
 
-use std::io::Cursor;
+use std::io::{Cursor, Read, Seek};
 
 use bitflags::bitflags;
 
@@ -32,7 +32,7 @@ pub struct MftAttribute {
 }
 
 impl MftAttributeContent {
-    pub fn from_stream_resident<S: ReadSeek>(
+    pub fn from_stream_resident<S: Read + Seek>(
         stream: &mut S,
         header: &MftAttributeHeader,
         resident: &ResidentHeader,

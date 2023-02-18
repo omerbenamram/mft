@@ -1,5 +1,7 @@
+use std::io::{Read, Seek};
+
 use crate::err::Result;
-use crate::{utils, ReadSeek};
+use crate::utils;
 use serde::ser;
 
 /// $Data Attribute
@@ -7,7 +9,7 @@ use serde::ser;
 pub struct DataAttr(Vec<u8>);
 
 impl DataAttr {
-    pub fn from_stream<S: ReadSeek>(stream: &mut S, data_size: usize) -> Result<DataAttr> {
+    pub fn from_stream<S: Read + Seek>(stream: &mut S, data_size: usize) -> Result<DataAttr> {
         let mut data = vec![0_u8; data_size];
 
         stream.read_exact(&mut data)?;

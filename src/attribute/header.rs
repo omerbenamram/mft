@@ -1,12 +1,11 @@
 use crate::attribute::{AttributeDataFlags, MftAttributeType};
 use crate::err::{Error, Result};
 use crate::utils::read_utf16_string;
-use crate::ReadSeek;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use num_traits::FromPrimitive;
 use serde::Serialize;
-use std::io::{Read, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 
 /// Represents the union defined in
 /// <https://docs.microsoft.com/en-us/windows/desktop/devnotes/attribute-record-header>
@@ -42,8 +41,8 @@ pub enum ResidentialHeader {
 impl MftAttributeHeader {
     /// Tries to read an AttributeHeader from the stream.
     /// Will return `None` if the type code is $END.
-    pub fn from_stream<S: ReadSeek>(stream: &mut S) -> Result<Option<MftAttributeHeader>> {
-        let attribute_header_start_offset = stream.tell()?;
+    pub fn from_stream<S: Read + Seek>(stream: &mut S) -> Result<Option<MftAttributeHeader>> {
+        let attribute_header_start_offset = stream.stream_position()?;
 
         let type_code_value = stream.read_u32::<LittleEndian>()?;
 
@@ -82,7 +81,7 @@ impl MftAttributeHeader {
             _ => {
                 return Err(Error::UnhandledResidentFlag {
                     flag: resident_flag,
-                    offset: stream.tell()?,
+                    offset: stream.stream_position()?,
                 })
             }
         };

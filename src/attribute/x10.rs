@@ -1,6 +1,7 @@
+use std::io::{Read, Seek};
+
 use crate::attribute::FileAttributeFlags;
 use crate::err::{Error, Result};
-use crate::ReadSeek;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::{DateTime, Utc};
@@ -58,8 +59,8 @@ impl StandardInfoAttr {
     /// assert_eq!(attribute.quota, 0);
     /// assert_eq!(attribute.usn, 8768215144);
     /// ```
-    pub fn from_reader<S: ReadSeek>(reader: &mut S) -> Result<StandardInfoAttr> {
-        trace!("Offset {}: StandardInfoAttr", reader.tell()?);
+    pub fn from_reader<S: Read + Seek>(reader: &mut S) -> Result<StandardInfoAttr> {
+        trace!("Offset {}: StandardInfoAttr", reader.stream_position()?);
         let created = WinTimestamp::from_reader(reader)
             .map_err(Error::failed_to_read_windows_time)?
             .to_datetime();
