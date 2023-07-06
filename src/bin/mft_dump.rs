@@ -19,6 +19,7 @@ use std::fmt::Write as FmtWrite;
 use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::{fs, io, path};
+use std::collections::HashSet;
 
 #[derive(Debug, PartialOrd, PartialEq)]
 #[allow(clippy::upper_case_acronyms)]
@@ -297,6 +298,8 @@ impl MftDump {
             None => Box::new(0..number_of_entries as usize) as Box<dyn Iterator<Item = usize>>,
         };
 
+        let mut visited_entries = HashSet::new();
+
         for i in entries {
             let entry = parser.get_entry(i as u64);
 
@@ -312,7 +315,7 @@ impl MftDump {
             };
 
             if let Some(data_streams_dir) = &self.data_streams_output {
-                if let Ok(Some(path)) = parser.get_full_path_for_entry(&entry) {
+                if let Ok(Some(path)) = parser.get_full_path_for_entry(&entry, &mut visited_entries) {
                     let sanitized_path = sanitized(&path.to_string_lossy());
 
                     for (i, (name, stream)) in entry
