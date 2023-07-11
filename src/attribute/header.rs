@@ -123,7 +123,6 @@ pub struct ResidentHeader {
     /// The offset to the value from the start of the attribute record, in bytes.
     pub data_offset: u16,
     pub index_flag: u8,
-    //)]
     pub padding: u8,
 }
 
