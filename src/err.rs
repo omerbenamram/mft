@@ -49,6 +49,8 @@ pub enum Error {
     FailedToReadGuid { source: winstructs::err::Error },
     #[error("Failed to decode data runs")]
     FailedToDecodeDataRuns { bad_data_runs: Vec<u8> },
+    #[error("Failed to determine entry size")]
+    FailedToReadEntrySize { },
     #[error("An unexpected error has occurred: {}", detail)]
     Any { detail: String },
 }

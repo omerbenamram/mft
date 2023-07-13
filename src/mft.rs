@@ -43,21 +43,55 @@ impl MftParser<Cursor<Vec<u8>>> {
     }
 }
 
+fn check_entry_size<T: Read + Seek>(data: &mut T, off: u64) -> Result<u32> {
+    data.seek(SeekFrom::Start(off))?;
+    if let Ok(header) = EntryHeader::from_reader(data, 0) {
+        // Check that the entry size is nonzero and is consistent with
+        // the length of the update sequence array. There should be one
+        // element of the USA for each 512 bytes of entry, plus one extra
+        // element for the update sequence number. The probability that
+        // the entry size and USA size follow this rule when selected
+        // randomly is vanishingly small (1/2^32), so this check should be
+        // sufficient to ensure that we have a good entry size.
+        if header.total_entry_size != 0 &&
+           header.total_entry_size == (header.usa_size - 1) as u32 * 512
+        {
+            return Ok(header.total_entry_size);
+        }
+    }
+    Err(Error::FailedToReadEntrySize{})
+}
+
+/// Search for a valid MFT FILE record to determine the FILE record size.
+fn find_entry_size<T: Read + Seek>(data: &mut T, size: u64) -> Result<u32> {
+    // Each valid FILE entry header contains the total size of its entry.
+    // Every entry in the MFT is the same size, so we get the entry size
+    // for this MFT from the first good FILE entry we can find. The stride
+    // for the search is 1024; in the event that the entry size is 4096,
+    // a stride of 1024 still works, due to 4096 being a multiple of 1024.
+    //
+    // Corrupt MFTs may have the first entries wiped/overwritten, and using
+    // this method of determining the FILE record size may allow for recovery
+    // of entries in such cases.
+    (0..size)
+        .step_by(1024)
+        .find_map(|off| check_entry_size(data, off).ok())
+        .ok_or(Error::FailedToReadEntrySize{})
+}
+
 impl<T: Read + Seek> MftParser<T> {
     pub fn from_read_seek(mut data: T, size: Option<u64>) -> Result<Self> {
-        // We use the first entry to guess the entry size for all the other records.
-        let first_entry = EntryHeader::from_reader(&mut data, 0)?;
-
         let size = match size {
             Some(sz) => sz,
             None => data.seek(SeekFrom::End(0))?,
         };
 
-        data.rewind()?;
+        let entry_size = find_entry_size(&mut data, size)?;
+        data.seek(SeekFrom::Start(0))?;
 
         Ok(Self {
             data,
-            entry_size: first_entry.total_entry_size,
+            entry_size,
             size,
             entries_cache: LruCache::new(NonZeroUsize::new(1000).expect("1000 > 0")),
         })
@@ -166,8 +200,13 @@ impl<T: Read + Seek> MftParser<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::tests::fixtures::mft_sample;
+    use crate::tests::fixtures::{mft_sample, mft_sample_name};
     use crate::{MftEntry, MftParser};
+
+    use std::fs::File;
+    use std::io::{BufReader, Seek, SeekFrom};
+
+    use super::find_entry_size;
 
     // entrypoint for clion profiler.
     #[test]
@@ -214,5 +253,16 @@ mod tests {
 
         let e = parser.get_entry(5).unwrap();
         parser.get_full_path_for_entry(&e).unwrap();
+    }
+
+    #[test]
+    fn test_find_entry_size() {
+        // The first header is zeroed. The second header has a corrupt
+        // sequence array. The third header is valid.
+        let f = File::open(mft_sample_name("third_header_good")).unwrap();
+        let mut data = BufReader::new(f);
+        let size = data.seek(SeekFrom::End(0)).unwrap();
+        data.seek(SeekFrom::Start(0)).unwrap();
+        assert_eq!(find_entry_size(&mut data, size).unwrap(), 1024);
     }
 }
