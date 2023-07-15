@@ -29,6 +29,8 @@ pub struct MftAttributeHeader {
     /// The unique instance for this attribute in the file record.
     pub instance: u16,
     pub name: String,
+    /// start of the attribute; used for calculating relative offsets
+    pub start_offset: u64
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -107,6 +109,7 @@ impl MftAttributeHeader {
             instance: id,
             name,
             residential_header,
+            start_offset: attribute_header_start_offset
         }))
     }
 }
@@ -120,7 +123,6 @@ pub struct ResidentHeader {
     /// The offset to the value from the start of the attribute record, in bytes.
     pub data_offset: u16,
     pub index_flag: u8,
-    #[serde(skip_serializing)]
     pub padding: u8,
 }
 

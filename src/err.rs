@@ -24,6 +24,8 @@ pub enum Error {
     InvalidEntrySignature { bad_sig: Vec<u8> },
     #[error("Unknown `AttributeType`: {:04X}", attribute_type)]
     UnknownAttributeType { attribute_type: u32 },
+    #[error("Unknown collation type {}", collation_type)]
+    UnknownCollationType { collation_type: u32 },
     #[error("Unknown filename namespace {}", namespace)]
     UnknownNamespace { namespace: u8 },
     #[error("Unhandled resident flag: {} (offset: {})", flag, offset)]
@@ -45,6 +47,8 @@ pub enum Error {
     FailedToReadWindowsTime { source: winstructs::err::Error },
     #[error("Failed to read GUID")]
     FailedToReadGuid { source: winstructs::err::Error },
+    #[error("Failed to decode data runs")]
+    FailedToDecodeDataRuns { bad_data_runs: Vec<u8> },
     #[error("An unexpected error has occurred: {}", detail)]
     Any { detail: String },
 }

@@ -24,7 +24,7 @@ pub enum FileNamespace {
     Win32AndDos = 3,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct FileNameAttr {
     pub parent: MftReference,
     pub created: DateTime<Utc>,
