@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-pub fn mft_sample() -> PathBuf {
+pub fn mft_sample_name(filename: &str) -> PathBuf {
     PathBuf::from(file!())
         .parent()
         .unwrap()
@@ -9,5 +9,10 @@ pub fn mft_sample() -> PathBuf {
         .parent()
         .unwrap()
         .join("samples")
-        .join("MFT")
+        .join(filename)
+
+}
+
+pub fn mft_sample() -> PathBuf {
+    mft_sample_name("MFT")
 }
