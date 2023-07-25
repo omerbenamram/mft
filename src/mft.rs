@@ -8,7 +8,7 @@ use lru::LruCache;
 use std::fs::{self, File};
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub struct MftParser<T: Read + Seek> {
     data: T,
@@ -16,7 +16,7 @@ pub struct MftParser<T: Read + Seek> {
     /// Instead this will be guessed by the entry size of the first entry.
     entry_size: u32,
     size: u64,
-    entries_cache: LruCache<u64, PathBuf>,
+    entries_cache: LruCache<u64, String>,
 }
 
 impl MftParser<BufReader<File>> {
@@ -40,6 +40,15 @@ impl MftParser<Cursor<Vec<u8>>> {
         let cursor = Cursor::new(buffer);
 
         Self::from_read_seek(cursor, Some(size))
+    }
+}
+
+fn join_paths(path: String, name: &str) -> String {
+    // Ignore empty parents
+    if path == "" {
+        String::from(name)
+    } else {
+        String::from(format!("{}/{}", path, name))
     }
 }
 
@@ -87,32 +96,33 @@ impl<T: Read + Seek> MftParser<T> {
         (0..total_entries).map(move |i| self.get_entry(i))
     }
 
-    fn inner_get_entry(&mut self, parent_entry_id: u64, entry_name: Option<&str>) -> PathBuf {
+
+    fn inner_get_entry(&mut self, parent_entry_id: u64, entry_name: Option<&str>) -> String {
         let cached_entry = self.entries_cache.get(&parent_entry_id);
 
         // If my parent path is known, then my path is parent's full path + my name.
         // Else, retrieve and cache my parent's path.
         if let Some(cached_parent_path) = cached_entry {
             match entry_name {
-                Some(name) => cached_parent_path.clone().join(name),
+                Some(name) => join_paths(String::from(cached_parent_path), name),
                 None => cached_parent_path.clone(),
             }
         } else {
             let path = match self.get_entry(parent_entry_id).ok() {
                 Some(parent) => match self.get_full_path_for_entry(&parent) {
                     Ok(Some(path)) if parent.is_dir() => path,
-                    Ok(Some(_)) => PathBuf::from("[Unknown]"),
+                    Ok(Some(_)) => String::from("[Unknown]"),
                     // I have a parent, which doesn't have a filename attribute.
                     // Default to root.
-                    _ => PathBuf::new(),
+                    _ => String::new(),
                 },
                 // Parent is maybe corrupted or incomplete, use a sentinel instead.
-                None => PathBuf::from("[Unknown]"),
+                None => String::from("[Unknown]"),
             };
 
             self.entries_cache.put(parent_entry_id, path.clone());
             match entry_name {
-                Some(name) => path.join(name),
+                Some(name) => join_paths(path, name),
                 None => path,
             }
         }
@@ -120,7 +130,7 @@ impl<T: Read + Seek> MftParser<T> {
 
     /// Gets the full path for an entry.
     /// Caches computations.
-    pub fn get_full_path_for_entry(&mut self, entry: &MftEntry) -> Result<Option<PathBuf>> {
+    pub fn get_full_path_for_entry(&mut self, entry: &MftEntry) -> Result<Option<String>> {
         let entry_id = entry.header.record_number;
         match entry.find_best_name_attribute() {
             Some(filename_header) => {
@@ -128,7 +138,7 @@ impl<T: Read + Seek> MftParser<T> {
 
                 // MFT entry 5 is the root path.
                 if parent_entry_id == 5 {
-                    return Ok(Some(PathBuf::from(filename_header.name)));
+                    return Ok(Some(String::from(filename_header.name)));
                 }
 
                 if parent_entry_id == entry_id {
@@ -136,7 +146,7 @@ impl<T: Read + Seek> MftParser<T> {
                         "Found self-referential file path, for entry ID {}",
                         entry_id
                     );
-                    return Ok(Some(PathBuf::from("[Orphaned]").join(filename_header.name)));
+                    return Ok(Some(String::from(format!("[Orphaned]/{}", filename_header.name))));
                 }
 
                 if parent_entry_id > 0 {
@@ -147,7 +157,7 @@ impl<T: Read + Seek> MftParser<T> {
                 } else {
                     trace!("Found orphaned entry ID {}", entry_id);
 
-                    let orphan = PathBuf::from("[Orphaned]").join(filename_header.name);
+                    let orphan = String::from(format!("[Orphaned]/{}", filename_header.name));
 
                     self.entries_cache
                         .put(entry.header.record_number, orphan.clone());
@@ -156,7 +166,7 @@ impl<T: Read + Seek> MftParser<T> {
                 }
             }
             None => match entry.header.base_reference.entry {
-                // I don't have a parent reference, and no X30 attribute. Though luck.
+                // I don't have a parent reference, and no X30 attribute. Tough luck.
                 0 => Ok(None),
                 parent_entry_id => Ok(Some(self.inner_get_entry(parent_entry_id, None))),
             },
@@ -212,7 +222,8 @@ mod tests {
         let sample = mft_sample();
         let mut parser = MftParser::from_path(sample).unwrap();
 
-        let e = parser.get_entry(5).unwrap();
-        parser.get_full_path_for_entry(&e).unwrap();
+        let e = parser.get_entry(500).unwrap();
+        let path = parser.get_full_path_for_entry(&e).unwrap().unwrap();
+        assert_eq!(path, "WINDOWS/system32/devmgmt.msc")
     }
 }

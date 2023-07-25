@@ -8,7 +8,6 @@ use serde::Serialize;
 
 use chrono::{DateTime, Utc};
 use std::io::{Read, Seek};
-use std::path::PathBuf;
 
 /// Used for CSV output
 #[derive(Serialize)]
@@ -52,7 +51,7 @@ pub struct FlatMftEntryWithName {
     pub file_name_last_access: Option<DateTime<Utc>>,
     pub file_name_created: Option<DateTime<Utc>>,
 
-    pub full_path: PathBuf,
+    pub full_path: String,
 }
 
 impl FlatMftEntryWithName {
