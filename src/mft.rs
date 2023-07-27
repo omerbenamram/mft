@@ -9,6 +9,7 @@ use std::fs::{self, File};
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::collections::HashSet;
 
 pub struct MftParser<T: Read + Seek> {
     data: T,
@@ -87,7 +88,7 @@ impl<T: Read + Seek> MftParser<T> {
         (0..total_entries).map(move |i| self.get_entry(i))
     }
 
-    fn inner_get_entry(&mut self, parent_entry_id: u64, entry_name: Option<&str>) -> PathBuf {
+    fn inner_get_entry(&mut self, parent_entry_id: u64, entry_name: Option<&str>, visited_entries: &mut HashSet<u64>) -> PathBuf {
         let cached_entry = self.entries_cache.get(&parent_entry_id);
 
         // If my parent path is known, then my path is parent's full path + my name.
@@ -99,13 +100,14 @@ impl<T: Read + Seek> MftParser<T> {
             }
         } else {
             let path = match self.get_entry(parent_entry_id).ok() {
-                Some(parent) => match self.get_full_path_for_entry(&parent) {
+                Some(parent) => {
+                    match self.get_full_path_for_entry(&parent, visited_entries) {
                     Ok(Some(path)) if parent.is_dir() => path,
                     Ok(Some(_)) => PathBuf::from("[Unknown]"),
                     // I have a parent, which doesn't have a filename attribute.
                     // Default to root.
                     _ => PathBuf::new(),
-                },
+                }},
                 // Parent is maybe corrupted or incomplete, use a sentinel instead.
                 None => PathBuf::from("[Unknown]"),
             };
@@ -120,17 +122,16 @@ impl<T: Read + Seek> MftParser<T> {
 
     /// Gets the full path for an entry.
     /// Caches computations.
-    pub fn get_full_path_for_entry(&mut self, entry: &MftEntry) -> Result<Option<PathBuf>> {
+    pub fn get_full_path_for_entry(&mut self, entry: &MftEntry, visited_entries: &mut HashSet<u64>) -> Result<Option<PathBuf>> {
         let entry_id = entry.header.record_number;
+        visited_entries.insert(entry_id);
         match entry.find_best_name_attribute() {
             Some(filename_header) => {
                 let parent_entry_id = filename_header.parent.entry;
-
                 // MFT entry 5 is the root path.
                 if parent_entry_id == 5 {
                     return Ok(Some(PathBuf::from(filename_header.name)));
                 }
-
                 if parent_entry_id == entry_id {
                     trace!(
                         "Found self-referential file path, for entry ID {}",
@@ -139,10 +140,11 @@ impl<T: Read + Seek> MftParser<T> {
                     return Ok(Some(PathBuf::from("[Orphaned]").join(filename_header.name)));
                 }
 
-                if parent_entry_id > 0 {
+                if parent_entry_id > 0 && !visited_entries.contains(&parent_entry_id) {
                     Ok(Some(self.inner_get_entry(
                         parent_entry_id,
                         Some(&filename_header.name),
+                        visited_entries
                     )))
                 } else {
                     trace!("Found orphaned entry ID {}", entry_id);
@@ -158,7 +160,7 @@ impl<T: Read + Seek> MftParser<T> {
             None => match entry.header.base_reference.entry {
                 // I don't have a parent reference, and no X30 attribute. Though luck.
                 0 => Ok(None),
-                parent_entry_id => Ok(Some(self.inner_get_entry(parent_entry_id, None))),
+                parent_entry_id => Ok(Some(self.inner_get_entry(parent_entry_id, None, visited_entries))),
             },
         }
     }
@@ -168,6 +170,7 @@ impl<T: Read + Seek> MftParser<T> {
 mod tests {
     use crate::tests::fixtures::mft_sample;
     use crate::{MftEntry, MftParser};
+    use std::collections::HashSet;
 
     // entrypoint for clion profiler.
     #[test]
@@ -198,8 +201,10 @@ mod tests {
             .filter_map(Result::ok)
             .collect();
 
+        let mut visited_entries = HashSet::new();
+
         for entry in entries {
-            if let Some(path) = parser.get_full_path_for_entry(&entry).unwrap() {
+            if let Some(path) = parser.get_full_path_for_entry(&entry, &mut visited_entries).unwrap() {
                 paths.push(path)
             }
         }
@@ -213,6 +218,7 @@ mod tests {
         let mut parser = MftParser::from_path(sample).unwrap();
 
         let e = parser.get_entry(5).unwrap();
-        parser.get_full_path_for_entry(&e).unwrap();
+        let mut visited_entries = HashSet::new();
+        parser.get_full_path_for_entry(&e, &mut visited_entries).unwrap();
     }
 }

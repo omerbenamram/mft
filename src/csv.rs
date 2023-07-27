@@ -9,6 +9,7 @@ use serde::Serialize;
 use chrono::{DateTime, Utc};
 use std::io::{Read, Seek};
 use std::path::PathBuf;
+use std::collections::HashSet;
 
 /// Used for CSV output
 #[derive(Serialize)]
@@ -95,6 +96,8 @@ impl FlatMftEntryWithName {
             .iter()
             .any(|a| a.header.type_code == MftAttributeType::DATA && !a.header.name.is_empty());
 
+        let mut visited_entries = HashSet::new();
+
         FlatMftEntryWithName {
             entry_id: entry.header.record_number,
             signature: String::from_utf8(entry.header.signature.to_ascii_uppercase())
@@ -119,7 +122,7 @@ impl FlatMftEntryWithName {
             file_name_created: file_name.as_ref().map(|i| i.created),
             file_size,
             full_path: parser
-                .get_full_path_for_entry(entry)
+                .get_full_path_for_entry(entry, &mut visited_entries)
                 .expect("I/O Err")
                 .unwrap_or_default(),
         }
