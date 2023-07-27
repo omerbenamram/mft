@@ -14,7 +14,7 @@ edition = "2021"
 log = { version = "0.4", features = ["release_max_level_debug"] }
 encoding = "0.2"
 byteorder = "1"
-bitflags = "1"
+bitflags = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 csv = "1"
