@@ -13,6 +13,7 @@ use crate::err::Result;
 use crate::impl_serialize_for_bitflags;
 
 use std::io::{Cursor, Read, Seek};
+use std::fmt;
 
 use bitflags::bitflags;
 
@@ -211,6 +212,7 @@ bitflags! {
     /// <https://github.com/EricZimmerman/MFT/blob/3bed2626ee85e9a96a6db70a17407d0c3696056a/MFT/Attributes/StandardInfo.cs#L10>
     /// <https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ca28ec38-f155-4768-81d6-4bfeb8586fc9>
     ///
+    #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Clone, Copy)]
     pub struct FileAttributeFlags: u32 {
         const FILE_ATTRIBUTE_READONLY             = 0x0000_0001;
         const FILE_ATTRIBUTE_HIDDEN               = 0x0000_0002;
@@ -234,15 +236,80 @@ bitflags! {
     }
 }
 
+impl fmt::Display for FileAttributeFlags {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        for flag in [
+            FileAttributeFlags::FILE_ATTRIBUTE_READONLY,
+            FileAttributeFlags::FILE_ATTRIBUTE_HIDDEN,
+            FileAttributeFlags::FILE_ATTRIBUTE_SYSTEM,
+            FileAttributeFlags::FILE_ATTRIBUTE_DIRECTORY,
+            FileAttributeFlags::FILE_ATTRIBUTE_ARCHIVE,
+            FileAttributeFlags::FILE_ATTRIBUTE_DEVICE,
+            FileAttributeFlags::FILE_ATTRIBUTE_NORMAL,
+            FileAttributeFlags::FILE_ATTRIBUTE_TEMPORARY,
+            FileAttributeFlags::FILE_ATTRIBUTE_SPARSE_FILE,
+            FileAttributeFlags::FILE_ATTRIBUTE_REPARSE_POINT,
+            FileAttributeFlags::FILE_ATTRIBUTE_COMPRESSED,
+            FileAttributeFlags::FILE_ATTRIBUTE_OFFLINE,
+            FileAttributeFlags::FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,
+            FileAttributeFlags::FILE_ATTRIBUTE_ENCRYPTED,
+            FileAttributeFlags::FILE_ATTRIBUTE_INTEGRITY_STREAM,
+            FileAttributeFlags::FILE_ATTRIBUTE_NO_SCRUB_DATA,
+            FileAttributeFlags::FILE_ATTRIBUTE_HAS_EA,
+            FileAttributeFlags::FILE_ATTRIBUTE_IS_DIRECTORY,
+            FileAttributeFlags::FILE_ATTRIBUTE_INDEX_VIEW,
+            // Add other flags as needed
+        ] {
+            if self.contains(flag) {
+                if !first {
+                    write!(f, " | ")?;
+                }
+                let flag_str = format!("{:?}", flag);
+                let flag_str = flag_str.strip_prefix("FileAttributeFlags(").unwrap_or(&flag_str);
+                let flag_str = flag_str.strip_suffix(")").unwrap_or(&flag_str);
+                write!(f, "{}", flag_str)?;
+                first = false;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl_serialize_for_bitflags! {FileAttributeFlags}
 
 bitflags! {
-    #[derive(Default)]
+    #[derive(Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Clone, Copy)]
     pub struct AttributeDataFlags: u16 {
         const IS_COMPRESSED     = 0x0001;
         const COMPRESSION_MASK  = 0x00FF;
         const ENCRYPTED         = 0x4000;
         const SPARSE            = 0x8000;
+    }
+}
+
+impl fmt::Display for AttributeDataFlags {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        for flag in [
+            AttributeDataFlags::IS_COMPRESSED,
+            AttributeDataFlags::COMPRESSION_MASK,
+            AttributeDataFlags::ENCRYPTED,
+            AttributeDataFlags::SPARSE,
+            // Add other flags as needed
+        ] {
+            if self.contains(flag) {
+                if !first {
+                    write!(f, " | ")?;
+                }
+                let flag_str = format!("{:?}", flag);
+                let flag_str = flag_str.strip_prefix("AttributeDataFlags(").unwrap_or(&flag_str);
+                let flag_str = flag_str.strip_suffix(")").unwrap_or(&flag_str);
+                write!(f, "{}", flag_str)?;
+                first = false;
+            }
+        }
+        Ok(())
     }
 }
 
