@@ -6,7 +6,7 @@ macro_rules! impl_serialize_for_bitflags {
             where
                 S: serde::ser::Serializer,
             {
-                serializer.serialize_str(&format!("{:?}", &self))
+                serializer.serialize_str(&self.to_string())
             }
         }
     };

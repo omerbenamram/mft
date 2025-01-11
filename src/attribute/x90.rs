@@ -10,6 +10,7 @@ use bitflags::bitflags;
 use serde::Serialize;
 use winstructs::ntfs::mft_reference::MftReference;
 use std::io::SeekFrom;
+use std::fmt;
 use num_derive::FromPrimitive;    
 use num_traits::FromPrimitive;
 
@@ -51,11 +52,41 @@ pub enum IndexCollationRules {
 }
 
 bitflags! {
+    #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Clone, Copy)]
     pub struct IndexRootFlags: u32 {
         const SMALL_INDEX = 0x00;
         const LARGE_INDEX = 0x01;
     }
 }
+
+impl fmt::Display for IndexRootFlags {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        for flag in [
+            IndexRootFlags::SMALL_INDEX,
+            IndexRootFlags::LARGE_INDEX,
+            // Add other flags as needed
+        ] {
+            if self.contains(flag) {
+                if !first {
+                    write!(f, " | ")?;
+                }
+                let flag_str = if flag.bits() == 0x00 {
+                    "SMALL_INDEX".to_string()
+                } else {
+                let flag_str = format!("{:?}", flag);
+                let flag_str = flag_str.strip_prefix("IndexRootFlags(").unwrap_or(&flag_str);
+                let flag_str = flag_str.strip_suffix(")").unwrap_or(&flag_str);
+                flag_str.to_string()
+            };
+                write!(f, "{}", flag_str)?;
+                first = false;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl_serialize_for_bitflags! {IndexRootFlags}
 
 impl IndexRootAttr {
@@ -102,11 +133,36 @@ pub struct IndexEntryHeader {
     pub fname_info: FileNameAttr
 }
 bitflags! {
+    #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Clone, Copy)]
     pub struct IndexEntryFlags: u32 {
         const INDEX_ENTRY_NODE = 0x01;
         const INDEX_ENTRY_END  = 0x02;
     }
 }
+
+impl fmt::Display for IndexEntryFlags {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        for flag in [
+            IndexEntryFlags::INDEX_ENTRY_NODE,
+            IndexEntryFlags::INDEX_ENTRY_END,
+            // Add other flags as needed
+        ] {
+            if self.contains(flag) {
+                if !first {
+                    write!(f, " | ")?;
+                }
+                let flag_str = format!("{:?}", flag);
+                let flag_str = flag_str.strip_prefix("IndexEntryFlags(").unwrap_or(&flag_str);
+                let flag_str = flag_str.strip_suffix(")").unwrap_or(&flag_str);
+                write!(f, "{}", flag_str)?;
+                first = false;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl_serialize_for_bitflags! {IndexEntryFlags}
 
 impl IndexEntryHeader {  

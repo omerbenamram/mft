@@ -18,6 +18,7 @@ use crate::attribute::{MftAttribute, MftAttributeContent, MftAttributeType};
 use std::io::Read;
 use std::io::SeekFrom;
 use std::io::{Cursor, Seek};
+use std::fmt;
 
 const SEQUENCE_NUMBER_STRIDE: usize = 512;
 
@@ -83,11 +84,36 @@ pub struct EntryHeader {
     pub record_number: u64,
 }
 bitflags! {
+    #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Clone, Copy)]
     pub struct EntryFlags: u16 {
         const ALLOCATED             = 0x01;
         const INDEX_PRESENT         = 0x02;
         const IS_EXTENSION          = 0x04; //Record is an exension (Set for records in the $Extend directory)
         const SPECIAL_INDEX_PRESENT = 0x08; //Special index present (Set for non-directory records containing an index: $Secure, $ObjID, $Quota, $Reparse)
+    }
+}
+
+impl fmt::Display for EntryFlags {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        for flag in [
+            EntryFlags::ALLOCATED,
+            EntryFlags::INDEX_PRESENT,
+            EntryFlags::IS_EXTENSION,
+            EntryFlags::SPECIAL_INDEX_PRESENT,
+        ] {
+            if self.contains(flag) {
+                if !first {
+                    write!(f, " | ")?;
+                }
+                let flag_str = format!("{:?}", flag);
+                let flag_str = flag_str.strip_prefix("EntryFlags(").unwrap_or(&flag_str);
+                let flag_str = flag_str.strip_suffix(")").unwrap_or(&flag_str);
+                write!(f, "{}", flag_str)?;
+                first = false;
+            }
+        }
+        Ok(())
     }
 }
 
