@@ -3,7 +3,8 @@ extern crate criterion;
 extern crate mft;
 
 use criterion::Criterion;
-use mft::{MftEntry, MftParser, ReadSeek};
+use mft::{MftEntry, MftParser};
+use std::io::{Read, Seek};
 
 fn process_1000_mft_records(sample: &[u8]) {
     let mut parser = MftParser::from_buffer(sample.to_vec()).unwrap();
@@ -16,7 +17,7 @@ fn process_1000_mft_records(sample: &[u8]) {
     }
 }
 
-fn get_full_path(parser: &mut MftParser<impl ReadSeek>, entries: &[MftEntry]) {
+fn get_full_path(parser: &mut MftParser<impl Read+Seek>, entries: &[MftEntry]) {
     for entry in entries {
         parser.get_full_path_for_entry(&entry).unwrap();
     }
