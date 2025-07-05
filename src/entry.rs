@@ -253,6 +253,18 @@ impl MftEntry {
         let fixups_start_offset = header.usa_offset as usize;
         let fixups_end_offset = fixups_start_offset + (header.usa_size * 2) as usize;
 
+        // Bounds check: ensure fixup data doesn't extend beyond buffer
+        if fixups_end_offset > buffer.len() {
+            warn!(
+                "[entry: {}] fixup data extends beyond buffer bounds: fixups_end_offset={}, buffer_len={}",
+                header.record_number,
+                fixups_end_offset,
+                buffer.len()
+            );
+            // Return early with invalid fixup rather than panicking
+            return Ok(false);
+        }
+
         let fixups = buffer[fixups_start_offset..fixups_end_offset].to_vec();
         let mut fixups = fixups.chunks(2);
 
@@ -266,6 +278,19 @@ impl MftEntry {
 
             let end_of_sector_bytes_end_offset = sector_start_offset + SEQUENCE_NUMBER_STRIDE;
             let end_of_sector_bytes_start_offset = end_of_sector_bytes_end_offset - 2;
+
+            // Bounds check: ensure sector bytes don't extend beyond buffer
+            if end_of_sector_bytes_end_offset > buffer.len() {
+                warn!(
+                    "[entry: {}] sector stride extends beyond buffer bounds: stride={}, end_offset={}, buffer_len={}",
+                    header.record_number,
+                    stride_number,
+                    end_of_sector_bytes_end_offset,
+                    buffer.len()
+                );
+                valid_fixup = false;
+                continue;
+            }
 
             let end_of_sector_bytes =
                 &mut buffer[end_of_sector_bytes_start_offset..end_of_sector_bytes_end_offset];
