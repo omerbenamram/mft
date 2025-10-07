@@ -9,7 +9,8 @@ use mft::MftEntry;
 use dialoguer::Confirm;
 use mft::csv::FlatMftEntryWithName;
 
-use anyhow::{anyhow, Context, Error, Result};
+use anyhow::anyhow;
+use anyhow::{Context, Error, Result};
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -149,7 +150,9 @@ impl MftDump {
             OutputFormat::from_str(output_format).expect("Validated with clap default values");
 
         if matches.get_flag("backtraces") {
-            std::env::set_var("RUST_LIB_BACKTRACE", "1");
+            // SAFETY: CLI execution is single-threaded at this point, so mutating the process
+            // environment cannot race with other threads.
+            unsafe { std::env::set_var("RUST_LIB_BACKTRACE", "1") };
         }
 
         let output: Option<Box<dyn Write>> = if let Some(path) = output_target {

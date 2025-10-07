@@ -8,7 +8,8 @@ readme = "README.md"
 
 version = "0.6.1"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
-edition = "2021"
+edition = "2024"
+rust-version = "1.87"
 
 [dependencies]
 log = { version = "0.4", features = ["release_max_level_debug"] }
@@ -20,7 +21,7 @@ serde_json = "1"
 csv = "1"
 thiserror = "1"
 num-traits = "0.2"
-num-derive = "0.3"
+num-derive = "0.4"
 winstructs = "0.3.0"
 lru = "0.9.0"
 itertools = "0.10"
@@ -44,7 +45,7 @@ features = ["clock", "serde", "std"]
 
 [dev-dependencies]
 criterion = "0.4"
-skeptic = "0.13"
+doc-comment = "0.3"
 assert_cmd = "2.0"
 predicates = "2.1"
 env_logger = "0.10"
@@ -54,8 +55,6 @@ tempfile = "3.2"
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]
 rexpect = "0.5"
 
-[build-dependencies]
-skeptic = "0.13"
 
 [[bin]]
 name = "mft_dump"
