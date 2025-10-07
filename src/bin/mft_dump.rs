@@ -1,21 +1,24 @@
+#![forbid(unsafe_code)]
 use clap::{Arg, ArgAction, ArgMatches};
 use indoc::indoc;
 use log::Level;
 
+use mft::MftEntry;
 use mft::attribute::MftAttributeType;
 use mft::mft::MftParser;
-use mft::MftEntry;
 
 use dialoguer::Confirm;
 use mft::csv::FlatMftEntryWithName;
 
-use anyhow::{anyhow, Context, Error, Result};
+use anyhow::anyhow;
+use anyhow::{Context, Error, Result};
+use std::backtrace::Backtrace;
+use std::fmt::{self, Write as FmtWrite};
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use mft::entry::ZERO_HEADER;
-use std::fmt::Write as FmtWrite;
 use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::{fs, io, path};
@@ -58,8 +61,7 @@ impl FromStr for Ranges {
                 let range: Vec<&str> = x.split('-').collect();
                 if range.len() != 2 {
                     return Err(anyhow!(
-                        "Failed to parse ranges: Range should contain exactly one `-`, found {}",
-                        x
+                        "Failed to parse ranges: Range should contain exactly one `-`, found {x}"
                     ));
                 }
 
@@ -74,60 +76,6 @@ impl FromStr for Ranges {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::Ranges;
-    use std::str::FromStr;
-
-    #[test]
-    fn it_works_with_single_number() {
-        let ranges = Ranges::from_str("1").unwrap();
-        assert_eq!(ranges.0, vec![1..=1]);
-    }
-
-    #[test]
-    fn it_works_with_a_range() {
-        let ranges = Ranges::from_str("1-5").unwrap();
-        assert_eq!(ranges.0, vec![1..=5]);
-    }
-
-    #[test]
-    fn it_works_with_a_range_and_a_number() {
-        let ranges = Ranges::from_str("1-5,8").unwrap();
-        assert_eq!(ranges.0, vec![1..=5, 8..=8]);
-    }
-
-    #[test]
-    fn it_works_with_a_number_and_a_range() {
-        let ranges = Ranges::from_str("1-5,8").unwrap();
-        assert_eq!(ranges.0, vec![1..=5, 8..=8]);
-    }
-
-    #[test]
-    fn it_works_with_more_than_2_number_and_a_range() {
-        let ranges = Ranges::from_str("1-5,8,10-19").unwrap();
-        assert_eq!(ranges.0, vec![1..=5, 8..=8, 10..=19]);
-    }
-
-    #[test]
-    fn it_works_with_two_ranges() {
-        let ranges = Ranges::from_str("1-10,20-25").unwrap();
-        assert_eq!(ranges.0, vec![1..=10, 20..=25]);
-    }
-
-    #[test]
-    fn it_errors_on_a_random_string() {
-        let ranges = Ranges::from_str("hello");
-        assert!(ranges.is_err())
-    }
-
-    #[test]
-    fn it_errors_on_a_range_with_too_many_dashes() {
-        let ranges = Ranges::from_str("1-5-8");
-        assert!(ranges.is_err())
-    }
-}
-
 struct MftDump {
     filepath: PathBuf,
     // We use an option here to be able to move the output out of mftdump from a mutable reference.
@@ -136,6 +84,7 @@ struct MftDump {
     verbosity_level: Option<Level>,
     output_format: OutputFormat,
     ranges: Option<Ranges>,
+    backtraces_enabled: bool,
 }
 
 impl MftDump {
@@ -147,19 +96,14 @@ impl MftDump {
 
         let output_format =
             OutputFormat::from_str(output_format).expect("Validated with clap default values");
-
-        if matches.get_flag("backtraces") {
-            std::env::set_var("RUST_LIB_BACKTRACE", "1");
-        }
+        let backtraces_enabled = matches.get_flag("backtraces");
 
         let output: Option<Box<dyn Write>> = if let Some(path) = output_target {
             match Self::create_output_file(path, !matches.get_flag("no-confirm-overwrite")) {
                 Ok(f) => Some(Box::new(f)),
                 Err(e) => {
                     return Err(anyhow!(
-                        "An error occurred while creating output file at `{}` - `{}`",
-                        path,
-                        e
+                        "An error occurred while creating output file at `{path}` - `{e}`"
                     ));
                 }
             }
@@ -198,6 +142,7 @@ impl MftDump {
             verbosity_level,
             output_format,
             ranges,
+            backtraces_enabled,
         })
     }
 
@@ -233,7 +178,7 @@ impl MftDump {
         if p.exists() {
             if prompt {
                 match Confirm::new()
-                    .with_prompt(&format!(
+                    .with_prompt(format!(
                         "Are you sure you want to override output file at {}",
                         p.display()
                     ))
@@ -243,8 +188,7 @@ impl MftDump {
                     Ok(true) => Ok(File::create(p)?),
                     Ok(false) => Err(anyhow!("Cancelled")),
                     Err(e) => Err(anyhow!(
-                        "Failed to write confirmation prompt to term caused by\n{}",
-                        e
+                        "Failed to write confirmation prompt to term caused by\n{e}"
                     )),
                 }
             } else {
@@ -306,58 +250,52 @@ impl MftDump {
                     _ => entry,
                 },
                 Err(error) => {
-                    eprintln!("{}", error);
+                    eprintln!("{error}");
                     continue;
                 }
             };
 
-            if let Some(data_streams_dir) = &self.data_streams_output {
-                if let Ok(Some(path)) = parser.get_full_path_for_entry(&entry) {
-                    let sanitized_path = sanitized(&path.to_string_lossy());
+            if let Some(data_streams_dir) = &self.data_streams_output
+                && let Ok(Some(path)) = parser.get_full_path_for_entry(&entry)
+            {
+                let sanitized_path = sanitized(&path.to_string_lossy());
 
-                    for (i, (name, stream)) in entry
-                        .iter_attributes()
-                        .filter_map(|a| a.ok())
-                        .filter_map(|a| {
-                            if a.header.type_code == MftAttributeType::DATA {
-                                // resident
-                                let name = a.header.name.clone();
-                                a.data.into_data().map(|data| (name, data))
-                            } else {
-                                None
-                            }
-                        })
-                        .enumerate()
-                    {
-                        let orig_path_component: String = data_streams_dir
-                            .join(&sanitized_path)
-                            .to_string_lossy()
-                            .to_string();
-
-                        // Add some random bits to prevent collisions
-                        let random: [u8; 6] = rand::random();
-                        let rando_string: String = to_hex_string(&random);
-
-                        let truncated: String = orig_path_component.chars().take(150).collect();
-                        let data_stream_path = format!(
-                            "{path}__{random}_{stream_number}_{stream_name}.dontrun",
-                            path = truncated,
-                            random = rando_string,
-                            stream_number = i,
-                            stream_name = name
-                        );
-
-                        if PathBuf::from(&data_stream_path).exists() {
-                            return Err(anyhow!(
-                                "Tried to override an existing stream {} already exists!\
-                                 This is a bug, please report to github!",
-                                data_stream_path
-                            ));
+                for (i, (name, stream)) in entry
+                    .iter_attributes()
+                    .filter_map(|a| a.ok())
+                    .filter_map(|a| {
+                        if a.header.type_code == MftAttributeType::DATA {
+                            // resident
+                            let name = a.header.name.clone();
+                            a.data.into_data().map(|data| (name, data))
+                        } else {
+                            None
                         }
+                    })
+                    .enumerate()
+                {
+                    let orig_path_component: String = data_streams_dir
+                        .join(&sanitized_path)
+                        .to_string_lossy()
+                        .to_string();
 
-                        let mut f = File::create(&data_stream_path)?;
-                        f.write_all(stream.data())?;
+                    // Add some random bits to prevent collisions
+                    let random: [u8; 6] = rand::random();
+                    let rando_string: String = to_hex_string(&random);
+
+                    let truncated: String = orig_path_component.chars().take(150).collect();
+                    let data_stream_path =
+                        format!("{truncated}__{rando_string}_{i}_{name}.dontrun");
+
+                    if PathBuf::from(&data_stream_path).exists() {
+                        return Err(anyhow!(
+                            "Tried to override an existing stream {data_stream_path} already exists!\
+                                 This is a bug, please report to github!"
+                        ));
                     }
+
+                    let mut f = File::create(&data_stream_path)?;
+                    f.write_all(stream.data())?;
                 }
             }
 
@@ -384,7 +322,7 @@ impl MftDump {
                 io::stderr(),
             ) {
                 Ok(_) => {}
-                Err(e) => eprintln!("Failed to initialize logging: {}", e),
+                Err(e) => eprintln!("Failed to initialize logging: {e}"),
             };
         }
     }
@@ -419,6 +357,10 @@ impl MftDump {
 
         Ok(())
     }
+
+    fn annotate_error(&self, err: Error) -> Error {
+        annotate_with_backtrace(err, self.backtraces_enabled)
+    }
 }
 
 fn to_hex_string(bytes: &[u8]) -> String {
@@ -427,7 +369,7 @@ fn to_hex_string(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(len * 2);
 
     for byte in bytes {
-        write!(s, "{:02X}", byte).expect("Writing to an allocated string cannot fail");
+        write!(s, "{byte:02X}").expect("Writing to an allocated string cannot fail");
     }
 
     s
@@ -510,8 +452,92 @@ fn main() -> Result<()> {
                 .help("If set, a backtrace will be printed with some errors if available"))
         .get_matches();
 
-    let mut app = MftDump::from_cli_matches(&matches).context("Failed setting up the app")?;
-    app.run().context("A runtime error has occurred")?;
+    let backtraces_enabled = matches.get_flag("backtraces");
+
+    let mut app = MftDump::from_cli_matches(&matches)
+        .map_err(|err| annotate_with_backtrace(err, backtraces_enabled))
+        .context("Failed setting up the app")?;
+    app.run()
+        .map_err(|err| app.annotate_error(err))
+        .context("A runtime error has occurred")?;
 
     Ok(())
+}
+
+fn annotate_with_backtrace(err: Error, enabled: bool) -> Error {
+    if !enabled {
+        return err;
+    }
+
+    let backtrace = Backtrace::force_capture();
+    err.context(ForcedBacktrace(backtrace))
+}
+
+struct ForcedBacktrace(Backtrace);
+
+impl fmt::Display for ForcedBacktrace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Backtrace (captured via --backtraces):")?;
+        write!(f, "{}", self.0)
+    }
+}
+
+impl fmt::Debug for ForcedBacktrace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ForcedBacktrace").field(&self.0).finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Ranges;
+    use std::str::FromStr;
+
+    #[test]
+    fn it_works_with_single_number() {
+        let ranges = Ranges::from_str("1").unwrap();
+        assert_eq!(ranges.0, vec![1..=1]);
+    }
+
+    #[test]
+    fn it_works_with_a_range() {
+        let ranges = Ranges::from_str("1-5").unwrap();
+        assert_eq!(ranges.0, vec![1..=5]);
+    }
+
+    #[test]
+    fn it_works_with_a_range_and_a_number() {
+        let ranges = Ranges::from_str("1-5,8").unwrap();
+        assert_eq!(ranges.0, vec![1..=5, 8..=8]);
+    }
+
+    #[test]
+    fn it_works_with_a_number_and_a_range() {
+        let ranges = Ranges::from_str("1-5,8").unwrap();
+        assert_eq!(ranges.0, vec![1..=5, 8..=8]);
+    }
+
+    #[test]
+    fn it_works_with_more_than_2_number_and_a_range() {
+        let ranges = Ranges::from_str("1-5,8,10-19").unwrap();
+        assert_eq!(ranges.0, vec![1..=5, 8..=8, 10..=19]);
+    }
+
+    #[test]
+    fn it_works_with_two_ranges() {
+        let ranges = Ranges::from_str("1-10,20-25").unwrap();
+        assert_eq!(ranges.0, vec![1..=10, 20..=25]);
+    }
+
+    #[test]
+    fn it_errors_on_a_random_string() {
+        let ranges = Ranges::from_str("hello");
+        assert!(ranges.is_err())
+    }
+
+    #[test]
+    fn it_errors_on_a_range_with_too_many_dashes() {
+        let ranges = Ranges::from_str("1-5-8");
+        assert!(ranges.is_err())
+    }
 }

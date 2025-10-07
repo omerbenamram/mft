@@ -30,7 +30,7 @@ pub struct MftAttributeHeader {
     pub instance: u16,
     pub name: String,
     /// start of the attribute; used for calculating relative offsets
-    pub start_offset: u64
+    pub start_offset: u64,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -57,7 +57,7 @@ impl MftAttributeHeader {
             None => {
                 return Err(Error::UnknownAttributeType {
                     attribute_type: type_code_value,
-                })
+                });
             }
         };
 
@@ -67,11 +67,7 @@ impl MftAttributeHeader {
         let name_offset = {
             // We always read the two bytes to advance the stream.
             let value = stream.read_u16::<LittleEndian>()?;
-            if name_size > 0 {
-                Some(value)
-            } else {
-                None
-            }
+            if name_size > 0 { Some(value) } else { None }
         };
 
         let data_flags = AttributeDataFlags::from_bits_truncate(stream.read_u16::<LittleEndian>()?);
@@ -84,7 +80,7 @@ impl MftAttributeHeader {
                 return Err(Error::UnhandledResidentFlag {
                     flag: resident_flag,
                     offset: stream.stream_position()?,
-                })
+                });
             }
         };
 
@@ -109,7 +105,7 @@ impl MftAttributeHeader {
             instance: id,
             name,
             residential_header,
-            start_offset: attribute_header_start_offset
+            start_offset: attribute_header_start_offset,
         }))
     }
 }

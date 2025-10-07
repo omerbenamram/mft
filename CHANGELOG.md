@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Expand `FileAttributeFlags` with the latest Windows-defined bits for NTFS parsing.
+
+### Changed
+- Upgrade the crate to the Rust 2024 edition and require Rust 1.90 for builds.
+- Forbid usage of `unsafe` code across the workspace and satisfy new Clippy lints.
+- Keep formatting and lint configuration aligned with Rust 2024 expectations.
+
+### Fixed
+- Correct decoding of sparse non-resident data runs when reading MFT entries.
+- Address the `clippy::collapsible_if` warning emitted for the `mft_dump` CLI.
+
+### CI
+- Refresh CI workflows, add Apple Silicon release artifacts, and scope push triggers to `main` and `release/**`.
+
 ## [0.6.1] - 2023-02-18
 
 ### Changed

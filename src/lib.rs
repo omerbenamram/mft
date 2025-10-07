@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 #![deny(unused_must_use)]
 // Don't allow dbg! prints in release.
 #![cfg_attr(not(debug_assertions), deny(clippy::dbg_macro))]
@@ -5,9 +6,9 @@
 #[macro_use]
 extern crate num_derive;
 
+pub use attribute::MftAttribute;
 pub use attribute::x10::StandardInfoAttr;
 pub use attribute::x30::FileNameAttr;
-pub use attribute::MftAttribute;
 
 pub use crate::mft::MftParser;
 pub use entry::{EntryHeader, MftEntry};

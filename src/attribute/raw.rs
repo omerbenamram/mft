@@ -3,7 +3,7 @@ use std::io::{Read, Seek};
 use crate::attribute::MftAttributeType;
 use crate::err::Result;
 use crate::utils;
-use serde::{ser, Serialize};
+use serde::{Serialize, ser};
 
 /// Placeholder attribute for currently unparsed attributes.
 #[derive(Serialize, Clone, Debug)]

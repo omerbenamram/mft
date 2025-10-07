@@ -8,8 +8,8 @@ use winstructs::ntfs::mft_reference::MftReference;
 use byteorder::{LittleEndian, ReadBytesExt};
 
 use bitflags::bitflags;
-use serde::ser::{self, SerializeStruct, Serializer};
 use serde::Serialize;
+use serde::ser::{self, SerializeStruct, Serializer};
 
 use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
 use crate::attribute::x30::{FileNameAttr, FileNamespace};
@@ -83,6 +83,7 @@ pub struct EntryHeader {
     pub record_number: u64,
 }
 bitflags! {
+    #[derive(Clone, Debug, PartialEq)]
     pub struct EntryFlags: u16 {
         const ALLOCATED             = 0x01;
         const INDEX_PRESENT         = 0x02;
@@ -178,7 +179,7 @@ impl MftEntry {
         let mut cursor = Cursor::new(&buffer);
         // Get Header
         let entry_header = EntryHeader::from_reader(&mut cursor, entry_number)?;
-        trace!("Number of sectors: {:#?}", entry_header);
+        trace!("Number of sectors: {entry_header:#?}");
 
         let valid_fixup = if entry_header.is_valid() {
             Some(Self::apply_fixups(&entry_header, &mut buffer)?)
@@ -200,7 +201,7 @@ impl MftEntry {
         let mut cursor = Cursor::new(&buffer);
         // Get Header
         let entry_header = EntryHeader::from_reader(&mut cursor, entry_number)?;
-        trace!("Number of sectors: {:#?}", entry_header);
+        trace!("Number of sectors: {entry_header:#?}");
 
         if !entry_header.is_valid() {
             return Err(Error::InvalidEntrySignature {
@@ -233,7 +234,7 @@ impl MftEntry {
             Some(filename) => Some(filename.clone()),
             None => {
                 // Try to take anything
-                file_name_attributes.get(0).cloned()
+                file_name_attributes.first().cloned()
             }
         }
     }
@@ -247,7 +248,7 @@ impl MftEntry {
     fn apply_fixups(header: &EntryHeader, buffer: &mut [u8]) -> Result<bool> {
         let mut valid_fixup = true;
         let number_of_fixups = u32::from(header.usa_size - 1);
-        trace!("Number of fixups: {}", number_of_fixups);
+        trace!("Number of fixups: {number_of_fixups}");
 
         // Each fixup is a 2-byte element, and there are `usa_size` of them.
         let fixups_start_offset = header.usa_offset as usize;
@@ -344,10 +345,10 @@ impl MftEntry {
                 offset += u64::from(header.record_length);
 
                 // Skip attribute if filtered
-                if let Some(filter) = &types {
-                    if !filter.contains(&header.type_code) {
-                        continue;
-                    }
+                if let Some(filter) = &types
+                    && !filter.contains(&header.type_code)
+                {
+                    continue;
                 }
 
                 // Check if the header is resident, and if it is, read the attribute content.

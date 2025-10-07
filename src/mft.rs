@@ -69,7 +69,7 @@ impl<T: Read + Seek> MftParser<T> {
 
     /// Reads an entry from the MFT by entry number.
     pub fn get_entry(&mut self, entry_number: u64) -> Result<MftEntry> {
-        debug!("Reading entry {}", entry_number);
+        debug!("Reading entry {entry_number}");
 
         self.data
             .seek(SeekFrom::Start(entry_number * u64::from(self.entry_size)))?;
@@ -132,10 +132,7 @@ impl<T: Read + Seek> MftParser<T> {
                 }
 
                 if parent_entry_id == entry_id {
-                    trace!(
-                        "Found self-referential file path, for entry ID {}",
-                        entry_id
-                    );
+                    trace!("Found self-referential file path, for entry ID {entry_id}");
                     return Ok(Some(PathBuf::from("[Orphaned]").join(filename_header.name)));
                 }
 
@@ -145,7 +142,7 @@ impl<T: Read + Seek> MftParser<T> {
                         Some(&filename_header.name),
                     )))
                 } else {
-                    trace!("Found orphaned entry ID {}", entry_id);
+                    trace!("Found orphaned entry ID {entry_id}");
 
                     let orphan = PathBuf::from("[Orphaned]").join(filename_header.name);
 

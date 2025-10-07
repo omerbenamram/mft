@@ -1,4 +1,6 @@
+pub mod data_run;
 pub mod header;
+pub mod non_resident_attr;
 pub mod raw;
 pub mod x10;
 pub mod x20;
@@ -6,8 +8,6 @@ pub mod x30;
 pub mod x40;
 pub mod x80;
 pub mod x90;
-pub mod non_resident_attr;
-pub mod data_run;
 
 use crate::err::Result;
 use crate::impl_serialize_for_bitflags;
@@ -21,11 +21,11 @@ use crate::attribute::x10::StandardInfoAttr;
 use crate::attribute::x20::AttributeListAttr;
 use crate::attribute::x30::FileNameAttr;
 
-use crate::attribute::header::{MftAttributeHeader, ResidentHeader, NonResidentHeader};
+use crate::attribute::header::{MftAttributeHeader, NonResidentHeader, ResidentHeader};
+use crate::attribute::non_resident_attr::NonResidentAttr;
 use crate::attribute::x40::ObjectIdAttr;
 use crate::attribute::x80::DataAttr;
 use crate::attribute::x90::IndexRootAttr;
-use crate::attribute::non_resident_attr::NonResidentAttr;
 use serde::Serialize;
 
 #[derive(Serialize, Clone, Debug)]
@@ -34,15 +34,15 @@ pub struct MftAttribute {
     pub data: MftAttributeContent,
 }
 
-impl MftAttributeContent {    
+impl MftAttributeContent {
     pub fn from_stream_non_resident<S: Read + Seek>(
         stream: &mut S,
         header: &MftAttributeHeader,
         resident: &NonResidentHeader,
-    ) -> Result<Self> { 
-        Ok(MftAttributeContent::DataRun(
-            NonResidentAttr::from_stream(stream, header, resident)?,
-        ))
+    ) -> Result<Self> {
+        Ok(MftAttributeContent::DataRun(NonResidentAttr::from_stream(
+            stream, header, resident,
+        )?))
     }
 
     pub fn from_stream_resident<S: Read + Seek>(
@@ -127,7 +127,7 @@ impl MftAttributeContent {
             _ => None,
         }
     }
-    
+
     /// Converts the given attributes into a `DataAttr`, consuming the object attribute object.
     pub fn into_data(self) -> Option<DataAttr> {
         match self {
@@ -210,7 +210,9 @@ bitflags! {
     /// Flag sources:
     /// <https://github.com/EricZimmerman/MFT/blob/3bed2626ee85e9a96a6db70a17407d0c3696056a/MFT/Attributes/StandardInfo.cs#L10>
     /// <https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ca28ec38-f155-4768-81d6-4bfeb8586fc9>
+    /// <https://learn.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants>
     ///
+    #[derive(Clone, Debug, PartialEq)]
     pub struct FileAttributeFlags: u32 {
         const FILE_ATTRIBUTE_READONLY             = 0x0000_0001;
         const FILE_ATTRIBUTE_HIDDEN               = 0x0000_0002;
@@ -227,8 +229,15 @@ bitflags! {
         const FILE_ATTRIBUTE_NOT_CONTENT_INDEXED  = 0x0000_2000;
         const FILE_ATTRIBUTE_ENCRYPTED            = 0x0000_4000;
         const FILE_ATTRIBUTE_INTEGRITY_STREAM     = 0x0000_8000;
+        const FILE_ATTRIBUTE_VIRTUAL              = 0x0001_0000;
         const FILE_ATTRIBUTE_NO_SCRUB_DATA        = 0x0002_0000;
+        // Multiple names share the same bit; retain HAS_EA for backward compatibility.
+        const FILE_ATTRIBUTE_EA                   = 0x0004_0000;
+        const FILE_ATTRIBUTE_RECALL_ON_OPEN       = 0x0004_0000;
         const FILE_ATTRIBUTE_HAS_EA               = 0x0004_0000;
+        const FILE_ATTRIBUTE_PINNED               = 0x0008_0000;
+        const FILE_ATTRIBUTE_UNPINNED             = 0x0010_0000;
+        const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x0040_0000;
         const FILE_ATTRIBUTE_IS_DIRECTORY         = 0x1000_0000;
         const FILE_ATTRIBUTE_INDEX_VIEW           = 0x2000_0000;
     }
@@ -237,7 +246,7 @@ bitflags! {
 impl_serialize_for_bitflags! {FileAttributeFlags}
 
 bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Clone, Debug, PartialEq)]
     pub struct AttributeDataFlags: u16 {
         const IS_COMPRESSED     = 0x0001;
         const COMPRESSION_MASK  = 0x00FF;
