@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use clap::{Arg, ArgAction, ArgMatches};
 use indoc::indoc;
 use log::Level;
@@ -11,12 +12,13 @@ use mft::csv::FlatMftEntryWithName;
 
 use anyhow::anyhow;
 use anyhow::{Context, Error, Result};
+use std::backtrace::Backtrace;
+use std::fmt::{self, Write as FmtWrite};
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use mft::entry::ZERO_HEADER;
-use std::fmt::Write as FmtWrite;
 use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::{fs, io, path};
@@ -82,6 +84,7 @@ struct MftDump {
     verbosity_level: Option<Level>,
     output_format: OutputFormat,
     ranges: Option<Ranges>,
+    backtraces_enabled: bool,
 }
 
 impl MftDump {
@@ -93,12 +96,7 @@ impl MftDump {
 
         let output_format =
             OutputFormat::from_str(output_format).expect("Validated with clap default values");
-
-        if matches.get_flag("backtraces") {
-            // SAFETY: CLI execution is single-threaded at this point, so mutating the process
-            // environment cannot race with other threads.
-            unsafe { std::env::set_var("RUST_LIB_BACKTRACE", "1") };
-        }
+        let backtraces_enabled = matches.get_flag("backtraces");
 
         let output: Option<Box<dyn Write>> = if let Some(path) = output_target {
             match Self::create_output_file(path, !matches.get_flag("no-confirm-overwrite")) {
@@ -144,6 +142,7 @@ impl MftDump {
             verbosity_level,
             output_format,
             ranges,
+            backtraces_enabled,
         })
     }
 
@@ -358,6 +357,10 @@ impl MftDump {
 
         Ok(())
     }
+
+    fn annotate_error(&self, err: Error) -> Error {
+        annotate_with_backtrace(err, self.backtraces_enabled)
+    }
 }
 
 fn to_hex_string(bytes: &[u8]) -> String {
@@ -449,10 +452,40 @@ fn main() -> Result<()> {
                 .help("If set, a backtrace will be printed with some errors if available"))
         .get_matches();
 
-    let mut app = MftDump::from_cli_matches(&matches).context("Failed setting up the app")?;
-    app.run().context("A runtime error has occurred")?;
+    let backtraces_enabled = matches.get_flag("backtraces");
+
+    let mut app = MftDump::from_cli_matches(&matches)
+        .map_err(|err| annotate_with_backtrace(err, backtraces_enabled))
+        .context("Failed setting up the app")?;
+    app.run()
+        .map_err(|err| app.annotate_error(err))
+        .context("A runtime error has occurred")?;
 
     Ok(())
+}
+
+fn annotate_with_backtrace(err: Error, enabled: bool) -> Error {
+    if !enabled {
+        return err;
+    }
+
+    let backtrace = Backtrace::force_capture();
+    err.context(ForcedBacktrace(backtrace))
+}
+
+struct ForcedBacktrace(Backtrace);
+
+impl fmt::Display for ForcedBacktrace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Backtrace (captured via --backtraces):")?;
+        write!(f, "{}", self.0)
+    }
+}
+
+impl fmt::Debug for ForcedBacktrace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ForcedBacktrace").field(&self.0).finish()
+    }
 }
 
 #[cfg(test)]
