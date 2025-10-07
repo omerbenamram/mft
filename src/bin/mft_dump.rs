@@ -256,47 +256,47 @@ impl MftDump {
                 }
             };
 
-            if let Some(data_streams_dir) = &self.data_streams_output {
-                if let Ok(Some(path)) = parser.get_full_path_for_entry(&entry) {
-                    let sanitized_path = sanitized(&path.to_string_lossy());
+            if let Some(data_streams_dir) = &self.data_streams_output
+                && let Ok(Some(path)) = parser.get_full_path_for_entry(&entry)
+            {
+                let sanitized_path = sanitized(&path.to_string_lossy());
 
-                    for (i, (name, stream)) in entry
-                        .iter_attributes()
-                        .filter_map(|a| a.ok())
-                        .filter_map(|a| {
-                            if a.header.type_code == MftAttributeType::DATA {
-                                // resident
-                                let name = a.header.name.clone();
-                                a.data.into_data().map(|data| (name, data))
-                            } else {
-                                None
-                            }
-                        })
-                        .enumerate()
-                    {
-                        let orig_path_component: String = data_streams_dir
-                            .join(&sanitized_path)
-                            .to_string_lossy()
-                            .to_string();
-
-                        // Add some random bits to prevent collisions
-                        let random: [u8; 6] = rand::random();
-                        let rando_string: String = to_hex_string(&random);
-
-                        let truncated: String = orig_path_component.chars().take(150).collect();
-                        let data_stream_path =
-                            format!("{truncated}__{rando_string}_{i}_{name}.dontrun");
-
-                        if PathBuf::from(&data_stream_path).exists() {
-                            return Err(anyhow!(
-                                "Tried to override an existing stream {data_stream_path} already exists!\
-                                 This is a bug, please report to github!"
-                            ));
+                for (i, (name, stream)) in entry
+                    .iter_attributes()
+                    .filter_map(|a| a.ok())
+                    .filter_map(|a| {
+                        if a.header.type_code == MftAttributeType::DATA {
+                            // resident
+                            let name = a.header.name.clone();
+                            a.data.into_data().map(|data| (name, data))
+                        } else {
+                            None
                         }
+                    })
+                    .enumerate()
+                {
+                    let orig_path_component: String = data_streams_dir
+                        .join(&sanitized_path)
+                        .to_string_lossy()
+                        .to_string();
 
-                        let mut f = File::create(&data_stream_path)?;
-                        f.write_all(stream.data())?;
+                    // Add some random bits to prevent collisions
+                    let random: [u8; 6] = rand::random();
+                    let rando_string: String = to_hex_string(&random);
+
+                    let truncated: String = orig_path_component.chars().take(150).collect();
+                    let data_stream_path =
+                        format!("{truncated}__{rando_string}_{i}_{name}.dontrun");
+
+                    if PathBuf::from(&data_stream_path).exists() {
+                        return Err(anyhow!(
+                            "Tried to override an existing stream {data_stream_path} already exists!\
+                                 This is a bug, please report to github!"
+                        ));
                     }
+
+                    let mut f = File::create(&data_stream_path)?;
+                    f.write_all(stream.data())?;
                 }
             }
 
