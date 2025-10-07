@@ -6,7 +6,6 @@ use mft::attribute::x90::{IndexCollationRules, IndexEntryFlags, IndexEntryHeader
 use mft::attribute::{FileAttributeFlags, MftAttribute, MftAttributeType};
 use mft::entry::MftEntry;
 use mft::mft::MftParser;
-use serde_json;
 use winstructs::ntfs::mft_reference::MftReference;
 use winstructs::timestamp::WinTimestamp;
 
@@ -65,9 +64,9 @@ fn test_entry_index_root() {
                             entry: 26359,
                             sequence: 1,
                         },
-                        created: created,
+                        created,
                         modified: created,
-                        mft_modified: mft_modified,
+                        mft_modified,
                         accessed: mft_modified,
                         logical_size: 4096,
                         physical_size: 1484,

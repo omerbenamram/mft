@@ -17,7 +17,7 @@ fn it_respects_directory_output() {
     let sample = mft_sample();
 
     let mut cmd = Command::cargo_bin("mft_dump").expect("failed to find binary");
-    cmd.args(&["-f", &f.to_string_lossy(), sample.to_str().unwrap()]);
+    cmd.arg("-f").arg(f.as_os_str()).arg(sample.as_os_str());
 
     assert!(
         cmd.output().unwrap().stdout.is_empty(),
@@ -39,7 +39,7 @@ fn test_it_refuses_to_overwrite_directory() {
 
     let sample = mft_sample();
     let mut cmd = Command::cargo_bin("mft_dump").expect("failed to find binary");
-    cmd.args(&["-f", &d.path().to_string_lossy(), sample.to_str().unwrap()]);
+    cmd.arg("-f").arg(d.path()).arg(sample.as_os_str());
 
     cmd.assert().failure().code(1);
 }
@@ -54,7 +54,7 @@ fn test_non_mft_file_is_error() {
     file.write_all(b"I'm a file!").unwrap();
 
     let mut cmd = Command::cargo_bin("mft_dump").expect("failed to find binary");
-    cmd.args(&[f.to_str().unwrap()]);
+    cmd.arg(f.as_os_str());
 
     cmd.assert().failure().code(1);
 }
@@ -65,11 +65,7 @@ fn test_it_exports_resident_streams() {
 
     let sample = mft_sample();
     let mut cmd = Command::cargo_bin("mft_dump").expect("failed to find binary");
-    cmd.args(&[
-        "-e",
-        &d.path().to_string_lossy().to_string(),
-        &sample.to_string_lossy().to_string(),
-    ]);
+    cmd.arg("-e").arg(d.path()).arg(sample.as_os_str());
 
     cmd.assert().success();
 

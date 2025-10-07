@@ -59,8 +59,7 @@ impl FromStr for Ranges {
                 let range: Vec<&str> = x.split('-').collect();
                 if range.len() != 2 {
                     return Err(anyhow!(
-                        "Failed to parse ranges: Range should contain exactly one `-`, found {}",
-                        x
+                        "Failed to parse ranges: Range should contain exactly one `-`, found {x}"
                     ));
                 }
 
@@ -72,60 +71,6 @@ impl FromStr for Ranges {
         }
 
         Ok(Ranges(ranges))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Ranges;
-    use std::str::FromStr;
-
-    #[test]
-    fn it_works_with_single_number() {
-        let ranges = Ranges::from_str("1").unwrap();
-        assert_eq!(ranges.0, vec![1..=1]);
-    }
-
-    #[test]
-    fn it_works_with_a_range() {
-        let ranges = Ranges::from_str("1-5").unwrap();
-        assert_eq!(ranges.0, vec![1..=5]);
-    }
-
-    #[test]
-    fn it_works_with_a_range_and_a_number() {
-        let ranges = Ranges::from_str("1-5,8").unwrap();
-        assert_eq!(ranges.0, vec![1..=5, 8..=8]);
-    }
-
-    #[test]
-    fn it_works_with_a_number_and_a_range() {
-        let ranges = Ranges::from_str("1-5,8").unwrap();
-        assert_eq!(ranges.0, vec![1..=5, 8..=8]);
-    }
-
-    #[test]
-    fn it_works_with_more_than_2_number_and_a_range() {
-        let ranges = Ranges::from_str("1-5,8,10-19").unwrap();
-        assert_eq!(ranges.0, vec![1..=5, 8..=8, 10..=19]);
-    }
-
-    #[test]
-    fn it_works_with_two_ranges() {
-        let ranges = Ranges::from_str("1-10,20-25").unwrap();
-        assert_eq!(ranges.0, vec![1..=10, 20..=25]);
-    }
-
-    #[test]
-    fn it_errors_on_a_random_string() {
-        let ranges = Ranges::from_str("hello");
-        assert!(ranges.is_err())
-    }
-
-    #[test]
-    fn it_errors_on_a_range_with_too_many_dashes() {
-        let ranges = Ranges::from_str("1-5-8");
-        assert!(ranges.is_err())
     }
 }
 
@@ -160,9 +105,7 @@ impl MftDump {
                 Ok(f) => Some(Box::new(f)),
                 Err(e) => {
                     return Err(anyhow!(
-                        "An error occurred while creating output file at `{}` - `{}`",
-                        path,
-                        e
+                        "An error occurred while creating output file at `{path}` - `{e}`"
                     ));
                 }
             }
@@ -236,7 +179,7 @@ impl MftDump {
         if p.exists() {
             if prompt {
                 match Confirm::new()
-                    .with_prompt(&format!(
+                    .with_prompt(format!(
                         "Are you sure you want to override output file at {}",
                         p.display()
                     ))
@@ -246,8 +189,7 @@ impl MftDump {
                     Ok(true) => Ok(File::create(p)?),
                     Ok(false) => Err(anyhow!("Cancelled")),
                     Err(e) => Err(anyhow!(
-                        "Failed to write confirmation prompt to term caused by\n{}",
-                        e
+                        "Failed to write confirmation prompt to term caused by\n{e}"
                     )),
                 }
             } else {
@@ -309,7 +251,7 @@ impl MftDump {
                     _ => entry,
                 },
                 Err(error) => {
-                    eprintln!("{}", error);
+                    eprintln!("{error}");
                     continue;
                 }
             };
@@ -342,19 +284,13 @@ impl MftDump {
                         let rando_string: String = to_hex_string(&random);
 
                         let truncated: String = orig_path_component.chars().take(150).collect();
-                        let data_stream_path = format!(
-                            "{path}__{random}_{stream_number}_{stream_name}.dontrun",
-                            path = truncated,
-                            random = rando_string,
-                            stream_number = i,
-                            stream_name = name
-                        );
+                        let data_stream_path =
+                            format!("{truncated}__{rando_string}_{i}_{name}.dontrun");
 
                         if PathBuf::from(&data_stream_path).exists() {
                             return Err(anyhow!(
-                                "Tried to override an existing stream {} already exists!\
-                                 This is a bug, please report to github!",
-                                data_stream_path
+                                "Tried to override an existing stream {data_stream_path} already exists!\
+                                 This is a bug, please report to github!"
                             ));
                         }
 
@@ -387,7 +323,7 @@ impl MftDump {
                 io::stderr(),
             ) {
                 Ok(_) => {}
-                Err(e) => eprintln!("Failed to initialize logging: {}", e),
+                Err(e) => eprintln!("Failed to initialize logging: {e}"),
             };
         }
     }
@@ -430,7 +366,7 @@ fn to_hex_string(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(len * 2);
 
     for byte in bytes {
-        write!(s, "{:02X}", byte).expect("Writing to an allocated string cannot fail");
+        write!(s, "{byte:02X}").expect("Writing to an allocated string cannot fail");
     }
 
     s
@@ -517,4 +453,58 @@ fn main() -> Result<()> {
     app.run().context("A runtime error has occurred")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Ranges;
+    use std::str::FromStr;
+
+    #[test]
+    fn it_works_with_single_number() {
+        let ranges = Ranges::from_str("1").unwrap();
+        assert_eq!(ranges.0, vec![1..=1]);
+    }
+
+    #[test]
+    fn it_works_with_a_range() {
+        let ranges = Ranges::from_str("1-5").unwrap();
+        assert_eq!(ranges.0, vec![1..=5]);
+    }
+
+    #[test]
+    fn it_works_with_a_range_and_a_number() {
+        let ranges = Ranges::from_str("1-5,8").unwrap();
+        assert_eq!(ranges.0, vec![1..=5, 8..=8]);
+    }
+
+    #[test]
+    fn it_works_with_a_number_and_a_range() {
+        let ranges = Ranges::from_str("1-5,8").unwrap();
+        assert_eq!(ranges.0, vec![1..=5, 8..=8]);
+    }
+
+    #[test]
+    fn it_works_with_more_than_2_number_and_a_range() {
+        let ranges = Ranges::from_str("1-5,8,10-19").unwrap();
+        assert_eq!(ranges.0, vec![1..=5, 8..=8, 10..=19]);
+    }
+
+    #[test]
+    fn it_works_with_two_ranges() {
+        let ranges = Ranges::from_str("1-10,20-25").unwrap();
+        assert_eq!(ranges.0, vec![1..=10, 20..=25]);
+    }
+
+    #[test]
+    fn it_errors_on_a_random_string() {
+        let ranges = Ranges::from_str("hello");
+        assert!(ranges.is_err())
+    }
+
+    #[test]
+    fn it_errors_on_a_range_with_too_many_dashes() {
+        let ranges = Ranges::from_str("1-5-8");
+        assert!(ranges.is_err())
+    }
 }

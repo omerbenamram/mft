@@ -19,7 +19,7 @@ fn process_1000_mft_records(sample: &[u8]) {
 
 fn get_full_path(parser: &mut MftParser<impl Read + Seek>, entries: &[MftEntry]) {
     for entry in entries {
-        parser.get_full_path_for_entry(&entry).unwrap();
+        parser.get_full_path_for_entry(entry).unwrap();
     }
 }
 
