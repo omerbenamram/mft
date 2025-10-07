@@ -345,10 +345,10 @@ impl MftEntry {
                 offset += u64::from(header.record_length);
 
                 // Skip attribute if filtered
-                if let Some(filter) = &types {
-                    if !filter.contains(&header.type_code) {
-                        continue;
-                    }
+                if let Some(filter) = &types
+                    && !filter.contains(&header.type_code)
+                {
+                    continue;
                 }
 
                 // Check if the header is resident, and if it is, read the attribute content.
