@@ -1,17 +1,19 @@
-use clap::{Arg, ArgAction, ArgMatches};
+use clap::{App, Arg, ArgMatches};
+use chrono::{NaiveDateTime, DateTime, Utc};
 use indoc::indoc;
 use log::Level;
 
 use mft::attribute::MftAttributeType;
+use mft::attribute::MftAttributeContent;
 use mft::mft::MftParser;
-use mft::MftEntry;
+use mft::{MftEntry, ReadSeek};
 
 use dialoguer::Confirm;
 use mft::csv::FlatMftEntryWithName;
 
 use anyhow::{anyhow, Context, Error, Result};
 use std::fs::File;
-use std::io::{Read, Seek, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use mft::entry::ZERO_HEADER;
@@ -136,24 +138,21 @@ struct MftDump {
     verbosity_level: Option<Level>,
     output_format: OutputFormat,
     ranges: Option<Ranges>,
+    date_cutoff: Option<DateTime<Utc>>,
 }
 
 impl MftDump {
     pub fn from_cli_matches(matches: &ArgMatches) -> Result<Self> {
-        let output_format: &String = matches.get_one("output-format").expect("has default");
-        let output_target: Option<&String> = matches.get_one("output-target");
-        let data_streams_target: Option<&String> = matches.get_one("data-streams-target");
-        let input: &String = matches.get_one("INPUT").expect("required");
-
         let output_format =
-            OutputFormat::from_str(output_format).expect("Validated with clap default values");
+            OutputFormat::from_str(matches.value_of("output-format").unwrap_or_default())
+                .expect("Validated with clap default values");
 
-        if matches.get_flag("backtraces") {
+        if matches.is_present("backtraces") {
             std::env::set_var("RUST_LIB_BACKTRACE", "1");
         }
 
-        let output: Option<Box<dyn Write>> = if let Some(path) = output_target {
-            match Self::create_output_file(path, !matches.get_flag("no-confirm-overwrite")) {
+        let output: Option<Box<dyn Write>> = if let Some(path) = matches.value_of("output-target") {
+            match Self::create_output_file(path, !matches.is_present("no-confirm-overwrite")) {
                 Ok(f) => Some(Box::new(f)),
                 Err(e) => {
                     return Err(anyhow!(
@@ -167,7 +166,7 @@ impl MftDump {
             Some(Box::new(io::stdout()))
         };
 
-        let data_streams_output = if let Some(path) = data_streams_target {
+        let data_streams_output = if let Some(path) = matches.value_of("data-streams-target") {
             let path = PathBuf::from(path);
             Self::create_output_dir(&path)?;
             Some(path)
@@ -175,7 +174,20 @@ impl MftDump {
             None
         };
 
-        let verbosity_level = match matches.get_count("verbose") {
+        let date_cutoff: Option<DateTime<Utc>> = match matches.value_of("date-cutoff") {
+            Some(date_str) => {
+                match NaiveDateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S") {
+                    Ok(naive) => Some(DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc)),
+                    Err(e) => {
+                        eprintln!("Failed to parse cutoff date '{}': {}", date_str, e);
+                        None
+                    }
+                }
+            },
+            None => None,
+        };
+
+        let verbosity_level = match matches.occurrences_of("verbose") {
             0 => None,
             1 => Some(Level::Info),
             2 => Some(Level::Debug),
@@ -186,18 +198,19 @@ impl MftDump {
             }
         };
 
-        let ranges = match matches.get_one::<&String>("entry-range") {
+        let ranges = match matches.value_of("entry-range") {
             Some(range) => Some(Ranges::from_str(range)?),
             None => None,
         };
 
         Ok(MftDump {
-            filepath: PathBuf::from(input),
+            filepath: PathBuf::from(matches.value_of("INPUT").expect("Required argument")),
             output,
             data_streams_output,
             verbosity_level,
             output_format,
             ranges,
+            date_cutoff,
         })
     }
 
@@ -311,65 +324,81 @@ impl MftDump {
                 }
             };
 
-            if let Some(data_streams_dir) = &self.data_streams_output {
-                if let Ok(Some(path)) = parser.get_full_path_for_entry(&entry) {
-                    let sanitized_path = sanitized(&path.to_string_lossy());
+            for (_i, attribute) in entry
+                .iter_attributes()
+                .filter_map(Result::ok)
+                .filter(|a| a.header.type_code == MftAttributeType::StandardInformation)
+                .enumerate()
+            {
 
-                    for (i, (name, stream)) in entry
-                        .iter_attributes()
-                        .filter_map(|a| a.ok())
-                        .filter_map(|a| {
-                            if a.header.type_code == MftAttributeType::DATA {
-                                // resident
-                                let name = a.header.name.clone();
-                                a.data.into_data().map(|data| (name, data))
-                            } else {
-                                None
-                            }
-                        })
-                        .enumerate()
-                    {
-                        let orig_path_component: String = data_streams_dir
-                            .join(&sanitized_path)
-                            .to_string_lossy()
-                            .to_string();
-
-                        // Add some random bits to prevent collisions
-                        let random: [u8; 6] = rand::random();
-                        let rando_string: String = to_hex_string(&random);
-
-                        let truncated: String = orig_path_component.chars().take(150).collect();
-                        let data_stream_path = format!(
-                            "{path}__{random}_{stream_number}_{stream_name}.dontrun",
-                            path = truncated,
-                            random = rando_string,
-                            stream_number = i,
-                            stream_name = name
-                        );
-
-                        if PathBuf::from(&data_stream_path).exists() {
-                            return Err(anyhow!(
-                                "Tried to override an existing stream {} already exists!\
-                                 This is a bug, please report to github!",
-                                data_stream_path
-                            ));
+                if let MftAttributeContent::AttrX10(standard_info) = &attribute.data {
+                    if let Some(date_cutoff) = self.date_cutoff {
+                        if standard_info.modified < date_cutoff {
+                            continue;
                         }
-
-                        let mut f = File::create(&data_stream_path)?;
-                        f.write_all(stream.data())?;
                     }
                 }
-            }
 
-            match self.output_format {
-                OutputFormat::JSON | OutputFormat::JSONL => self.print_json_entry(&entry)?,
-                OutputFormat::CSV => self.print_csv_entry(
-                    &entry,
-                    &mut parser,
-                    csv_writer
-                        .as_mut()
-                        .expect("CSV Writer is for OutputFormat::CSV"),
-                )?,
+                if let Some(data_streams_dir) = &self.data_streams_output {
+                    if let Ok(Some(path)) = parser.get_full_path_for_entry(&entry) {
+                        let sanitized_path = sanitized(&path.to_string_lossy().to_string());
+
+                        for (i, (name, stream)) in entry
+                            .iter_attributes()
+                            .filter_map(|a| a.ok())
+                            .filter_map(|a| {
+                                if a.header.type_code == MftAttributeType::DATA {
+                                    // resident
+                                    let name = a.header.name.clone();
+                                    a.data.into_data().map(|data| (name, data))
+                                } else {
+                                    None
+                                }
+                            })
+                            .enumerate()
+                        {
+                            let orig_path_component: String = data_streams_dir
+                                .join(&sanitized_path)
+                                .to_string_lossy()
+                                .to_string();
+
+                            // Add some random bits to prevent collisions
+                            let random: [u8; 6] = rand::random();
+                            let rando_string: String = to_hex_string(&random);
+
+                            let truncated: String = orig_path_component.chars().take(150).collect();
+                            let data_stream_path = format!(
+                                "{path}__{random}_{stream_number}_{stream_name}.dontrun",
+                                path = truncated,
+                                random = rando_string,
+                                stream_number = i,
+                                stream_name = name
+                            );
+
+                            if PathBuf::from(&data_stream_path).exists() {
+                                return Err(anyhow!(
+                                    "Tried to override an existing stream {} already exists!\
+                                    This is a bug, please report to github!",
+                                    data_stream_path
+                                ));
+                            }
+
+                            let mut f = File::create(&data_stream_path)?;
+                            f.write_all(stream.data())?;
+                        }
+                    }
+                }
+
+                match self.output_format {
+                    OutputFormat::JSON | OutputFormat::JSONL => self.print_json_entry(&entry)?,
+                    OutputFormat::CSV => self.print_csv_entry(
+                        &entry,
+                        &mut parser,
+                        csv_writer
+                            .as_mut()
+                            .expect("CSV Writer is for OutputFormat::CSV"),
+                    )?,
+                }
             }
         }
 
@@ -410,7 +439,7 @@ impl MftDump {
     pub fn print_csv_entry<W: Write>(
         &self,
         entry: &MftEntry,
-        parser: &mut MftParser<impl Read + Seek>,
+        parser: &mut MftParser<impl ReadSeek>,
         writer: &mut csv::Writer<W>,
     ) -> Result<()> {
         let flat_entry = FlatMftEntryWithName::from_entry(entry, parser);
@@ -448,7 +477,7 @@ pub fn sanitized(component: &str) -> String {
 }
 
 fn main() -> Result<()> {
-    let matches = clap::Command::new("MFT Parser")
+    let matches = App::new("MFT Parser")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Omer B. <omerbenamram@gmail.com>")
         .about("Utility for parsing MFT snapshots")
@@ -456,46 +485,55 @@ fn main() -> Result<()> {
         .arg(
             Arg::new("output-format")
                 .short('o')
-                .long("output-format")
-                .action(ArgAction::Set)
-                .value_parser(clap::builder::PossibleValuesParser::new(["csv", "json", "jsonl"]))
+                .long("--output-format")
+                .takes_value(true)
+                .possible_values(&["csv", "json", "jsonl"])
                 .default_value("json")
                 .help("Output format."),
         )
         .arg(
             Arg::new("entry-range")
-                .long("ranges")
+                .long("--ranges")
                 .short('r')
-                .action(ArgAction::Set)
+                .takes_value(true)
                 .help(indoc!("Dumps only the given entry range(s), for example, `1-15,30` will dump entries 1-15, and 30")),
         )
         .arg(
             Arg::new("output-target")
-                .long("output")
+                .long("--output")
                 .short('f')
-                .action(ArgAction::Set)
+                .takes_value(true)
                 .help(indoc!("Writes output to the file specified instead of stdout, errors will still be printed to stderr.
                        Will ask for confirmation before overwriting files, to allow overwriting, pass `--no-confirm-overwrite`
                        Will create parent directories if needed.")),
         )
         .arg(
             Arg::new("data-streams-target")
-                .long("extract-resident-streams")
+                .long("--extract-resident-streams")
                 .short('e')
-                .action(ArgAction::Set)
+                .takes_value(true)
                 .help(indoc!("Writes resident data streams to the given directory.
                              Resident streams will be named like - `{path}__<random_bytes>_{stream_number}_{stream_name}.dontrun`
                              random is added to prevent collisions.")),
         )
         .arg(
             Arg::new("no-confirm-overwrite")
-                .long("no-confirm-overwrite")
-                .action(ArgAction::SetTrue)
+                .long("--no-confirm-overwrite")
+                .takes_value(false)
                 .help(indoc!("When set, will not ask for confirmation before overwriting files, useful for automation")),
         )
+        .arg(
+            Arg::new("date-cutoff")
+                .long("--date-cutoff")
+                .takes_value(true)
+                .help("Only process entries modified before this date (e.g., 2021-12-31 23:59:59)"),
+        )
+
+
         .arg(Arg::new("verbose")
             .short('v')
-            .action(ArgAction::Count)
+            .multiple_occurrences(true)
+            .takes_value(false)
             .help(indoc!(r#"
             Sets debug prints level for the application:
                 -v   - info
@@ -505,8 +543,8 @@ fn main() -> Result<()> {
         )
         .arg(
             Arg::new("backtraces")
-                .long("backtraces")
-                .action(ArgAction::SetTrue)
+                .long("--backtraces")
+                .takes_value(false)
                 .help("If set, a backtrace will be printed with some errors if available"))
         .get_matches();
 
