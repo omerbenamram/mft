@@ -1,144 +1,95 @@
-name: release
+name: Release
 
 on:
   push:
-    # Enable when testing release infrastructure on a branch.
-    # branches:
-      # - gh-actions
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
+      - 'v[0-9]+.[0-9]+.[0-9]+'
 
 jobs:
-  create-release:
-    name: create-release
-    runs-on: ubuntu-latest
-    # env:
-      #Set to force version number, e.g., when no tag exists.
-      # VERSION: TEST-0.0.4
-    steps:
-      - name: Create artifacts directory
-        run: mkdir artifacts
-
-      - name: Get the release version from the tag
-        if: env.VERSION == ''
-        run: |
-          echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-          echo "version is: ${{ env.VERSION }}"
-
-      - name: Create GitHub release
-        id: release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ env.VERSION }}
-          release_name: ${{ env.VERSION }}
-
-      - name: Save release upload URL to artifact
-        run: echo "${{ steps.release.outputs.upload_url }}" > artifacts/release-upload-url
-
-      - name: Save version number to artifact
-        run: echo "${{ env.VERSION }}" > artifacts/release-version
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v1
-        with:
-          name: artifacts
-          path: artifacts
-
   build-release:
-    name: build-release
-    needs: ["create-release"]
-    runs-on: ${{ matrix.os }}
-    env:
-      # When CARGO is set to CROSS, TARGET_DIR includes matrix.target.
-      TARGET_DIR: ./target
-      # Emit backtraces on panics.
-      RUST_BACKTRACE: 1
-      MACOSX_DEPLOYMENT_TARGET: 10.9
-
+    name: Build release binaries
+    runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
-        build: [linux, linux-static, macos, windows]
         include:
-          - build: linux
-            os: ubuntu-18.04
-            rust: stable
+          - runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - build: linux-static
-            os: ubuntu-18.04
-            rust: stable
+          - runner: ubuntu-22.04
             target: x86_64-unknown-linux-musl
-          - build: macos
-            os: macos-latest
-            rust: stable
+          - runner: macos-13
             target: x86_64-apple-darwin
-          - build: windows
-            os: "windows-2019"
-            rust: stable
+          - runner: macos-14
+            target: aarch64-apple-darwin
+          - runner: windows-2022
             target: x86_64-pc-windows-msvc
-
+    env:
+      CARGO_TERM_COLOR: always
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
-          profile: minimal
-          override: true
-          target: ${{ matrix.target }}
+          targets: ${{ matrix.target }}
 
-      - name: Get release download URL
-        uses: actions/download-artifact@v1
-        with:
-          name: artifacts
-          path: artifacts
-
-      - name: Set release upload URL and release version
-        shell: bash
-        run: |
-          release_upload_url="$(cat artifacts/release-upload-url)"
-          echo "RELEASE_UPLOAD_URL=$release_upload_url" >> $GITHUB_ENV
-          echo "release upload url: $RELEASE_UPLOAD_URL"
-          release_version="$(cat artifacts/release-version)"
-          echo "RELEASE_VERSION=$release_version" >> $GITHUB_ENV
-          echo "release version: $RELEASE_VERSION"
+      - name: Install musl tooling
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends musl-tools
 
       - name: Build release binary
-        if: matrix.build == 'linux' || matrix.build == 'macos' || matrix.build == 'windows'
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          toolchain: "${{ matrix.rust }}"
-          args: --target ${{ matrix.target }} --release
+        run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Build release binary
-        if: matrix.build == 'linux-static'
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --target ${{ matrix.target }} --release
-
-      - name: Build archive
+      - name: Prepare artifact
         shell: bash
         run: |
-          if [ "${{ matrix.build }}" = "windows" ]; then
-            echo "ASSET=target/${{ matrix.target }}/release/mft_dump.exe" >> $GITHUB_ENV
-            echo "ASSET_NAME=mft_dump-${{ env.RELEASE_VERSION }}.exe" >> $GITHUB_ENV
+          set -euo pipefail
+          release_dir="target/${{ matrix.target }}/release"
+          version="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            src="${release_dir}/mft_dump.exe"
+            dest="dist/mft_dump-${version}-${{ matrix.target }}.exe"
           else
-            echo "ASSET=target/${{ matrix.target }}/release/mft_dump" >> $GITHUB_ENV
-            echo "ASSET_NAME=mft_dump-${{ env.RELEASE_VERSION }}-${{ matrix.target }}" >> $GITHUB_ENV
+            src="${release_dir}/mft_dump"
+            dest="dist/mft_dump-${version}-${{ matrix.target }}"
           fi
-      - name: Upload release archive
-        uses: actions/upload-release-asset@v1.0.1
+          cp "${src}" "${dest}"
+          if [[ "${{ runner.os }}" != "Windows" ]]; then
+            chmod +x "${dest}"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mft_dump-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub release
+    needs: build-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Show downloaded artifacts
+        run: ls -R dist
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/**
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ env.RELEASE_UPLOAD_URL }}
-          asset_path: ${{ env.ASSET }}
-          asset_name: ${{ env.ASSET_NAME }}
-          asset_content_type: application/octet-stream
