@@ -2,9 +2,9 @@ use clap::{Arg, ArgAction, ArgMatches};
 use indoc::indoc;
 use log::Level;
 
+use mft::MftEntry;
 use mft::attribute::MftAttributeType;
 use mft::mft::MftParser;
-use mft::MftEntry;
 
 use dialoguer::Confirm;
 use mft::csv::FlatMftEntryWithName;

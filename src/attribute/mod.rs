@@ -1,4 +1,6 @@
+pub mod data_run;
 pub mod header;
+pub mod non_resident_attr;
 pub mod raw;
 pub mod x10;
 pub mod x20;
@@ -6,8 +8,6 @@ pub mod x30;
 pub mod x40;
 pub mod x80;
 pub mod x90;
-pub mod non_resident_attr;
-pub mod data_run;
 
 use crate::err::Result;
 use crate::impl_serialize_for_bitflags;
@@ -21,11 +21,11 @@ use crate::attribute::x10::StandardInfoAttr;
 use crate::attribute::x20::AttributeListAttr;
 use crate::attribute::x30::FileNameAttr;
 
-use crate::attribute::header::{MftAttributeHeader, ResidentHeader, NonResidentHeader};
+use crate::attribute::header::{MftAttributeHeader, NonResidentHeader, ResidentHeader};
+use crate::attribute::non_resident_attr::NonResidentAttr;
 use crate::attribute::x40::ObjectIdAttr;
 use crate::attribute::x80::DataAttr;
 use crate::attribute::x90::IndexRootAttr;
-use crate::attribute::non_resident_attr::NonResidentAttr;
 use serde::Serialize;
 
 #[derive(Serialize, Clone, Debug)]
@@ -34,15 +34,15 @@ pub struct MftAttribute {
     pub data: MftAttributeContent,
 }
 
-impl MftAttributeContent {    
+impl MftAttributeContent {
     pub fn from_stream_non_resident<S: Read + Seek>(
         stream: &mut S,
         header: &MftAttributeHeader,
         resident: &NonResidentHeader,
-    ) -> Result<Self> { 
-        Ok(MftAttributeContent::DataRun(
-            NonResidentAttr::from_stream(stream, header, resident)?,
-        ))
+    ) -> Result<Self> {
+        Ok(MftAttributeContent::DataRun(NonResidentAttr::from_stream(
+            stream, header, resident,
+        )?))
     }
 
     pub fn from_stream_resident<S: Read + Seek>(
@@ -127,7 +127,7 @@ impl MftAttributeContent {
             _ => None,
         }
     }
-    
+
     /// Converts the given attributes into a `DataAttr`, consuming the object attribute object.
     pub fn into_data(self) -> Option<DataAttr> {
         match self {

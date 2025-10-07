@@ -8,8 +8,8 @@ use winstructs::ntfs::mft_reference::MftReference;
 use byteorder::{LittleEndian, ReadBytesExt};
 
 use bitflags::bitflags;
-use serde::ser::{self, SerializeStruct, Serializer};
 use serde::Serialize;
+use serde::ser::{self, SerializeStruct, Serializer};
 
 use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
 use crate::attribute::x30::{FileNameAttr, FileNamespace};

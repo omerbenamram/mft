@@ -13,7 +13,7 @@ pub enum RunType {
 pub struct DataRun {
     pub lcn_offset: u64,
     pub lcn_length: u64,
-    pub run_type: RunType
+    pub run_type: RunType,
 }
 
 fn decode_run_value<T: Iterator<Item = u8>>(it: &mut T, bytes: u8) -> Option<u64> {
@@ -44,30 +44,30 @@ pub fn decode_data_runs(runs: &[u8]) -> Option<Vec<DataRun>> {
             break;
         }
         let offset_size = (h & 0xF0) >> 4;
-        let length_size =  h & 0x0F;
+        let length_size = h & 0x0F;
         if offset_size > 8 || length_size > 8 {
-            return None
+            return None;
         }
-        let length  = decode_run_value(&mut it, length_size)?;
+        let length = decode_run_value(&mut it, length_size)?;
         let abs_offset;
         let run_type;
-        if offset_size != 0 { // offset_size of 0 == sparse cluster
+        if offset_size != 0 {
+            // offset_size of 0 == sparse cluster
             if let Some(last) = out.last() {
-                let rel_offset  = decode_run_svalue(&mut it, offset_size)?;
+                let rel_offset = decode_run_svalue(&mut it, offset_size)?;
                 abs_offset = (last.lcn_offset as i64 + rel_offset) as u64;
             } else {
                 abs_offset = decode_run_value(&mut it, offset_size)?;
             }
             run_type = RunType::Standard;
-        }
-        else {
+        } else {
             abs_offset = 0;
             run_type = RunType::Sparse;
         }
         out.push(DataRun {
             lcn_offset: abs_offset,
             lcn_length: length,
-            run_type
+            run_type,
         });
     }
     Some(out)
@@ -79,8 +79,14 @@ mod tests {
 
     #[test]
     fn test_value_decode() {
-        assert_eq!(decode_run_value(&mut vec![0x34, 0x56].into_iter(), 2), Some(0x5634));
-        assert_eq!(decode_run_svalue(&mut vec![0xE0].into_iter(), 1), Some(-0x20));
+        assert_eq!(
+            decode_run_value(&mut vec![0x34, 0x56].into_iter(), 2),
+            Some(0x5634)
+        );
+        assert_eq!(
+            decode_run_svalue(&mut vec![0xE0].into_iter(), 1),
+            Some(-0x20)
+        );
         assert_eq!(decode_run_svalue(&mut vec![0xE0].into_iter(), 2), None);
     }
 }
