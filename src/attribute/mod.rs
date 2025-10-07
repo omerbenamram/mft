@@ -211,6 +211,7 @@ bitflags! {
     /// <https://github.com/EricZimmerman/MFT/blob/3bed2626ee85e9a96a6db70a17407d0c3696056a/MFT/Attributes/StandardInfo.cs#L10>
     /// <https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ca28ec38-f155-4768-81d6-4bfeb8586fc9>
     ///
+    #[derive(Clone, Debug, PartialEq)]
     pub struct FileAttributeFlags: u32 {
         const FILE_ATTRIBUTE_READONLY             = 0x0000_0001;
         const FILE_ATTRIBUTE_HIDDEN               = 0x0000_0002;
@@ -237,7 +238,7 @@ bitflags! {
 impl_serialize_for_bitflags! {FileAttributeFlags}
 
 bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Clone, Debug, PartialEq)]
     pub struct AttributeDataFlags: u16 {
         const IS_COMPRESSED     = 0x0001;
         const COMPRESSION_MASK  = 0x00FF;

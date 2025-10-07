@@ -83,6 +83,7 @@ pub struct EntryHeader {
     pub record_number: u64,
 }
 bitflags! {
+    #[derive(Clone, Debug, PartialEq)]
     pub struct EntryFlags: u16 {
         const ALLOCATED             = 0x01;
         const INDEX_PRESENT         = 0x02;

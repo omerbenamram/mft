@@ -51,6 +51,7 @@ pub enum IndexCollationRules {
 }
 
 bitflags! {
+    #[derive(Clone, Debug, PartialEq)]
     pub struct IndexRootFlags: u32 {
         const SMALL_INDEX = 0x00;
         const LARGE_INDEX = 0x01;
@@ -106,6 +107,7 @@ pub struct IndexEntryHeader {
     pub fname_info: FileNameAttr,
 }
 bitflags! {
+    #[derive(Clone, Debug, PartialEq)]
     pub struct IndexEntryFlags: u32 {
         const INDEX_ENTRY_NODE = 0x01;
         const INDEX_ENTRY_END  = 0x02;
