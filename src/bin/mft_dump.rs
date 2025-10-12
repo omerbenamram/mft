@@ -2,7 +2,7 @@ use clap::{App, Arg, ArgMatches};
 use chrono::{NaiveDateTime, DateTime, Utc};
 use indoc::indoc;
 use log::Level;
-
+use std::io::{Read, Seek};
 use mft::attribute::MftAttributeType;
 use mft::attribute::MftAttributeContent;
 use mft::mft::MftParser;
@@ -21,7 +21,6 @@ use std::fmt::Write as FmtWrite;
 use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::{fs, io, path};
-
 #[derive(Debug, PartialOrd, PartialEq)]
 #[allow(clippy::upper_case_acronyms)]
 enum OutputFormat {
@@ -129,7 +128,6 @@ mod tests {
         assert!(ranges.is_err())
     }
 }
-
 struct MftDump {
     filepath: PathBuf,
     // We use an option here to be able to move the output out of mftdump from a mutable reference.
@@ -323,82 +321,86 @@ impl MftDump {
                     continue;
                 }
             };
+			// Here we check the 'modified' timestamp of the 'StandardInformation' attribute
+			let mut skip_entry = false;
+			
+			// Go through the attributes to find the Standard Information and check the modified date
+			for attribute in entry.iter_attributes().filter_map(Result::ok) {
+				if attribute.header.type_code == MftAttributeType::StandardInformation {
+					if let MftAttributeContent::AttrX10(standard_info) = &attribute.data {
+						if let Some(date_cutoff) = self.date_cutoff {
+							if standard_info.modified < date_cutoff {
+								// Mark this entry to be skipped if it doesn't meet the cutoff
+								skip_entry = true;
+							}
+						}
+					}
+				}
+			}
 
-            for (_i, attribute) in entry
-                .iter_attributes()
-                .filter_map(Result::ok)
-                .filter(|a| a.header.type_code == MftAttributeType::StandardInformation)
-                .enumerate()
-            {
+			// If entry is marked to be skipped, continue to the next iteration
+			if skip_entry {
+				continue;
+			}
+            if let Some(data_streams_dir) = &self.data_streams_output {
+                if let Ok(Some(path)) = parser.get_full_path_for_entry(&entry) {
+                    let sanitized_path = sanitized(&path.to_string_lossy());
 
-                if let MftAttributeContent::AttrX10(standard_info) = &attribute.data {
-                    if let Some(date_cutoff) = self.date_cutoff {
-                        if standard_info.modified < date_cutoff {
-                            continue;
-                        }
-                    }
-                }
-
-                if let Some(data_streams_dir) = &self.data_streams_output {
-                    if let Ok(Some(path)) = parser.get_full_path_for_entry(&entry) {
-                        let sanitized_path = sanitized(&path.to_string_lossy().to_string());
-
-                        for (i, (name, stream)) in entry
-                            .iter_attributes()
-                            .filter_map(|a| a.ok())
-                            .filter_map(|a| {
-                                if a.header.type_code == MftAttributeType::DATA {
-                                    // resident
-                                    let name = a.header.name.clone();
-                                    a.data.into_data().map(|data| (name, data))
-                                } else {
-                                    None
-                                }
-                            })
-                            .enumerate()
-                        {
-                            let orig_path_component: String = data_streams_dir
-                                .join(&sanitized_path)
-                                .to_string_lossy()
-                                .to_string();
-
-                            // Add some random bits to prevent collisions
-                            let random: [u8; 6] = rand::random();
-                            let rando_string: String = to_hex_string(&random);
-
-                            let truncated: String = orig_path_component.chars().take(150).collect();
-                            let data_stream_path = format!(
-                                "{path}__{random}_{stream_number}_{stream_name}.dontrun",
-                                path = truncated,
-                                random = rando_string,
-                                stream_number = i,
-                                stream_name = name
-                            );
-
-                            if PathBuf::from(&data_stream_path).exists() {
-                                return Err(anyhow!(
-                                    "Tried to override an existing stream {} already exists!\
-                                    This is a bug, please report to github!",
-                                    data_stream_path
-                                ));
+                    for (i, (name, stream)) in entry
+                        .iter_attributes()
+                        .filter_map(|a| a.ok())
+                        .filter_map(|a| {
+                            if a.header.type_code == MftAttributeType::DATA {
+                                // resident
+                                let name = a.header.name.clone();
+                                a.data.into_data().map(|data| (name, data))
+                            } else {
+                                None
                             }
+                        })
+                        .enumerate()
+                    {
+                        let orig_path_component: String = data_streams_dir
+                            .join(&sanitized_path)
+                            .to_string_lossy()
+                            .to_string();
 
-                            let mut f = File::create(&data_stream_path)?;
-                            f.write_all(stream.data())?;
+                        // Add some random bits to prevent collisions
+                        let random: [u8; 6] = rand::random();
+                        let rando_string: String = to_hex_string(&random);
+
+                        let truncated: String = orig_path_component.chars().take(150).collect();
+                        let data_stream_path = format!(
+                            "{path}__{random}_{stream_number}_{stream_name}.dontrun",
+                            path = truncated,
+                            random = rando_string,
+                            stream_number = i,
+                            stream_name = name
+                        );
+
+                        if PathBuf::from(&data_stream_path).exists() {
+                            return Err(anyhow!(
+                                "Tried to override an existing stream {} already exists!\
+                                 This is a bug, please report to github!",
+                                data_stream_path
+                            ));
                         }
+
+                        let mut f = File::create(&data_stream_path)?;
+                        f.write_all(stream.data())?;
                     }
                 }
+            }
 
-                match self.output_format {
-                    OutputFormat::JSON | OutputFormat::JSONL => self.print_json_entry(&entry)?,
-                    OutputFormat::CSV => self.print_csv_entry(
-                        &entry,
-                        &mut parser,
-                        csv_writer
-                            .as_mut()
-                            .expect("CSV Writer is for OutputFormat::CSV"),
-                    )?,
-                }
+            match self.output_format {
+                OutputFormat::JSON | OutputFormat::JSONL => self.print_json_entry(&entry)?,
+                OutputFormat::CSV => self.print_csv_entry(
+                    &entry,
+                    &mut parser,
+                    csv_writer
+                        .as_mut()
+                        .expect("CSV Writer is for OutputFormat::CSV"),
+                )?,
             }
         }
 
@@ -439,7 +441,7 @@ impl MftDump {
     pub fn print_csv_entry<W: Write>(
         &self,
         entry: &MftEntry,
-        parser: &mut MftParser<impl ReadSeek>,
+        parser: &mut MftParser<impl Read + Seek>,
         writer: &mut csv::Writer<W>,
     ) -> Result<()> {
         let flat_entry = FlatMftEntryWithName::from_entry(entry, parser);
