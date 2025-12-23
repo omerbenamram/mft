@@ -1,12 +1,12 @@
 mod fixtures;
 
 use fixtures::*;
+use mft::Timestamp;
 use mft::attribute::x30::{FileNameAttr, FileNamespace};
 use mft::attribute::x90::{IndexCollationRules, IndexEntryFlags, IndexEntryHeader};
 use mft::attribute::{FileAttributeFlags, MftAttribute, MftAttributeType};
 use mft::entry::MftEntry;
 use mft::mft::MftParser;
-use mft::Timestamp;
 use winstructs::ntfs::mft_reference::MftReference;
 
 fn filetime_bytes_to_timestamp(bytes: [u8; 8]) -> Timestamp {

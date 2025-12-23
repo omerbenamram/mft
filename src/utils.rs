@@ -1,7 +1,7 @@
 use byteorder::ReadBytesExt;
-use jiff::fmt::temporal::DateTimePrinter;
-use jiff::fmt::StdFmtWrite;
 use jiff::Timestamp;
+use jiff::fmt::StdFmtWrite;
+use jiff::fmt::temporal::DateTimePrinter;
 use serde::Serializer;
 use std::char::decode_utf16;
 use std::fmt;

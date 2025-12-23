@@ -65,7 +65,8 @@ impl StandardInfoAttr {
     pub fn from_reader<S: Read + Seek>(reader: &mut S) -> Result<StandardInfoAttr> {
         trace!("Offset {}: StandardInfoAttr", reader.stream_position()?);
         // Timestamps are stored as Windows FILETIME (100ns since 1601-01-01 UTC).
-        let created = crate::utils::windows_filetime_to_timestamp(reader.read_u64::<LittleEndian>()?);
+        let created =
+            crate::utils::windows_filetime_to_timestamp(reader.read_u64::<LittleEndian>()?);
         let modified =
             crate::utils::windows_filetime_to_timestamp(reader.read_u64::<LittleEndian>()?);
         let mft_modified =
