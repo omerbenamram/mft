@@ -6,7 +6,9 @@ macro_rules! impl_serialize_for_bitflags {
             where
                 S: serde::ser::Serializer,
             {
-                serializer.serialize_str(&format!("{:?}", &self))
+                // Stream the Debug output directly to the serializer without allocating
+                // an intermediate String. This is faster than `serialize_str(&format!(...))`.
+                serializer.collect_str(&format_args!("{:?}", &self))
             }
         }
     };
