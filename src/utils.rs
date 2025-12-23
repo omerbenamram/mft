@@ -5,7 +5,6 @@ use jiff::fmt::temporal::DateTimePrinter;
 use serde::Serializer;
 use std::char::decode_utf16;
 use std::fmt;
-use std::fmt::Write;
 use std::io::{self, Read, Seek};
 
 const TIMESTAMP_PRINTER_P0: DateTimePrinter = DateTimePrinter::new().precision(Some(0));
@@ -81,14 +80,14 @@ pub(crate) fn windows_filetime_to_timestamp(filetime_100ns: u64) -> crate::err::
 }
 
 pub fn to_hex_string(bytes: &[u8]) -> String {
-    let len = bytes.len();
-    // Each byte is represented by 2 ascii bytes.
-    let mut s = String::with_capacity(len * 2);
+    const LUT: &[u8; 16] = b"0123456789ABCDEF";
 
-    for byte in bytes {
-        write!(s, "{byte:02X}").expect("Writing to an allocated string cannot fail");
+    // Use `String` directly to avoid a second pass for UTF-8 validation.
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        s.push(LUT[(b >> 4) as usize] as char);
+        s.push(LUT[(b & 0x0F) as usize] as char);
     }
-
     s
 }
 
@@ -138,5 +137,13 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_to_hex_string_uppercase_no_separators() {
+        assert_eq!(to_hex_string(&[]), "");
+        assert_eq!(to_hex_string(&[0x00]), "00");
+        assert_eq!(to_hex_string(&[0x0F, 0x10, 0xAB, 0xFF]), "0F10ABFF");
+        assert_eq!(to_hex_string(b"Hi"), "4869");
     }
 }
