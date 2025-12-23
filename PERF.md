@@ -8,6 +8,211 @@ Principles:
 - Keep a **saved profile** around for every “checkpoint” so we can explain wins / regressions.
 - When results are noisy, prefer **median** and **min** over mean, and record variance.
 
+## Agent playbook (reproducible workflow)
+
+This section is the **exact workflow** used to land each hypothesis as a PR-quality change.
+If you hand this file to another agent, they should be able to reproduce the same process and artifacts.
+
+### Naming & artifacts (do this consistently)
+
+Pick the next hypothesis ID: `H{N}` (monotonic, don’t reuse IDs).
+
+- **Branch**: `perf/h{N}-{short-slug}` (example: `perf/h6-resident-slices`)
+- **Saved binaries** (so benchmarks are stable and diffable):
+  - `target/release/mft_dump.h{N}_before`
+  - `target/release/mft_dump.h{N}_after`
+- **Hyperfine JSON**:
+  - `target/h{N}-before-vs-after.hyperfine.json`
+- **Samply profiles** (merged by running many iterations):
+  - `target/samply/h{N}_before.profile.json.gz`
+  - `target/samply/h{N}_after.profile.json.gz`
+
+### Canonical benchmark command lines (copy/paste)
+
+These are the commands we benchmark/profiler-record. Keep them unchanged unless the thesis *requires* changing them.
+
+W1 (JSONL, end-to-end, write suppressed):
+
+```bash
+./target/release/mft_dump samples/MFT -o jsonl -f /dev/null --no-confirm-overwrite
+```
+
+W2 (CSV, end-to-end, write suppressed):
+
+```bash
+./target/release/mft_dump samples/MFT -o csv -f /dev/null --no-confirm-overwrite
+```
+
+### Step-by-step: run an experiment end-to-end
+
+#### 0) Start a new thesis
+
+```bash
+cd /Users/omerba/Workspace/mft
+git checkout -b perf/h{N}-{short-slug}
+```
+
+#### 1) Build + snapshot the **before** binary
+
+```bash
+cd /Users/omerba/Workspace/mft
+cargo build --release --bin mft_dump
+cp -f target/release/mft_dump target/release/mft_dump.h{N}_before
+```
+
+#### 2) Record a stable **before** profile (Samply)
+
+We merge many iterations so leaf frames are stable.
+
+```bash
+cd /Users/omerba/Workspace/mft
+mkdir -p target/samply
+samply record --save-only --unstable-presymbolicate --reuse-threads --main-thread-only \
+  -o target/samply/h{N}_before.profile.json.gz \
+  --iteration-count 200 -- \
+  ./target/release/mft_dump.h{N}_before samples/MFT -o jsonl -f /dev/null --no-confirm-overwrite
+```
+
+To view (serve locally and open the printed Firefox Profiler URL):
+
+```bash
+cd /Users/omerba/Workspace/mft
+samply load --no-open -P 4033 target/samply/h{N}_before.profile.json.gz
+```
+
+What to record from the UI:
+- Use **Call Tree** + **Invert call stack** for top **leaf/self** frames.
+- Use normal Call Tree for “big buckets” (inclusive time).
+- Filter stack for `mft::` / `mft_dump::` when looking for in-crate work.
+
+#### 3) Implement the change (keep it tight)
+
+- Make the smallest change that tests the hypothesis.
+- If you find yourself changing 5+ unrelated things, split into multiple theses.
+
+#### 4) Build + snapshot the **after** binary
+
+```bash
+cd /Users/omerba/Workspace/mft
+cargo build --release --bin mft_dump
+cp -f target/release/mft_dump target/release/mft_dump.h{N}_after
+```
+
+#### 5) Benchmark **before vs after in the same hyperfine command**
+
+We always run both saved binaries in a single `hyperfine` invocation and export JSON.
+
+```bash
+cd /Users/omerba/Workspace/mft
+hyperfine --warmup 5 --runs 40 \
+  --export-json target/h{N}-before-vs-after.hyperfine.json \
+  './target/release/mft_dump.h{N}_before samples/MFT -o jsonl -f /dev/null --no-confirm-overwrite' \
+  './target/release/mft_dump.h{N}_after  samples/MFT -o jsonl -f /dev/null --no-confirm-overwrite'
+```
+
+Extract medians quickly (no jq required):
+
+```bash
+python3 - <<'PY'
+import json
+path = "target/h{N}-before-vs-after.hyperfine.json"
+d = json.load(open(path))
+for r in d["results"]:
+    print(r["command"])
+    print("  median:", r["times"]["median"])
+    print("  mean  :", r["times"]["mean"], "stddev:", r["times"]["stddev"])
+PY
+```
+
+If variance is high, amortize noise by running multiple iterations inside each hyperfine run:
+
+```bash
+cd /Users/omerba/Workspace/mft
+hyperfine --warmup 2 --runs 15 \
+  --export-json target/h{N}-before-vs-after.hyperfine.json \
+  --command-name 'before (20x)' "bash -lc 'for i in {1..20}; do ./target/release/mft_dump.h{N}_before samples/MFT -o jsonl -f /dev/null --no-confirm-overwrite; done'" \
+  --command-name 'after  (20x)' "bash -lc 'for i in {1..20}; do ./target/release/mft_dump.h{N}_after  samples/MFT -o jsonl -f /dev/null --no-confirm-overwrite; done'"
+```
+
+#### 6) Record an **after** profile (Samply)
+
+```bash
+cd /Users/omerba/Workspace/mft
+samply record --save-only --unstable-presymbolicate --reuse-threads --main-thread-only \
+  -o target/samply/h{N}_after.profile.json.gz \
+  --iteration-count 200 -- \
+  ./target/release/mft_dump.h{N}_after samples/MFT -o jsonl -f /dev/null --no-confirm-overwrite
+```
+
+View:
+
+```bash
+cd /Users/omerba/Workspace/mft
+samply load --no-open -P 4034 target/samply/h{N}_after.profile.json.gz
+```
+
+#### 7) Correctness checks (pick the strictness that matches the thesis)
+
+**Semantic JSONL equality** (preferred; formatting differences allowed):
+
+```bash
+cd /Users/omerba/Workspace/mft
+rm -f /tmp/mft_before.jsonl /tmp/mft_after.jsonl
+./target/release/mft_dump.h{N}_before samples/MFT --ranges 0-200 -o jsonl -f /tmp/mft_before.jsonl --no-confirm-overwrite
+./target/release/mft_dump.h{N}_after  samples/MFT --ranges 0-200 -o jsonl -f /tmp/mft_after.jsonl  --no-confirm-overwrite
+python3 - <<'PY'
+import json
+b = [json.loads(l) for l in open("/tmp/mft_before.jsonl")]
+a = [json.loads(l) for l in open("/tmp/mft_after.jsonl")]
+assert b == a, "semantic JSONL mismatch"
+print("OK: semantic JSONL identical (ranges 0-200)")
+PY
+```
+
+**Byte-for-byte equality** (use when the thesis claims exact output identity):
+
+```bash
+diff -u /tmp/mft_before.jsonl /tmp/mft_after.jsonl >/dev/null && echo "OK: byte-identical"
+```
+
+#### 8) Update this file (PERF.md) with a write-up
+
+Add a section under “Completed optimizations” (or “Rejected”) with:
+- **What changed**
+- **Benchmarks** (paste the exact hyperfine command)
+- **Extracted medians** (from exported JSON)
+- **Speedup** (ratio and %)
+- **Profile delta** (top leaf frame(s) before/after, mention if top leaf changed)
+- **Correctness check** (command + result)
+- **Artifacts**: profile paths + hyperfine JSON path
+
+#### 9) PR-quality finish
+
+Run the usual checks before committing:
+
+```bash
+cd /Users/omerba/Workspace/mft
+cargo test --all-features
+cargo fmt
+cargo clippy --all-targets --all-features
+```
+
+Then commit with a message that matches the thesis and the observable change (example):
+
+```bash
+git commit -am "perf: H{N} avoid resident attribute copies in JSONL"
+```
+
+### How to handle negative results (rejected theses)
+
+If the benchmark is within noise or regresses:
+- **Revert** the change (keep the branch clean), or leave it but clearly mark as rejected.
+- Add a “Rejected” subsection documenting:
+  - the hypothesis
+  - the benchmark numbers (showing it’s noise/regression)
+  - the profile evidence (what got worse / what new leaf appeared)
+  - the conclusion (“not worth it”) and what to try next
+
 ## Canonical workloads
 
 All commands assume:
