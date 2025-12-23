@@ -6,8 +6,25 @@ use mft::attribute::x90::{IndexCollationRules, IndexEntryFlags, IndexEntryHeader
 use mft::attribute::{FileAttributeFlags, MftAttribute, MftAttributeType};
 use mft::entry::MftEntry;
 use mft::mft::MftParser;
+use mft::Timestamp;
 use winstructs::ntfs::mft_reference::MftReference;
-use winstructs::timestamp::WinTimestamp;
+
+fn filetime_bytes_to_timestamp(bytes: [u8; 8]) -> Timestamp {
+    // Windows FILETIME: 100ns intervals since 1601-01-01 UTC.
+    // Match historical behavior (`winstructs::timestamp::WinTimestamp::to_datetime`):
+    // truncate to microseconds.
+    const WINDOWS_TO_UNIX_EPOCH_MICROS: i64 = 11_644_473_600_000_000;
+    let filetime_100ns = u64::from_le_bytes(bytes);
+
+    let micros_since_windows_epoch = (filetime_100ns / 10) as i64;
+    let micros_since_unix_epoch = micros_since_windows_epoch - WINDOWS_TO_UNIX_EPOCH_MICROS;
+
+    let seconds = micros_since_unix_epoch.div_euclid(1_000_000);
+    let subsec_micros = micros_since_unix_epoch.rem_euclid(1_000_000);
+    let subsec_nanos = (subsec_micros * 1_000) as i32;
+
+    Timestamp::new(seconds, subsec_nanos).expect("valid FILETIME conversion")
+}
 
 #[test]
 fn test_entry_invalid_fixup_value() {
@@ -43,13 +60,10 @@ fn test_entry_index_root() {
                 let index_entries = index_root.index_entries.index_entries;
                 assert_eq!(index_entries.len(), 4);
 
-                let created = WinTimestamp::new(&[0x00, 0x00, 0xC1, 0x03, 0xDB, 0x6A, 0xC6, 0x01])
-                    .unwrap()
-                    .to_datetime();
+                let created =
+                    filetime_bytes_to_timestamp([0x00, 0x00, 0xC1, 0x03, 0xDB, 0x6A, 0xC6, 0x01]);
                 let mft_modified =
-                    WinTimestamp::new(&[0x76, 0x86, 0xF6, 0x8C, 0x04, 0x64, 0xCA, 0x01])
-                        .unwrap()
-                        .to_datetime();
+                    filetime_bytes_to_timestamp([0x76, 0x86, 0xF6, 0x8C, 0x04, 0x64, 0xCA, 0x01]);
 
                 let index_entry_comp = IndexEntryHeader {
                     mft_reference: MftReference {

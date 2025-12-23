@@ -9,6 +9,7 @@ extern crate num_derive;
 pub use attribute::MftAttribute;
 pub use attribute::x10::StandardInfoAttr;
 pub use attribute::x30::FileNameAttr;
+pub use jiff::Timestamp;
 
 pub use crate::mft::MftParser;
 pub use entry::{EntryHeader, MftEntry};

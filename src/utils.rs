@@ -1,7 +1,80 @@
 use byteorder::ReadBytesExt;
+use jiff::fmt::temporal::DateTimePrinter;
+use jiff::fmt::StdFmtWrite;
+use jiff::Timestamp;
+use serde::Serializer;
 use std::char::decode_utf16;
+use std::fmt;
 use std::fmt::Write;
 use std::io::{self, Read, Seek};
+
+const TIMESTAMP_PRINTER_P0: DateTimePrinter = DateTimePrinter::new().precision(Some(0));
+const TIMESTAMP_PRINTER_P3: DateTimePrinter = DateTimePrinter::new().precision(Some(3));
+const TIMESTAMP_PRINTER_P6: DateTimePrinter = DateTimePrinter::new().precision(Some(6));
+const TIMESTAMP_PRINTER_P9: DateTimePrinter = DateTimePrinter::new().precision(Some(9));
+
+struct ChronoRfc3339Compat<'a>(&'a Timestamp);
+
+impl fmt::Display for ChronoRfc3339Compat<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Match chrono's `SecondsFormat::AutoSi` behavior.
+        let nanos = self.0.subsec_nanosecond();
+        let printer = if nanos == 0 {
+            &TIMESTAMP_PRINTER_P0
+        } else if nanos % 1_000_000 == 0 {
+            &TIMESTAMP_PRINTER_P3
+        } else if nanos % 1_000 == 0 {
+            &TIMESTAMP_PRINTER_P6
+        } else {
+            &TIMESTAMP_PRINTER_P9
+        };
+
+        printer
+            .print_timestamp(self.0, StdFmtWrite(f))
+            .map_err(|_| fmt::Error)
+    }
+}
+
+pub(crate) fn serialize_timestamp_chrono_compat<S>(
+    ts: &Timestamp,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.collect_str(&ChronoRfc3339Compat(ts))
+}
+
+pub(crate) fn serialize_option_timestamp_chrono_compat<S>(
+    ts: &Option<Timestamp>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match ts {
+        Some(ts) => serialize_timestamp_chrono_compat(ts, serializer),
+        None => serializer.serialize_none(),
+    }
+}
+
+/// Converts a Windows FILETIME (100ns intervals since 1601-01-01 UTC) to a Unix-epoch timestamp.
+///
+/// This is a hot path: we keep it branchless and avoid chrono entirely.
+pub(crate) fn windows_filetime_to_timestamp(filetime_100ns: u64) -> Timestamp {
+    // Match historical behavior (`winstructs::timestamp::WinTimestamp::to_datetime`):
+    // FILETIME is 100ns resolution, but the conversion truncates to microseconds.
+    const WINDOWS_TO_UNIX_EPOCH_MICROS: i64 = 11_644_473_600_000_000;
+
+    let micros_since_windows_epoch = (filetime_100ns / 10) as i64;
+    let micros_since_unix_epoch = micros_since_windows_epoch - WINDOWS_TO_UNIX_EPOCH_MICROS;
+
+    let seconds = micros_since_unix_epoch.div_euclid(1_000_000);
+    let subsec_micros = micros_since_unix_epoch.rem_euclid(1_000_000);
+    let subsec_nanos = (subsec_micros * 1_000) as i32;
+
+    Timestamp::new(seconds, subsec_nanos).expect("valid FILETIME conversion")
+}
 
 pub fn to_hex_string(bytes: &[u8]) -> String {
     let len = bytes.len();

@@ -8,12 +8,11 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use encoding::all::UTF_16LE;
 use encoding::{DecoderTrap, Encoding};
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use num_traits::FromPrimitive;
 use serde::Serialize;
 
 use winstructs::ntfs::mft_reference::MftReference;
-use winstructs::timestamp::WinTimestamp;
 
 #[derive(FromPrimitive, Serialize, Clone, Debug, PartialOrd, PartialEq)]
 #[repr(u8)]
@@ -27,10 +26,14 @@ pub enum FileNamespace {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct FileNameAttr {
     pub parent: MftReference,
-    pub created: DateTime<Utc>,
-    pub modified: DateTime<Utc>,
-    pub mft_modified: DateTime<Utc>,
-    pub accessed: DateTime<Utc>,
+    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    pub created: Timestamp,
+    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    pub modified: Timestamp,
+    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    pub mft_modified: Timestamp,
+    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    pub accessed: Timestamp,
     pub logical_size: u64,
     pub physical_size: u64,
     pub flags: FileAttributeFlags,
@@ -62,10 +65,10 @@ impl FileNameAttr {
     /// let attribute = FileNameAttr::from_stream(&mut Cursor::new(attribute_buffer)).unwrap();
     ///
     /// assert_eq!(attribute.parent.entry, 5);
-    /// assert_eq!(attribute.created.timestamp(), 1370144608);
-    /// assert_eq!(attribute.modified.timestamp(), 1370144608);
-    /// assert_eq!(attribute.mft_modified.timestamp(), 1370144608);
-    /// assert_eq!(attribute.accessed.timestamp(), 1370144608);
+    /// assert_eq!(attribute.created.as_second(), 1370144608);
+    /// assert_eq!(attribute.modified.as_second(), 1370144608);
+    /// assert_eq!(attribute.mft_modified.as_second(), 1370144608);
+    /// assert_eq!(attribute.accessed.as_second(), 1370144608);
     /// assert_eq!(attribute.logical_size, 67108864);
     /// assert_eq!(attribute.physical_size, 67108864);
     /// assert_eq!(attribute.flags.bits(), 6);
@@ -78,18 +81,14 @@ impl FileNameAttr {
         trace!("Offset {}: FilenameAttr", stream.stream_position()?);
         let parent =
             MftReference::from_reader(stream).map_err(Error::failed_to_read_mft_reference)?;
-        let created = WinTimestamp::from_reader(stream)
-            .map_err(Error::failed_to_read_windows_time)?
-            .to_datetime();
-        let modified = WinTimestamp::from_reader(stream)
-            .map_err(Error::failed_to_read_windows_time)?
-            .to_datetime();
-        let mft_modified = WinTimestamp::from_reader(stream)
-            .map_err(Error::failed_to_read_windows_time)?
-            .to_datetime();
-        let accessed = WinTimestamp::from_reader(stream)
-            .map_err(Error::failed_to_read_windows_time)?
-            .to_datetime();
+        // Timestamps are stored as Windows FILETIME (100ns since 1601-01-01 UTC).
+        let created = crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?);
+        let modified =
+            crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?);
+        let mft_modified =
+            crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?);
+        let accessed =
+            crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?);
 
         let logical_size = stream.read_u64::<LittleEndian>()?;
         let physical_size = stream.read_u64::<LittleEndian>()?;
