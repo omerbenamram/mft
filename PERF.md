@@ -131,7 +131,7 @@ Each item includes:
 - **Claim**: sequential iteration still pays a lot of `lseek` overhead; removing it will meaningfully reduce CPU time once serialization is cheaper.
 - **Evidence**: parser-only profiles show `__lseek` as a major leaf; end-to-end still has visible syscall leaf time.
 - **Change**:
-  - Provide a sequential entry iterator that doesn’t seek every entry (or teaches `get_entry` to skip seek when already positioned).
+  - Teach `get_entry` to skip `seek` when already positioned for sequential reads (track `next_read_offset`).
   - Update CLI loop to use the sequential path when ranges are not random.
 - **Success metric**: W1 improves by **≥ 5%** after H1 lands (or measure on W2 if JSONL still hides it).
 - **Guardrails**: no functional changes; still supports `--ranges`.
@@ -182,5 +182,35 @@ We verified **semantic equality** of JSONL output on a small range:
 - Command: both binaries with `--ranges 0-200` and `-o jsonl`
 - Method: parse each line as JSON and compare Python objects
 - Result: OK (193 lines; some entries are skipped due to zero headers)
+
+### H2 (2025-12-23) — Skip per-entry seek for sequential scans
+
+**What changed**
+- `MftParser::get_entry` now tracks the **next expected stream offset** and only calls `seek()` when the requested entry is not the sequential next entry.
+
+**Benchmarks**
+
+Single `hyperfine` run comparing the saved binaries:
+
+```bash
+hyperfine --warmup 3 --runs 30 \
+  './target/release/mft_dump.h2_before samples/MFT -o jsonl -f /dev/null --no-confirm-overwrite' \
+  './target/release/mft_dump.h2_after samples/MFT -o jsonl -f /dev/null --no-confirm-overwrite'
+```
+
+Extracted medians (from `target/h2-before-vs-after.hyperfine.json`):
+- **Before median**: **74.72 ms**
+- **After median**: **63.06 ms**
+- **Speedup**: ~**1.18×** (≈ **16%** faster)
+
+**Profile delta (leaf reduction)**
+
+Before (`target/samply/h2_before.profile.json.gz`, inverted call tree):
+- `read` ~11% self
+- `__lseek` ~5.5% self
+
+After (`target/samply/h2_after.profile.json.gz`, inverted call tree):
+- `read` ~4.8% self
+- `__lseek` no longer appears in top leaf list (effectively eliminated for W1)
 
 

@@ -17,6 +17,9 @@ pub struct MftParser<T: Read + Seek> {
     entry_size: u32,
     size: u64,
     entries_cache: LruCache<u64, PathBuf>,
+    // Next expected read offset in the underlying stream. Used to avoid a seek syscall when
+    // reading entries sequentially.
+    next_read_offset: u64,
 }
 
 impl MftParser<BufReader<File>> {
@@ -60,6 +63,7 @@ impl<T: Read + Seek> MftParser<T> {
             entry_size: first_entry.total_entry_size,
             size,
             entries_cache: LruCache::new(NonZeroUsize::new(1000).expect("1000 > 0")),
+            next_read_offset: 0,
         })
     }
 
@@ -71,11 +75,20 @@ impl<T: Read + Seek> MftParser<T> {
     pub fn get_entry(&mut self, entry_number: u64) -> Result<MftEntry> {
         debug!("Reading entry {entry_number}");
 
-        self.data
-            .seek(SeekFrom::Start(entry_number * u64::from(self.entry_size)))?;
+        let entry_size = u64::from(self.entry_size);
+        let desired_offset = entry_number * entry_size;
+
+        // Avoid seeking when reading sequential entries; this keeps the BufReader hot and
+        // removes a large number of __lseek syscalls in tight loops.
+        if self.next_read_offset != desired_offset {
+            self.data.seek(SeekFrom::Start(desired_offset))?;
+            self.next_read_offset = desired_offset;
+        }
+
         let mut entry_buffer = vec![0; self.entry_size as usize];
 
         self.data.read_exact(&mut entry_buffer)?;
+        self.next_read_offset = self.next_read_offset.saturating_add(entry_size);
 
         MftEntry::from_buffer(entry_buffer, entry_number)
     }
