@@ -12,10 +12,11 @@ use mft::csv::FlatMftEntryWithName;
 
 use anyhow::anyhow;
 use anyhow::{Context, Error, Result};
+use sonic_rs as sonic_json;
 use std::backtrace::Backtrace;
 use std::fmt::{self, Write as FmtWrite};
 use std::fs::File;
-use std::io::{Read, Seek, Write};
+use std::io::{BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use mft::entry::ZERO_HEADER;
@@ -84,6 +85,7 @@ struct MftDump {
     verbosity_level: Option<Level>,
     output_format: OutputFormat,
     ranges: Option<Ranges>,
+    json_buf: Vec<u8>,
     backtraces_enabled: bool,
 }
 
@@ -100,7 +102,7 @@ impl MftDump {
 
         let output: Option<Box<dyn Write>> = if let Some(path) = output_target {
             match Self::create_output_file(path, !matches.get_flag("no-confirm-overwrite")) {
-                Ok(f) => Some(Box::new(f)),
+                Ok(f) => Some(Box::new(BufWriter::new(f))),
                 Err(e) => {
                     return Err(anyhow!(
                         "An error occurred while creating output file at `{path}` - `{e}`"
@@ -108,7 +110,7 @@ impl MftDump {
                 }
             }
         } else {
-            Some(Box::new(io::stdout()))
+            Some(Box::new(BufWriter::new(io::stdout())))
         };
 
         let data_streams_output = if let Some(path) = data_streams_target {
@@ -130,7 +132,7 @@ impl MftDump {
             }
         };
 
-        let ranges = match matches.get_one::<&String>("entry-range") {
+        let ranges = match matches.get_one::<String>("entry-range") {
             Some(range) => Some(Ranges::from_str(range)?),
             None => None,
         };
@@ -142,6 +144,7 @@ impl MftDump {
             verbosity_level,
             output_format,
             ranges,
+            json_buf: Vec::with_capacity(64 * 1024),
             backtraces_enabled,
         })
     }
@@ -333,14 +336,15 @@ impl MftDump {
             .as_mut()
             .expect("CSV Flow cannot occur, so `Mftdump` should still Own `output`");
 
-        let json_str = if self.output_format == OutputFormat::JSON {
-            serde_json::to_vec_pretty(&entry).expect("It should be valid UTF-8")
+        self.json_buf.clear();
+        if self.output_format == OutputFormat::JSON {
+            serde_json::to_writer_pretty(&mut self.json_buf, &entry)?;
         } else {
-            serde_json::to_vec(&entry).expect("It should be valid UTF-8")
-        };
-
-        out.write_all(&json_str)?;
-        out.write_all(b"\n")?;
+            // JSONL is the performance-critical mode; use a faster serializer.
+            sonic_json::to_writer(&mut self.json_buf, &entry)?;
+        }
+        self.json_buf.push(b'\n');
+        out.write_all(&self.json_buf)?;
 
         Ok(())
     }

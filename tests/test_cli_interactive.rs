@@ -10,11 +10,14 @@ mod tests {}
 mod tests {
     use super::fixtures::*;
 
-    use assert_cmd::cargo::cargo_bin;
     use rexpect::spawn;
     use std::fs::File;
     use std::io::{Read, Write};
     use tempfile::tempdir;
+
+    fn mft_dump_path() -> &'static std::path::Path {
+        assert_cmd::cargo_bin!("mft_dump")
+    }
 
     // It should behave the same on windows, but interactive testing relies on unix pty internals.
     #[test]
@@ -30,7 +33,7 @@ mod tests {
 
         let cmd_string = format!(
             "{bin} -f {output_file} {sample}",
-            bin = cargo_bin("mft_dump").display(),
+            bin = mft_dump_path().display(),
             output_file = f.to_string_lossy(),
             sample = sample.to_str().unwrap()
         );
@@ -65,7 +68,7 @@ mod tests {
 
         let cmd_string = format!(
             "{bin} -f {output_file} {sample}",
-            bin = cargo_bin("mft_dump").display(),
+            bin = mft_dump_path().display(),
             output_file = f.to_string_lossy(),
             sample = sample.to_str().unwrap()
         );

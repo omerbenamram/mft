@@ -2,11 +2,10 @@ mod fixtures;
 
 use fixtures::*;
 
-use assert_cmd::prelude::*;
+use assert_cmd::cargo::cargo_bin_cmd;
 use std::fs;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::process::Command;
 use tempfile::tempdir;
 
 #[test]
@@ -16,7 +15,7 @@ fn it_respects_directory_output() {
 
     let sample = mft_sample();
 
-    let mut cmd = Command::cargo_bin("mft_dump").expect("failed to find binary");
+    let mut cmd = cargo_bin_cmd!("mft_dump");
     cmd.arg("-f").arg(f.as_os_str()).arg(sample.as_os_str());
 
     assert!(
@@ -38,7 +37,7 @@ fn test_it_refuses_to_overwrite_directory() {
     let d = tempdir().unwrap();
 
     let sample = mft_sample();
-    let mut cmd = Command::cargo_bin("mft_dump").expect("failed to find binary");
+    let mut cmd = cargo_bin_cmd!("mft_dump");
     cmd.arg("-f").arg(d.path()).arg(sample.as_os_str());
 
     cmd.assert().failure().code(1);
@@ -53,7 +52,7 @@ fn test_non_mft_file_is_error() {
     let mut file = File::create(&f).unwrap();
     file.write_all(b"I'm a file!").unwrap();
 
-    let mut cmd = Command::cargo_bin("mft_dump").expect("failed to find binary");
+    let mut cmd = cargo_bin_cmd!("mft_dump");
     cmd.arg(f.as_os_str());
 
     cmd.assert().failure().code(1);
@@ -64,7 +63,7 @@ fn test_it_exports_resident_streams() {
     let d = tempdir().unwrap();
 
     let sample = mft_sample();
-    let mut cmd = Command::cargo_bin("mft_dump").expect("failed to find binary");
+    let mut cmd = cargo_bin_cmd!("mft_dump");
     cmd.arg("-e").arg(d.path()).arg(sample.as_os_str());
 
     cmd.assert().success();
