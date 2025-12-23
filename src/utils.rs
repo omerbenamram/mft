@@ -60,8 +60,11 @@ where
 
 /// Converts a Windows FILETIME (100ns intervals since 1601-01-01 UTC) to a Unix-epoch timestamp.
 ///
-/// This is a hot path: we keep it branchless and avoid chrono entirely.
-pub(crate) fn windows_filetime_to_timestamp(filetime_100ns: u64) -> Timestamp {
+/// This is a hot path: we avoid chrono entirely and only allocate on error.
+///
+/// Returns an error instead of panicking when the resulting timestamp is outside `jiff::Timestamp`'s
+/// supported range (roughly years -9999 to 9999).
+pub(crate) fn windows_filetime_to_timestamp(filetime_100ns: u64) -> crate::err::Result<Timestamp> {
     // Match historical behavior (`winstructs::timestamp::WinTimestamp::to_datetime`):
     // FILETIME is 100ns resolution, but the conversion truncates to microseconds.
     const WINDOWS_TO_UNIX_EPOCH_MICROS: i64 = 11_644_473_600_000_000;
@@ -73,7 +76,8 @@ pub(crate) fn windows_filetime_to_timestamp(filetime_100ns: u64) -> Timestamp {
     let subsec_micros = micros_since_unix_epoch.rem_euclid(1_000_000);
     let subsec_nanos = (subsec_micros * 1_000) as i32;
 
-    Timestamp::new(seconds, subsec_nanos).expect("valid FILETIME conversion")
+    Timestamp::new(seconds, subsec_nanos)
+        .map_err(|_| crate::err::Error::FiletimeTimestampOutOfRange { filetime_100ns })
 }
 
 pub fn to_hex_string(bytes: &[u8]) -> String {
@@ -119,4 +123,20 @@ pub fn read_utf16_string<T: Read + Seek>(stream: &mut T, len: Option<usize>) -> 
     decode_utf16(buffer.into_iter().take_while(|&byte| byte != 0x00))
         .map(|r| r.map_err(|_e| io::Error::from(io::ErrorKind::InvalidData)))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_filetime_to_timestamp_out_of_range_is_error() {
+        let err = windows_filetime_to_timestamp(u64::MAX).unwrap_err();
+        match err {
+            crate::err::Error::FiletimeTimestampOutOfRange { filetime_100ns } => {
+                assert_eq!(filetime_100ns, u64::MAX);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
 }

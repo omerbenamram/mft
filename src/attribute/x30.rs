@@ -83,13 +83,13 @@ impl FileNameAttr {
             MftReference::from_reader(stream).map_err(Error::failed_to_read_mft_reference)?;
         // Timestamps are stored as Windows FILETIME (100ns since 1601-01-01 UTC).
         let created =
-            crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?);
+            crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?)?;
         let modified =
-            crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?);
+            crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?)?;
         let mft_modified =
-            crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?);
+            crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?)?;
         let accessed =
-            crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?);
+            crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?)?;
 
         let logical_size = stream.read_u64::<LittleEndian>()?;
         let physical_size = stream.read_u64::<LittleEndian>()?;

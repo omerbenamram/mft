@@ -2,10 +2,12 @@ mod fixtures;
 
 use fixtures::*;
 use mft::Timestamp;
+use mft::attribute::header::ResidentialHeader;
 use mft::attribute::x30::{FileNameAttr, FileNamespace};
 use mft::attribute::x90::{IndexCollationRules, IndexEntryFlags, IndexEntryHeader};
 use mft::attribute::{FileAttributeFlags, MftAttribute, MftAttributeType};
 use mft::entry::MftEntry;
+use mft::err::Error as MftError;
 use mft::mft::MftParser;
 use winstructs::ntfs::mft_reference::MftReference;
 
@@ -96,4 +98,59 @@ fn test_entry_index_root() {
             }
         }
     }
+}
+
+#[test]
+fn test_out_of_range_filetime_is_error_not_panic() {
+    // Start from a real on-disk entry buffer, then corrupt a FILETIME inside the
+    // $STANDARD_INFORMATION (0x10) payload.
+    let mut raw = include_bytes!("../samples/entry_single_file").to_vec();
+
+    // First parse the entry to discover the exact on-disk offsets for the $STANDARD_INFORMATION
+    // resident payload.
+    let entry = MftEntry::from_buffer(raw.clone(), 0).expect("failed to parse entry fixture");
+    let (attr_start, data_offset) = entry
+        .iter_attributes()
+        .filter_map(Result::ok)
+        .find_map(|attr| {
+            if attr.header.type_code != MftAttributeType::StandardInformation {
+                return None;
+            }
+            match attr.header.residential_header {
+                ResidentialHeader::Resident(resident) => {
+                    Some((attr.header.start_offset, resident.data_offset))
+                }
+                ResidentialHeader::NonResident(_) => None,
+            }
+        })
+        .expect("fixture should contain a resident $STANDARD_INFORMATION attribute");
+
+    let data_start =
+        usize::try_from(attr_start).expect("attr_start fits in usize") + usize::from(data_offset);
+    assert!(data_start + 8 <= raw.len(), "corrupt offset is in-bounds");
+
+    // Corrupt the first FILETIME (created) to an out-of-range value for `jiff::Timestamp`.
+    raw[data_start..data_start + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+
+    // Re-parse and ensure we get a clean error (no panic), and the entry still serializes.
+    let entry = MftEntry::from_buffer(raw, 0).expect("failed to parse corrupted entry");
+
+    let mut saw_out_of_range = false;
+    for res in entry.iter_attributes() {
+        match res {
+            Ok(_) => {}
+            Err(MftError::FiletimeTimestampOutOfRange { filetime_100ns }) => {
+                saw_out_of_range = true;
+                assert_eq!(filetime_100ns, u64::MAX);
+            }
+            Err(_) => {}
+        }
+    }
+    assert!(
+        saw_out_of_range,
+        "expected an out-of-range timestamp error while parsing attributes"
+    );
+
+    // `MftEntry` serialization drops attribute parse errors; it should never panic.
+    serde_json::to_value(&entry).expect("entry should serialize");
 }

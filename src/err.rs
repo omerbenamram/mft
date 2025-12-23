@@ -45,6 +45,8 @@ pub enum Error {
     FailedToReadMftReference { source: winstructs::err::Error },
     #[error("Failed to read WindowsTime")]
     FailedToReadWindowsTime { source: winstructs::err::Error },
+    #[error("Windows FILETIME value {filetime_100ns} is out of range for jiff::Timestamp")]
+    FiletimeTimestampOutOfRange { filetime_100ns: u64 },
     #[error("Failed to read GUID")]
     FailedToReadGuid { source: winstructs::err::Error },
     #[error("Failed to decode data runs")]
