@@ -9,7 +9,7 @@ use byteorder::{LittleEndian, ReadBytesExt};
 
 use bitflags::bitflags;
 use serde::Serialize;
-use serde::ser::{self, SerializeStruct, Serializer};
+use serde::ser::{self, SerializeSeq, SerializeStruct, Serializer};
 
 use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
 use crate::attribute::x30::{FileNameAttr, FileNamespace};
@@ -40,10 +40,26 @@ impl ser::Serialize for MftEntry {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("MftEntry", 2)?;
-        let attributes: Vec<MftAttribute> = self.iter_attributes().filter_map(Result::ok).collect();
+        struct Attributes<'a> {
+            entry: &'a MftEntry,
+        }
+
+        impl ser::Serialize for Attributes<'_> {
+            fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                let mut seq = serializer.serialize_seq(None)?;
+                for attr in self.entry.iter_attributes().filter_map(Result::ok) {
+                    seq.serialize_element(&attr)?;
+                }
+                seq.end()
+            }
+        }
+
+        let mut state = serializer.serialize_struct("MftEntry", 3)?;
         state.serialize_field("header", &self.header)?;
-        state.serialize_field("attributes", &attributes)?;
+        state.serialize_field("attributes", &Attributes { entry: self })?;
         state.serialize_field("valid_fixup", &self.valid_fixup)?;
         state.end()
     }
