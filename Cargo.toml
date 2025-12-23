@@ -26,6 +26,7 @@ winstructs = "0.3.2"
 lru = "0.16.1"
 itertools = "0.14"
 rand = "0.9"
+jiff = { version = "0.2.16", default-features = false, features = ["std", "alloc", "serde", "perf-inline"] }
 
 # `mft_dump` dependencies
 clap = { version = "4", optional = true }
@@ -38,11 +39,6 @@ sonic-rs = { version = "0.5.6", optional = true }
 [features]
 default = ["mft_dump"]
 mft_dump = ["anyhow", "simplelog", "dialoguer", "indoc", "clap", "sonic-rs"]
-
-[dependencies.chrono]
-version = "0.4"
-default-features = false
-features = ["clock", "serde", "std"]
 
 [dev-dependencies]
 criterion = "0.7"

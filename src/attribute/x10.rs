@@ -1,20 +1,23 @@
 use std::io::{Read, Seek};
 
 use crate::attribute::FileAttributeFlags;
-use crate::err::{Error, Result};
+use crate::err::Result;
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use log::trace;
 use serde::Serialize;
-use winstructs::timestamp::WinTimestamp;
 
 #[derive(Serialize, Debug, Clone)]
 pub struct StandardInfoAttr {
-    pub created: DateTime<Utc>,
-    pub modified: DateTime<Utc>,
-    pub mft_modified: DateTime<Utc>,
-    pub accessed: DateTime<Utc>,
+    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    pub created: Timestamp,
+    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    pub modified: Timestamp,
+    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    pub mft_modified: Timestamp,
+    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    pub accessed: Timestamp,
     /// DOS File Permissions
     pub file_flags: FileAttributeFlags,
     pub max_version: u32,
@@ -47,10 +50,10 @@ impl StandardInfoAttr {
     ///
     /// let attribute = StandardInfoAttr::from_reader(&mut Cursor::new(attribute_buffer)).unwrap();
     ///
-    /// assert_eq!(attribute.created.timestamp(), 1376278290);
-    /// assert_eq!(attribute.modified.timestamp(), 1379621073);
-    /// assert_eq!(attribute.mft_modified.timestamp(), 1379621073);
-    /// assert_eq!(attribute.accessed.timestamp(), 1379621073);
+    /// assert_eq!(attribute.created.as_second(), 1376278290);
+    /// assert_eq!(attribute.modified.as_second(), 1379621073);
+    /// assert_eq!(attribute.mft_modified.as_second(), 1379621073);
+    /// assert_eq!(attribute.accessed.as_second(), 1379621073);
     /// assert_eq!(attribute.file_flags.bits(), 32);
     /// assert_eq!(attribute.max_version, 0);
     /// assert_eq!(attribute.version, 0);
@@ -61,18 +64,15 @@ impl StandardInfoAttr {
     /// ```
     pub fn from_reader<S: Read + Seek>(reader: &mut S) -> Result<StandardInfoAttr> {
         trace!("Offset {}: StandardInfoAttr", reader.stream_position()?);
-        let created = WinTimestamp::from_reader(reader)
-            .map_err(Error::failed_to_read_windows_time)?
-            .to_datetime();
-        let modified = WinTimestamp::from_reader(reader)
-            .map_err(Error::failed_to_read_windows_time)?
-            .to_datetime();
-        let mft_modified = WinTimestamp::from_reader(reader)
-            .map_err(Error::failed_to_read_windows_time)?
-            .to_datetime();
-        let accessed = WinTimestamp::from_reader(reader)
-            .map_err(Error::failed_to_read_windows_time)?
-            .to_datetime();
+        // Timestamps are stored as Windows FILETIME (100ns since 1601-01-01 UTC).
+        let created =
+            crate::utils::windows_filetime_to_timestamp(reader.read_u64::<LittleEndian>()?)?;
+        let modified =
+            crate::utils::windows_filetime_to_timestamp(reader.read_u64::<LittleEndian>()?)?;
+        let mft_modified =
+            crate::utils::windows_filetime_to_timestamp(reader.read_u64::<LittleEndian>()?)?;
+        let accessed =
+            crate::utils::windows_filetime_to_timestamp(reader.read_u64::<LittleEndian>()?)?;
 
         Ok(StandardInfoAttr {
             created,

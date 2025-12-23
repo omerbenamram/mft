@@ -136,12 +136,13 @@ Each item includes:
 - **Success metric**: W1 improves by **≥ 5%** after H1 lands (or measure on W2 if JSONL still hides it).
 - **Guardrails**: no functional changes; still supports `--ranges`.
 
-### H3 — Reduce timestamp formatting overhead (post-H1)
+### H3 — Reduce hex formatting overhead (`to_hex_string`)
 
-- **Claim**: `chrono` formatting shows up noticeably; swapping to a faster formatting path could help.
-- **Evidence**: `chrono` formatting appears among hot inclusive nodes in JSONL profile.
-- **Change**: investigate faster RFC3339 formatting and/or reduce intermediate allocations.
-- **Success metric**: W1 improves by **≥ 5%** (only worth doing if H1/H2 make this visible).
+- **Claim**: hex encoding of raw attribute blobs is still a meaningful formatting cost.
+- **Evidence**: leaf frames show `core::fmt::num::<impl UpperHex for u8>::fmt` at ~2% self, and `mft::utils::to_hex_string` in the top leaf list.
+- **Change**: replace `to_hex_string`’s `write!(\"{byte:02X}\")` loop with a table-based encoder (no `fmt`).
+- **Success metric**: W1 improves by **≥ 2%** on median time (post-H1/H2/H3).
+- **Guardrails**: output must be byte-for-byte identical for hex strings (uppercase, no separators).
 
 ## Completed optimizations
 
@@ -212,5 +213,53 @@ Before (`target/samply/h2_before.profile.json.gz`, inverted call tree):
 After (`target/samply/h2_after.profile.json.gz`, inverted call tree):
 - `read` ~4.8% self
 - `__lseek` no longer appears in top leaf list (effectively eliminated for W1)
+
+### H3 (2025-12-23) — Migrate timestamps to `jiff` (preserve chrono-compatible output)
+
+**What changed**
+- Replace `chrono::DateTime<Utc>` fields in:
+  - `StandardInfoAttr` (`0x10`)
+  - `FileNameAttr` (`0x30`)
+  - `FlatMftEntryWithName` (CSV)
+  with `jiff::Timestamp` (re-exported as `mft::Timestamp`).
+- Convert Windows FILETIME directly in `mft::utils::windows_filetime_to_timestamp` (truncate to microseconds to match historical behavior).
+- Preserve the exact JSON/CSV timestamp string format by forcing chrono-compatible RFC3339 precision using `jiff::fmt::temporal::DateTimePrinter` (via `#[serde(serialize_with = ...)]`).
+- Enable `jiff`’s `perf-inline` feature (important when using `default-features = false`; it’s enabled by default otherwise).
+
+**Benchmarks**
+
+Single `hyperfine` run comparing saved binaries:
+
+```bash
+hyperfine --warmup 5 --runs 40 \
+  './target/release/mft_dump.h3_before samples/MFT -o jsonl -f /dev/null --no-confirm-overwrite' \
+  './target/release/mft_dump.h3_after_final samples/MFT -o jsonl -f /dev/null --no-confirm-overwrite'
+```
+
+Extracted medians (from `target/h3-before-vs-after-final.hyperfine.json`):
+- **Before median**: **69.21 ms**
+- **After median**: **64.65 ms**
+- **Speedup**: ~**1.07×** (≈ **6.6%** faster)
+
+**Profile delta (leaf shift)**
+
+Before (`target/samply/h3_before.profile.json.gz`, inverted call tree) included:
+- `chrono::...FormatIso8601...::fmt` (~0.8% self)
+- `chrono::naive::date::NaiveDate::add_days` (~1.2% self)
+
+After (`target/samply/h3_after_final.profile.json.gz`, inverted call tree):
+- No `chrono::` frames in the top leaf list
+- Timestamp formatting is now primarily `jiff::fmt::temporal::printer::DateTimePrinter::print_datetime` (~3.9% self)
+
+Profiles:
+- `target/samply/h3_before.profile.json.gz`
+- `target/samply/h3_after_final.profile.json.gz`
+
+**Correctness check**
+
+We verified **semantic equality** of JSONL output (including timestamp strings) on a small range:
+- Command: both binaries with `--ranges 0-200` and `-o jsonl`
+- Method: parse each line as JSON and compare Python objects
+- Result: OK (193 lines)
 
 
