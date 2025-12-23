@@ -136,7 +136,7 @@ Each item includes:
 - **Success metric**: W1 improves by **≥ 5%** after H1 lands (or measure on W2 if JSONL still hides it).
 - **Guardrails**: no functional changes; still supports `--ranges`.
 
-### H3 — Reduce hex formatting overhead (`to_hex_string`)
+### H4 — Reduce hex formatting overhead (`to_hex_string`)
 
 - **Claim**: hex encoding of raw attribute blobs is still a meaningful formatting cost.
 - **Evidence**: leaf frames show `core::fmt::num::<impl UpperHex for u8>::fmt` at ~2% self, and `mft::utils::to_hex_string` in the top leaf list.
@@ -261,5 +261,39 @@ We verified **semantic equality** of JSONL output (including timestamp strings) 
 - Command: both binaries with `--ranges 0-200` and `-o jsonl`
 - Method: parse each line as JSON and compare Python objects
 - Result: OK (193 lines)
+
+### H4 (2025-12-23) — Faster hex encoding (remove `fmt`-based per-byte formatting)
+
+**What changed**
+- Replaced `mft::utils::to_hex_string`’s per-byte `write!(\"{byte:02X}\")` loop with a nibble lookup table and `String::push` (no `core::fmt::UpperHex` formatting path).
+- Added a small unit test to lock in uppercase, separator-free output.
+
+**Benchmarks**
+
+Single `hyperfine` run comparing the saved binaries:
+
+```bash
+hyperfine --warmup 5 --runs 40 \
+  './target/release/mft_dump.h4_before samples/MFT -o jsonl -f /dev/null --no-confirm-overwrite' \
+  './target/release/mft_dump.h4_after2 samples/MFT -o jsonl -f /dev/null --no-confirm-overwrite'
+```
+
+Extracted medians (from `target/h4-before-vs-after2.hyperfine.json`):
+- **Before median**: **63.31 ms**
+- **After median**: **57.81 ms**
+- **Speedup**: ~**1.10×** (≈ **8.7%** faster)
+
+**Profile delta (leaf reduction)**
+
+Before (`target/samply/h4_before.profile.json.gz`, inverted call tree):
+- `core::fmt::num::<impl UpperHex for u8>::fmt` ~2.3% self
+
+After (`target/samply/h4_after2.profile.json.gz`, inverted call tree):
+- `UpperHex` no longer appears in the top leaf list
+- `mft::utils::to_hex_string` is still visible (~1.3% self), but the heavy `fmt` machinery is gone
+
+Profiles:
+- `target/samply/h4_before.profile.json.gz`
+- `target/samply/h4_after2.profile.json.gz`
 
 
