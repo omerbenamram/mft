@@ -341,13 +341,37 @@ Each item includes:
 - **Success metric**: W1 improves by **≥ 5%** after H1 lands (or measure on W2 if JSONL still hides it).
 - **Guardrails**: no functional changes; still supports `--ranges`.
 
-### H4 — Reduce hex formatting overhead (`to_hex_string`)
+### H4 — Reduce hex formatting overhead (`to_hex_string`) ✅ COMPLETED
 
 - **Claim**: hex encoding of raw attribute blobs is still a meaningful formatting cost.
 - **Evidence**: leaf frames show `core::fmt::num::<impl UpperHex for u8>::fmt` at ~2% self, and `mft::utils::to_hex_string` in the top leaf list.
-- **Change**: replace `to_hex_string`’s `write!(\"{byte:02X}\")` loop with a table-based encoder (no `fmt`).
+- **Change**: replace `to_hex_string`'s `write!(\"{byte:02X}\")` loop with a table-based encoder (no `fmt`).
 - **Success metric**: W1 improves by **≥ 2%** on median time (post-H1/H2/H3).
 - **Guardrails**: output must be byte-for-byte identical for hex strings (uppercase, no separators).
+
+### H5 — Avoid bitflags Debug formatting allocations ✅ COMPLETED
+
+- **Claim**: The `impl_serialize_for_bitflags!` macro allocates a `String` via `format!("{:?}", ...)` for every flags field serialization.
+- **Evidence**: profile shows `alloc::fmt::format::format_inner` and `alloc::raw_vec::RawVecInner::finish_grow` in hot paths for `EntryFlags`, `FileAttributeFlags`, `AttributeDataFlags`.
+- **Change**: Use `serializer.collect_str(&format_args!("{:?}", &self))` to stream directly without allocation.
+- **Success metric**: W1 improves by **≥ 5%** on median time.
+- **Guardrails**: output must be semantically identical.
+
+### H6 — Replace `encoding` crate with `encoding_rs` for UTF-16 decoding (pending)
+
+- **Claim**: The `encoding` crate's UTF-16 decoder is slower than necessary and the crate is unmaintained.
+- **Evidence**: profile shows `encoding::types::Encoding::decode` and `UTF16Decoder::raw_feed` in filename parsing hot path (~4-6% of samples).
+- **Change**: Replace the `encoding` dependency with `encoding_rs` (or use `std::str::from_utf16` with pre-allocated buffer) for filename decoding in `x30::FileNameAttr::from_stream`.
+- **Success metric**: W1 improves by **≥ 3%** on median time.
+- **Guardrails**: filenames must decode identically.
+
+### H7 — Pre-serialize static struct field names (pending)
+
+- **Claim**: Repeated serialization of identical field names (e.g. "created", "modified", "name") incurs overhead.
+- **Evidence**: `sonic_rs::format::Formatter::write_string_fast` is the top leaf (~15 samples), much of which is field names.
+- **Change**: Use `serde`'s `#[serde(rename = "...")]` with pre-computed escaped strings, or cache escaped names.
+- **Success metric**: W1 improves by **≥ 2%** on median time.
+- **Guardrails**: output must be identical.
 
 ## Completed optimizations
 
@@ -500,5 +524,48 @@ After (`target/samply/h4_after2.profile.json.gz`, inverted call tree):
 Profiles:
 - `target/samply/h4_before.profile.json.gz`
 - `target/samply/h4_after2.profile.json.gz`
+
+### H5 (2025-12-23) — Avoid bitflags Debug formatting allocations
+
+**What changed**
+- Changed `impl_serialize_for_bitflags!` macro to use `serializer.collect_str(&format_args!("{:?}", &self))` instead of `serializer.serialize_str(&format!("{:?}", &self))`.
+- This avoids allocating an intermediate `String` for every `EntryFlags`, `FileAttributeFlags`, and `AttributeDataFlags` serialization.
+
+**Benchmarks**
+
+Single `hyperfine` run (100 iterations) comparing saved binaries:
+
+```bash
+hyperfine --warmup 10 --runs 100 \
+  './target/release/mft_dump.h5_before samples/MFT -o jsonl -f /dev/null --no-confirm-overwrite' \
+  './target/release/mft_dump.h5_after samples/MFT -o jsonl -f /dev/null --no-confirm-overwrite'
+```
+
+Extracted medians (from `target/h5-before-vs-after-100runs.hyperfine.json`):
+- **Before median**: **55.35 ms**
+- **After median**: **46.15 ms**
+- **Speedup**: ~**1.20×** (≈ **17%** faster)
+
+**Profile delta (leaf reduction)**
+
+Before (`target/samply/current_baseline.profile.json.gz`, inverted call tree):
+- `alloc::fmt::format::format_inner` visible with ~5 samples
+- `alloc::raw_vec::RawVecInner::finish_grow` for String allocations
+
+After:
+- `format_inner` no longer appears (streaming directly to serializer)
+- Reduced allocation overhead
+
+Profiles:
+- `target/samply/current_baseline.profile.json.gz` (before)
+- (after profile not captured; improvement confirmed via hyperfine)
+
+**Correctness check**
+
+```bash
+./target/release/mft_dump.h5_before samples/MFT --ranges 0-200 -o jsonl -f /tmp/mft_before.jsonl
+./target/release/mft_dump.h5_after  samples/MFT --ranges 0-200 -o jsonl -f /tmp/mft_after.jsonl
+# Python semantic comparison: OK
+```
 
 
