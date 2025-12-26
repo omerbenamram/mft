@@ -1,12 +1,8 @@
 use crate::image::ReadAt;
-use crate::ntfs::data_stream::{
-    CompressedDataRunsStream, DataRunsStream, read_from_data_runs,
-};
+use crate::ntfs::data_stream::{CompressedDataRunsStream, DataRunsStream, read_from_data_runs};
 use crate::ntfs::efs::{EfsFekDecryptor, EfsMetadataV1, EfsRsaKeyBag};
 use crate::ntfs::index::{IndexRoot, IndexValueFlags, apply_index_record_fixups};
-use crate::ntfs::name::{
-    FileNameKey, UpcaseTable, eq_case_insensitive_ntfs, eq_case_sensitive,
-};
+use crate::ntfs::name::{FileNameKey, UpcaseTable, eq_case_insensitive_ntfs, eq_case_sensitive};
 use crate::ntfs::{Error, Result, Volume};
 use md5::{Digest as _, Md5};
 use mft::attribute::AttributeDataFlags;
@@ -320,9 +316,7 @@ impl FileSystem {
     /// - `Ok(None)` if the journal is not present (`$UsnJrnl` entry or `$J` stream absent)
     /// - `Ok(Some(_))` if present
     /// - `Err(_)` for invalid/unsupported layouts (strict)
-    pub fn open_usn_change_journal(
-        &self,
-    ) -> Result<Option<crate::ntfs::usn::UsnChangeJournal>> {
+    pub fn open_usn_change_journal(&self) -> Result<Option<crate::ntfs::usn::UsnChangeJournal>> {
         use crate::ntfs::usn::journal::DEFAULT_USN_JOURNAL_BLOCK_SIZE;
 
         let usn_entry_id = match self.resolve_path_strict("\\$Extend\\$UsnJrnl") {

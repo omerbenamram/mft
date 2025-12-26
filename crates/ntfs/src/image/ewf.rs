@@ -136,7 +136,9 @@ impl EwfImage {
                     let last_entry = *table.entries.last().expect("non-empty");
                     let chunk_data_end = match pending_sectors_end.take() {
                         Some(end) => end,
-                        None => compute_chunk_data_end_offset_v1(desc, table.base_offset, last_entry)?,
+                        None => {
+                            compute_chunk_data_end_offset_v1(desc, table.base_offset, last_entry)?
+                        }
                     };
 
                     if chunk_data_end > data.len() as u64 {
@@ -180,8 +182,7 @@ impl EwfImage {
             ));
         }
 
-        let expected_chunks_from_media =
-            div_ceil_u64(volume.media_size, volume.chunk_size as u64);
+        let expected_chunks_from_media = div_ceil_u64(volume.media_size, volume.chunk_size as u64);
         if expected_chunks_from_media != chunk_count {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -717,7 +718,11 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
-    fn make_section_descriptor(type_string: &str, start_offset: u64, size: u64) -> [u8; EWF1_SECTION_DESCRIPTOR_SIZE] {
+    fn make_section_descriptor(
+        type_string: &str,
+        start_offset: u64,
+        size: u64,
+    ) -> [u8; EWF1_SECTION_DESCRIPTOR_SIZE] {
         let mut raw = [0u8; EWF1_SECTION_DESCRIPTOR_SIZE];
 
         // type string (ASCII, NUL-terminated)

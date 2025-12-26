@@ -1,6 +1,6 @@
+use md5::{Digest as _, Md5};
 use ntfs::image::EwfImage;
 use ntfs::ntfs::{FileSystem, Volume};
-use md5::{Digest as _, Md5};
 use sha1::Sha1;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;

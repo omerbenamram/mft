@@ -1,9 +1,11 @@
 use std::{
     env, fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
+use tempfile::Builder;
 
 pub const CONFIG_ENV_VAR: &str = "NTFS_EXPLORER_UI_STATE";
 
@@ -108,12 +110,22 @@ pub fn save_ui_state(state: UiState) -> Result<(), String> {
 }
 
 fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
 
-    fs::write(&tmp, data)?;
+    // Use the ecosystem to create a unique temp file safely (same directory => same filesystem),
+    // then persist it to the target path. `tempfile`'s `persist` will atomically replace an
+    // existing destination file where supported (including Windows).
+    let mut tmp = Builder::new()
+        .prefix(".ui_state.")
+        .suffix(".tmp")
+        .tempfile_in(dir)?;
+    tmp.write_all(data)?;
+    tmp.as_file().sync_all()?;
 
-    // `rename` on Windows fails if the destination exists.
-    let _ = fs::remove_file(path);
-    fs::rename(tmp, path)?;
+    // Close the file handle before persisting (required on Windows).
+    tmp.into_temp_path().persist(path)?;
     Ok(())
 }

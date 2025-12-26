@@ -7,9 +7,7 @@ use std::sync::Arc;
 
 mod common;
 
-fn build_name_map(
-    entries: Vec<ntfs::ntfs::filesystem::DirectoryEntry>,
-) -> HashMap<String, u64> {
+fn build_name_map(entries: Vec<ntfs::ntfs::filesystem::DirectoryEntry>) -> HashMap<String, u64> {
     let mut m = HashMap::new();
     for e in entries {
         if e.name == "." || e.name.starts_with('$') || e.name.contains('~') {

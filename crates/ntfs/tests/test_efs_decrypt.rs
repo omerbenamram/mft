@@ -1,5 +1,5 @@
-use mft::attribute::header::ResidentialHeader;
 use mft::attribute::MftAttributeType;
+use mft::attribute::header::ResidentialHeader;
 use ntfs::image::EwfImage;
 use ntfs::ntfs::efs::{EfsMetadataV1, EfsRsaKeyBag};
 use ntfs::ntfs::{FileSystem, Volume};

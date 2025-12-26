@@ -7,5 +7,3 @@ pub(crate) fn parse_u64(s: &str) -> std::result::Result<u64, String> {
         .unwrap_or((10, s));
     u64::from_str_radix(digits, radix).map_err(|e| e.to_string())
 }
-
-

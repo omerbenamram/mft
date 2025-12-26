@@ -1,5 +1,5 @@
-use mft::attribute::header::ResidentialHeader;
 use mft::attribute::MftAttributeType;
+use mft::attribute::header::ResidentialHeader;
 use ntfs::image::EwfImage;
 use ntfs::ntfs::efs::EfsMetadataV1;
 use ntfs::ntfs::{FileSystem, Volume};
@@ -35,8 +35,7 @@ fn test_parse_efs_metadata_v1_has_ddf_entries() {
         ResidentialHeader::NonResident(nr) => {
             let runs = attr.data.clone().into_data_runs().unwrap().data_runs;
             let mut buf = vec![0u8; nr.file_size as usize];
-            ntfs::ntfs::data_stream::read_from_data_runs(fs.volume(), &runs, 0, &mut buf)
-                .unwrap();
+            ntfs::ntfs::data_stream::read_from_data_runs(fs.volume(), &runs, 0, &mut buf).unwrap();
             buf
         }
     };

@@ -607,75 +607,93 @@ pub fn app() -> Element {
         Callback::new(move |(): ()| context_menu.set(None))
     };
 
-    #[cfg(feature = "desktop")]
+    // `cargo clippy --all-features` enables *all* platform features at once. Use mutually
+    // exclusive cfg blocks so we still define `on_save_as` exactly once.
     let on_save_as = {
-        let snapshot = snapshot.to_owned();
-        let mut action_error = action_error;
-        let mut context_menu = context_menu;
-        Callback::new(move |row: EntryRow| {
-            let Some(s) = snapshot.read().clone() else {
-                return;
-            };
-            if row.is_dir {
-                return;
-            }
-
-            context_menu.set(None);
-            action_error.set(None);
-
-            let backend = s.backend.clone();
-            if !backend.can_export() {
-                action_error.set(Some(
-                    "Export is not available for MFT-only snapshots (metadata-only mode)."
-                        .to_string(),
-                ));
-                return;
-            }
-            spawn(async move {
-                let Some(handle) = rfd::AsyncFileDialog::new()
-                    .set_file_name(&row.name)
-                    .save_file()
-                    .await
-                else {
+        #[cfg(feature = "desktop")]
+        {
+            let snapshot = snapshot.to_owned();
+            let mut action_error = action_error;
+            let mut context_menu = context_menu;
+            Callback::new(move |row: EntryRow| {
+                let Some(s) = snapshot.read().clone() else {
                     return;
                 };
-                let out_path = handle.path().to_path_buf();
-
-                let entry_id = row.entry_id;
-                let res = tokio::task::spawn_blocking(move || {
-                    export_file_default_stream(backend, entry_id, out_path)
-                })
-                .await;
-                match res {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => action_error.set(Some(e)),
-                    Err(e) => action_error.set(Some(format!("export task failed: {e}"))),
+                if row.is_dir {
+                    return;
                 }
-            });
-        })
-    };
 
-    #[cfg(feature = "liveview")]
-    let on_save_as = {
-        let mut action_error = action_error;
-        let mut context_menu = context_menu;
-        Callback::new(move |_row: EntryRow| {
-            context_menu.set(None);
-            action_error.set(Some(
-                "Export is not implemented in LiveView yet (it runs on the server). Use the desktop build for now."
-                    .to_string(),
-            ));
-        })
-    };
+                context_menu.set(None);
+                action_error.set(None);
 
-    #[cfg(feature = "web")]
-    let on_save_as = {
-        let mut action_error = action_error;
-        Callback::new(move |_row: EntryRow| {
-            action_error.set(Some(
-                "File export is not available in the web version.".to_string(),
-            ));
-        })
+                let backend = s.backend.clone();
+                if !backend.can_export() {
+                    action_error.set(Some(
+                        "Export is not available for MFT-only snapshots (metadata-only mode)."
+                            .to_string(),
+                    ));
+                    return;
+                }
+                spawn(async move {
+                    let Some(handle) = rfd::AsyncFileDialog::new()
+                        .set_file_name(&row.name)
+                        .save_file()
+                        .await
+                    else {
+                        return;
+                    };
+                    let out_path = handle.path().to_path_buf();
+
+                    let entry_id = row.entry_id;
+                    let res = tokio::task::spawn_blocking(move || {
+                        export_file_default_stream(backend, entry_id, out_path)
+                    })
+                    .await;
+                    match res {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => action_error.set(Some(e)),
+                        Err(e) => action_error.set(Some(format!("export task failed: {e}"))),
+                    }
+                });
+            })
+        }
+
+        #[cfg(all(not(feature = "desktop"), feature = "liveview"))]
+        {
+            let mut action_error = action_error;
+            let mut context_menu = context_menu;
+            Callback::new(move |_row: EntryRow| {
+                context_menu.set(None);
+                action_error.set(Some(
+                    "Export is not implemented in LiveView yet (it runs on the server). Use the desktop build for now."
+                        .to_string(),
+                ));
+            })
+        }
+
+        #[cfg(all(not(feature = "desktop"), not(feature = "liveview"), feature = "web"))]
+        {
+            let mut action_error = action_error;
+            Callback::new(move |_row: EntryRow| {
+                action_error.set(Some(
+                    "File export is not available in the web version.".to_string(),
+                ));
+            })
+        }
+
+        #[cfg(all(
+            not(feature = "desktop"),
+            not(feature = "liveview"),
+            not(feature = "web")
+        ))]
+        {
+            let mut action_error = action_error;
+            Callback::new(move |_row: EntryRow| {
+                action_error.set(Some(
+                    "File export is not available in this build.".to_string(),
+                ));
+            })
+        }
     };
 
     let on_select_entry = {
