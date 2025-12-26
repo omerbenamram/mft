@@ -1,0 +1,262 @@
+/* ===== Details View (Windows 11 File List) ===== */
+.details-view {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    background: var(--bg-solid);
+    overflow: hidden;
+    /* Column widths (resizable). */
+    --col-modified: 180px;
+    --col-type: 120px;
+    --col-size: 100px;
+}
+
+/* Column header row */
+.details-header {
+    display: grid;
+    grid-template-columns: minmax(200px, 1fr) var(--col-modified) var(--col-type) var(--col-size);
+    height: 32px;
+    padding: 0 8px;
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--header-border);
+    gap: 0;
+    flex-shrink: 0;
+}
+
+.details-header-cell {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 100%;
+    padding: 0 10px;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--header-text);
+    user-select: none;
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+    transition: background 0.06s ease;
+}
+
+.details-header-cell:hover {
+    background: var(--bg-hover);
+}
+
+.details-header-cell.is-sorted {
+    color: var(--text-primary);
+}
+
+.details-header-cell:not(.col-size)::after {
+    content: "";
+    position: absolute;
+    top: 8px;
+    right: 0;
+    width: 1px;
+    height: 16px;
+    background: var(--border-default);
+}
+
+.details-header-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.details-sort-indicator {
+    width: 10px;
+    height: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--header-sort-icon);
+    flex-shrink: 0;
+}
+
+.details-sort-indicator svg {
+    width: 10px;
+    height: 10px;
+}
+
+.details-header-cell.is-sorted .details-sort-indicator {
+    color: var(--accent);
+}
+
+.details-header-cell.col-size {
+    justify-content: flex-end;
+    text-align: right;
+}
+
+.details-header-cell.col-size .details-sort-indicator {
+    margin-left: 6px;
+}
+
+/* Column resizer (header only) */
+.col-resizer {
+    position: absolute;
+    top: 0;
+    right: -3px;
+    width: 6px;
+    height: 100%;
+    cursor: col-resize;
+    background: transparent;
+    z-index: 1;
+}
+
+.col-resizer:hover {
+    background: var(--accent-light);
+}
+
+/* Body (scrollable) */
+.details-body {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 4px 0;
+}
+
+/* Row */
+.details-row {
+    display: grid;
+    grid-template-columns: minmax(200px, 1fr) var(--col-modified) var(--col-type) var(--col-size);
+    height: 28px;
+    padding: 0 8px;
+    gap: 0;
+    cursor: default;
+    user-select: none;
+    transition: background 0.06s ease;
+    border-radius: 4px;
+    margin: 1px 4px;
+}
+
+.details-row:hover {
+    background: var(--bg-hover);
+}
+
+.details-row.is-selected {
+    background: var(--bg-selected);
+}
+
+.details-row.is-selected:hover {
+    background: var(--bg-selected-hover);
+}
+
+.details-row:active {
+    background: var(--bg-selected);
+}
+
+/* Deleted row styling */
+.details-row.is-deleted {
+    opacity: 0.75;
+}
+
+.details-row.is-deleted .details-name {
+    text-decoration: line-through;
+    text-decoration-color: var(--text-tertiary);
+}
+
+/* Column definitions */
+.details-col {
+    padding: 0 10px;
+    font-size: 13px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: flex;
+    align-items: center;
+}
+
+.col-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.col-modified {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.col-type {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.col-size {
+    text-align: right;
+    justify-content: flex-end;
+    color: var(--text-secondary);
+    font-family: "Cascadia Code", "Segoe UI Mono", ui-monospace, Consolas, monospace;
+    font-size: 11px;
+}
+
+/* Icon */
+.details-icon {
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.details-icon svg {
+    width: 20px;
+    height: 20px;
+}
+
+.details-row.is-deleted .details-icon {
+    opacity: 0.8;
+}
+
+/* Name */
+.details-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Badges */
+.details-badge {
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    flex-shrink: 0;
+    margin-left: 8px;
+}
+
+.details-badge.is-deleted {
+    background: var(--badge-deleted-bg);
+    border: 1px solid var(--badge-deleted-border);
+    color: var(--badge-deleted-text);
+}
+
+.details-badge.is-encrypted {
+    background: var(--badge-efs-bg);
+    border: 1px solid var(--badge-efs-border);
+    color: var(--badge-efs-text);
+}
+
+/* Loading spinner */
+.details-spinner {
+    width: 28px;
+    height: 28px;
+    border: 3px solid var(--accent-light);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: details-spin 0.8s linear infinite;
+}
+
+@keyframes details-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}

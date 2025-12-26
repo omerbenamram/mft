@@ -1,0 +1,36 @@
+/* ===== Resize Handle + Overlay (Explorer-style splitters) ===== */
+
+.resize-handle {
+    width: 6px;
+    cursor: col-resize;
+    flex-shrink: 0;
+    position: relative;
+    background: transparent;
+    z-index: 10;
+}
+
+/* Subtle divider line */
+.resize-handle::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 2px;
+    width: 1px;
+    background: var(--border-subtle);
+}
+
+.resize-handle:hover::before,
+.resize-handle.is-active::before {
+    background: var(--accent);
+}
+
+/* Overlay to capture mouse events during resize */
+.resize-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    cursor: col-resize;
+}
+
+

@@ -1,0 +1,55 @@
+/* ===== Status Bar (Windows 11 style) ===== */
+.status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 28px;
+    padding: 0 16px;
+    background: var(--bg-surface);
+    border-top: 1px solid var(--border-subtle);
+    flex-shrink: 0;
+}
+
+.status-left,
+.status-right {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.status-item {
+    font-size: 12px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.status-item.is-muted {
+    color: var(--text-tertiary);
+    font-family: "Cascadia Code", "Segoe UI Mono", ui-monospace, Consolas, monospace;
+    font-size: 11px;
+}
+
+.status-item.is-deleted .status-count {
+    color: var(--badge-deleted-text);
+}
+
+.status-item.is-encrypted .status-count {
+    color: var(--badge-efs-text);
+}
+
+.status-count {
+    font-weight: 500;
+}
+
+.status-label {
+    font-weight: 400;
+}
+
+.status-separator {
+    width: 1px;
+    height: 14px;
+    background: var(--border-default);
+    margin: 0 10px;
+}

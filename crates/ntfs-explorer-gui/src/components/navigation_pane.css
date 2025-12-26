@@ -1,0 +1,183 @@
+/* ===== Navigation Pane (Windows 11 TreeView) ===== */
+.nav-pane {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    min-width: 0;
+    height: 100%;
+    min-height: 0;
+    background: var(--bg-surface);
+    flex-shrink: 0;
+}
+
+.nav-pane-header {
+    display: flex;
+    align-items: center;
+    height: 36px;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.nav-pane-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+}
+
+.nav-pane-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 6px 0;
+}
+
+/* Tree container */
+.tree {
+    display: flex;
+    flex-direction: column;
+}
+
+/* Tree row */
+.tree-row {
+    display: flex;
+    align-items: center;
+    height: 30px;
+    padding-right: 12px;
+    gap: 4px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.06s ease;
+    border-radius: 4px;
+    margin: 1px 6px;
+}
+
+.tree-row:hover {
+    background: var(--bg-hover);
+}
+
+.tree-row.is-selected {
+    background: var(--bg-selected);
+}
+
+.tree-row.is-selected:hover {
+    background: var(--bg-selected-hover);
+}
+
+.tree-row.is-deleted {
+    opacity: 0.70;
+}
+
+.tree-row.is-deleted .tree-name {
+    text-decoration: line-through;
+    text-decoration-color: var(--text-tertiary);
+}
+
+/* Chevron (expand/collapse) */
+.tree-chevron {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-tertiary);
+    flex-shrink: 0;
+    border-radius: 4px;
+    transition: all 0.1s ease;
+    padding: 0;
+}
+
+.tree-chevron:hover {
+    background: var(--bg-hover-strong);
+    color: var(--text-primary);
+}
+
+.tree-chevron-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 12px;
+    height: 12px;
+    transition: transform 0.15s ease;
+}
+
+.tree-chevron-icon svg {
+    width: 12px;
+    height: 12px;
+}
+
+.tree-chevron-icon.is-expanded {
+    /* Already pointing down */
+}
+
+.tree-chevron-placeholder {
+    width: 20px;
+    flex-shrink: 0;
+}
+
+/* Loading spinner */
+.tree-spinner {
+    width: 10px;
+    height: 10px;
+    border: 1.5px solid var(--border-default);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: tree-spin 0.6s linear infinite;
+}
+
+@keyframes tree-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* Folder icon */
+.tree-icon {
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.tree-icon svg {
+    width: 20px;
+    height: 20px;
+}
+
+.tree-icon.is-deleted {
+    opacity: 0.8;
+}
+
+/* Name */
+.tree-name {
+    flex: 1;
+    font-size: 13px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Badge */
+.tree-badge {
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
+
+.tree-badge.is-deleted {
+    background: var(--badge-deleted-bg);
+    border: 1px solid var(--badge-deleted-border);
+    color: var(--badge-deleted-text);
+}

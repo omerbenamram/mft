@@ -1,0 +1,196 @@
+<html>
+<head>
+  <title>NTFS Undelete Test #1</title>
+</head>
+
+
+<body bgcolor="#FFFFCC">
+<center>
+  <h2>NTFS Undelete Test #1</h2>
+
+  <h3>Digital Forensics Tool Testing Image (#7)</h3>
+
+  <a href="http://dftt.sf.net">
+  http://dftt.sf.net</a>
+
+</center>
+
+<h3>Introduction</h3>
+<p>
+This test image is a 6MB NTFS file system with eight deleted files,
+two deleted directories, and a deleted alternate data stream.  The
+files range from resident files, single cluster files, and multiple
+fragments.  No data structures were modified in this process to
+thwart recovery.  They were created in Windows XP, deleted in XP,
+and imaged in Linux.
+
+
+<h3>Download</h3>
+<p>
+This test image is a 'raw' partition image (i.e. 'dd') of a NTFS 
+file system.  The file system is 6MB and is compressed to 186 KB (lots
+of zeros).  The MD5 of the image is
+<tt>e7dbb96759d9cd62b729463ebfe61dab</tt>.  This image is released
+under the <a href="http://www.gnu.org/licenses/licenses.html#GPL">
+GPL</a>, so anyone can use it.
+
+<ul>
+  <li><a href="./7-ntfs-undel-1.zip">zip</a>
+</ul>
+
+
+<h3>Files</h3>
+<p>
+These are the files that should be recovered, their sizes, and their
+MD5 values.  
+  (<A HREF="./results.txt">Fill in the blank results form</A>)
+
+<p>
+<table width=100% border=1>
+<tr>
+  <th>Num</th><th>MFT Entry</th><th>Name</th><th>Size</th><th>MD5</th><th>Note</th>
+</tr>
+
+<tr>
+  <td>1</td><td>37</td><td><tt>\res1.dat</tt></td><td>101</td><td><tt>9036637712b491904cd0bfbdbe648453</tt></td><td>Resident file (data is stored in MFT entry and not in a cluster)</td>
+</tr>
+
+<tr>
+  <td>2</td><td>31</td><td><tt>\sing1.dat</tt></td><td>780</td><td><tt>59b20779f69ff9f0ac5fcd2c38835a79</tt></td><td>single cluster file</td>
+</tr>
+
+<tr>
+  <td>3</td><td>32-128-3</td><td><tt>\mult1.dat</tt></td><td>3801</td><td><tt>ffd27bd782bdce67750b6b9ee069d2ef</tt></td><td>multiple cluster, non-fragmented file</td>
+</tr>
+
+<tr>
+  <td>4</td><td>32-128-6</td><td><tt>\mult1.dat:ADS</tt></td><td>1234</td><td><tt>ba1b9eedb1c091ddca253d35dde8f616</tt></td><td>multiple cluster, second data attribute (Alternate Data Stream)</td>
+</tr>
+
+<tr>
+  <td>5</td><td>29</td><td><tt>\frag1.dat</tt></td><td>1584</td><td><tt>7a3bc5b763bef201202108f4ba128149</tt></td><td>fragmented file</td>
+</tr>
+
+<tr>
+  <td>6</td><td>30</td><td><tt>\frag2.dat</tt></td><td>3873</td><td><tt>0e80ab84ef0087e60dfc67b88a1cf13e</tt></td><td>fragmented file with <tt>frag1.dat</tt> mixed in</td>
+</tr>
+
+<tr>
+  <td>7</td><td>33</td><td><tt>\dir1\</tt></td><td>1024</td><td>N/A</td><td>directory</td>
+</tr>
+
+<tr>
+  <td>8</td><td>36</td><td><tt>\dir1\mult2.dat</tt></td><td>1715</td><td><tt>59cf0e9cd107bc1e75afb7374f6e05bb</tt></td><td>multiple cluster, non-fragmented in deleted directory</td>
+</tr>
+
+<tr>
+  <td>9</td><td>34</td><td><tt>\dir1\dir2\</tt></td><td>1024</td><td>N/A</td><td>directory in deleted directory</td>
+</tr>
+
+<tr>
+  <td>10</td><td>35</td><td><tt>\dir1\dir2\frag3.dat</tt></td><td>2027</td><td><tt>21121699487f3fbbdb9a4b3391b6d3e0</tt></td><td>fragmented file in deleted directories</td>
+</tr>
+
+<tr>
+  <td>11</td><td>38</td><td><tt>\dir3\sing2.dat</tt></td><td>1005</td><td><tt>c229626f6a71b167ad7e50c4f2fccdb1</tt></td><td>single cluster file in a directory whose MFT entry has been reallocated (to <TT>res1.dat</tt>)</td>
+</tr>
+
+
+</table>
+
+
+<p>
+<h3>Layout</h3>
+<p>
+Here is the actual layout of the image.  
+
+<p>
+<table border=1>
+<tr>
+  <th>Cluster</th><th>File</th>
+</tr>
+<tr>
+<td>4073</td><td><tt>\frag1.dat</tt> (part 1 of 2)</td>
+</tr>
+<tr>
+<td>4074</td><td><tt>\frag2.dat</tt> (part 1 of 3)</td>
+</tr>
+<tr>
+<td>4075</td><td><tt>\frag1.dat</tt> (part 2 of 2)</td>
+</tr>
+<tr>
+<td>4076-4077</td><td><tt>\frag2.dat</tt> (part 2 of 3)</td>
+</tr>
+<tr>
+<td>4078</td><td><tt>\sing1.dat</tt></td>
+</tr>
+<tr>
+<td>4079-4082</td><td><tt>\mult1.dat</tt></td>
+</tr>
+<tr>
+<td>4083-4084</td><td><tt>\mult1.dat:ADS</tt></td>
+</tr>
+<tr>
+<td>4085</td><td><tt>\frag2.dat</tt> (part 3 of 3)</td>
+</tr>
+<tr>
+<td>4086-4089</td><td><tt>\$Secure:$SDH</tt> (Not deleted)</td>
+</tr>
+<tr>
+<td>4090</td><td><tt>\dir1\dir2\frag3.dat</tt> (part 1 of 2)</td>
+</tr>
+<tr>
+<td>4091-4092</td><td><tt>\dir1\mult2.dat</tt></td>
+</tr>
+<tr>
+<td>4093</td><td><tt>\dir1\dir2\frag3.dat</tt> (part 2 of 2)</td>
+</tr>
+<tr>
+<td>4094</td><td><tt>\dir3\sing2.dat</tt></td>
+</tr>
+<tr>
+<td>4089-4090</td><td><tt>\mult1.dat:ADS</tt></td>
+</tr>
+</table>
+
+<p>
+<h3>Bonus</h3>
+<p>
+This image was created on Feb 29, 2004 so check the dates in your
+tools to see if your tool properly handles leap year.
+
+<h3>Author</h3>
+Brian Carrier (carrier at cerias.purdue.edu) created the test cases
+and the test image.  
+This test was released on February 29, 2004.
+
+
+<h3>Disclaimers</h3>
+<p>
+Neither Purdue University or CERIAS sponsor this work.
+
+<p>
+These tests are not a complete test suite.  These were the first
+ones that I thought of and no formal theory was put into their
+design.
+
+
+<p>
+Passing these tests provides no guarantees about a tool.  Always
+use additional test cases (and email them to me so we can all
+benefit!).
+
+
+<p>
+<hr>
+<table width=100% border=0>
+<tr width=100%>
+  <td width=50% align=left>Brian Carrier [<tt>carrier AT cerias.purdue.edu</tt>]
+</td>
+  <td width=50% align=right>Last Updated: Feb 29, 2004</td>
+</tr>
+</table>
+
+
+</body>
+</html>

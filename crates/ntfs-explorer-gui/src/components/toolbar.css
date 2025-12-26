@@ -1,0 +1,128 @@
+/* ===== Toolbar (Windows 11 Command Bar style) ===== */
+.toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 52px;
+    padding: 0 16px;
+    background: var(--bg-solid);
+    border-bottom: 1px solid var(--border-subtle);
+    gap: 16px;
+    flex-shrink: 0;
+}
+
+.toolbar-section {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.toolbar-section-left {
+    min-width: 200px;
+}
+
+.toolbar-section-center {
+    flex: 1;
+    justify-content: center;
+}
+
+.toolbar-section-right {
+    min-width: 200px;
+    justify-content: flex-end;
+}
+
+/* App title */
+.toolbar-title {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.toolbar-icon {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.toolbar-icon svg {
+    width: 24px;
+    height: 24px;
+}
+
+.toolbar-title-text {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: -0.01em;
+}
+
+/* Status in center */
+.toolbar-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    max-width: 600px;
+    overflow: hidden;
+}
+
+.toolbar-status.is-muted {
+    color: var(--text-tertiary);
+}
+
+.toolbar-status.is-muted kbd {
+    display: inline-block;
+    padding: 3px 8px;
+    font-size: 11px;
+    font-family: inherit;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-default);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    margin: 0 2px;
+}
+
+.toolbar-status.is-loading {
+    color: var(--text-accent);
+}
+
+.toolbar-status-icon {
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.toolbar-status-icon svg {
+    width: 20px;
+    height: 20px;
+}
+
+.toolbar-status-path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: "Cascadia Code", "Segoe UI Mono", ui-monospace, Consolas, monospace;
+    font-size: 12px;
+}
+
+/* Loading spinner - Windows 11 style ring */
+.toolbar-spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--accent-light);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: toolbar-spin 0.8s linear infinite;
+}
+
+@keyframes toolbar-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}

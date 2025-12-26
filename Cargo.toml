@@ -11,6 +11,13 @@ authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2024"
 rust-version = "1.90"
 
+[workspace]
+members = [
+    ".",
+    "crates/ntfs",
+    "crates/ntfs-explorer-gui",
+]
+
 [dependencies]
 log = { version = "0.4", features = ["release_max_level_debug"] }
 encoding = "0.2"

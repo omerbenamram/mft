@@ -1,0 +1,30 @@
+NTFS Undelete Image #1
+
+Tool: 
+Version: 
+
+1.  Can you see any of the deleted file names?  Which ones?
+
+2.  Can you recover the res1.dat file?  Does it have the correct MD5?
+
+3.  Can you recover the sing1.dat file?  Does it have the correct MD5?
+
+4.  Can you recover the dir3\sing2.dat file?  Does it have the correct MD5?
+
+5.  Can you recover the mult1.dat file?  Does it have the correct MD5?
+
+6.  Can you recover the mult1.dat:ADS file?  Does it have the correct MD5?
+
+7.  Can you recover the dir1\mult2.dat file?  Does it have the
+correct MD5?
+
+8.  Can you recover the frag1.dat file?  Does it have the correct MD5?
+
+9.  Can you recover the frag2.dat file?  Does it have the correct MD5?
+
+10.  Can you recover the dir1\dir2\frag3.dat file?  Does it have the
+correct MD5?
+
+11.  Are the dates propely shown to be from Feb 29, 2004?  (testing leap
+year support)
+

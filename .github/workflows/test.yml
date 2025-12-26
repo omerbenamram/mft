@@ -21,10 +21,12 @@ jobs:
           - windows-latest
     env:
       CARGO_TERM_COLOR: always
+      NTFS_TESTDATA_REQUIRED: 1
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          lfs: true
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

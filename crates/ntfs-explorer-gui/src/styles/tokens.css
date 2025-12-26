@@ -1,0 +1,183 @@
+/* ===== Windows 11 Design Tokens ===== */
+/* Accurate Windows 11 File Explorer colors and effects */
+
+/* ---------- Light Theme (Default) ---------- */
+.app.theme-light {
+    /* Windows 11 accent blue - exact values */
+    --accent: #0067c0;
+    --accent-hover: #1975c5;
+    --accent-active: #0052a3;
+    --accent-light: rgba(0, 103, 192, 0.08);
+    --accent-text: #003d73;
+
+    /* Windows 11 Mica-inspired backgrounds */
+    --bg-mica: #f3f3f3;
+    --bg-solid: #ffffff;
+    --bg-surface: #f9f9f9;
+    --bg-subtle: #f5f5f5;
+    --bg-card: #ffffff;
+
+    /* Hover/selection states */
+    --bg-hover: rgba(0, 0, 0, 0.03);
+    --bg-hover-strong: rgba(0, 0, 0, 0.05);
+    --bg-selected: rgba(0, 103, 192, 0.06);
+    --bg-selected-hover: rgba(0, 103, 192, 0.10);
+
+    /* Windows 11 borders - subtle card elevation */
+    --border-subtle: rgba(0, 0, 0, 0.04);
+    --border-default: rgba(0, 0, 0, 0.08);
+    --border-strong: rgba(0, 0, 0, 0.14);
+    --border-card: rgba(0, 0, 0, 0.05);
+    --border-focus: var(--accent);
+
+    /* Windows 11 text colors */
+    --text-primary: #1a1a1a;
+    --text-secondary: #626262;
+    --text-tertiary: #8b8b8b;
+    --text-disabled: #a8a8a8;
+    --text-accent: var(--accent);
+    --text-on-accent: #ffffff;
+
+    /* Semantic colors */
+    --success: #0f7b0f;
+    --warning: #9d5d00;
+    --error: #c42b1c;
+    --info: var(--accent);
+
+    /* Windows 11 elevation shadows */
+    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.04);
+    --shadow-flyout: 0 8px 16px rgba(0, 0, 0, 0.14), 0 0 0 1px rgba(0, 0, 0, 0.05);
+    --shadow-context-menu: 0 8px 20px rgba(0, 0, 0, 0.12), 0 4px 8px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.05);
+    --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.12);
+
+    /* Scrollbar - Windows 11 thin style */
+    --scrollbar-track: transparent;
+    --scrollbar-thumb: rgba(0, 0, 0, 0.38);
+    --scrollbar-thumb-hover: rgba(0, 0, 0, 0.50);
+
+    /* Focus ring - Windows 11 style */
+    --focus-ring: 0 0 0 2px var(--bg-solid), 0 0 0 4px var(--accent);
+
+    /* Badge colors - deleted items */
+    --badge-deleted-bg: rgba(196, 43, 28, 0.10);
+    --badge-deleted-border: rgba(196, 43, 28, 0.25);
+    --badge-deleted-text: #a4262c;
+
+    /* Badge colors - EFS encrypted */
+    --badge-efs-bg: rgba(0, 103, 192, 0.10);
+    --badge-efs-border: rgba(0, 103, 192, 0.25);
+    --badge-efs-text: #0052a3;
+
+    /* Tree navigation */
+    --tree-indent: 20px;
+    --tree-connector: rgba(0, 0, 0, 0.08);
+
+    /* Icon colors */
+    --icon-folder: #dcb67a;
+    --icon-folder-deleted: #9a7c52;
+    --icon-file: #6b6b6b;
+    --icon-file-deleted: #999999;
+
+    /* Address bar */
+    --address-bg: #ffffff;
+    --address-border: rgba(0, 0, 0, 0.08);
+    --address-border-focus: var(--accent);
+
+    /* Header row - Windows Explorer style */
+    --header-bg: #f9f9f9;
+    --header-border: rgba(0, 0, 0, 0.08);
+    --header-text: #5c5c5c;
+    --header-sort-icon: #767676;
+
+    color-scheme: light;
+}
+
+/* ---------- Dark Theme ---------- */
+.app.theme-dark {
+    /* Windows 11 accent blue - dark theme adjusted */
+    --accent: #4cc2ff;
+    --accent-hover: #60cdff;
+    --accent-active: #3cb8ff;
+    --accent-light: rgba(76, 194, 255, 0.12);
+    --accent-text: #4cc2ff;
+
+    /* Windows 11 dark Mica-inspired backgrounds */
+    --bg-mica: #202020;
+    --bg-solid: #282828;
+    --bg-surface: #2d2d2d;
+    --bg-subtle: #323232;
+    --bg-card: #2d2d2d;
+
+    /* Hover/selection states */
+    --bg-hover: rgba(255, 255, 255, 0.05);
+    --bg-hover-strong: rgba(255, 255, 255, 0.08);
+    --bg-selected: rgba(76, 194, 255, 0.10);
+    --bg-selected-hover: rgba(76, 194, 255, 0.15);
+
+    /* Borders */
+    --border-subtle: rgba(255, 255, 255, 0.05);
+    --border-default: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.12);
+    --border-card: rgba(255, 255, 255, 0.06);
+    --border-focus: var(--accent);
+
+    /* Text */
+    --text-primary: #ffffff;
+    --text-secondary: #c5c5c5;
+    --text-tertiary: #8a8a8a;
+    --text-disabled: #5c5c5c;
+    --text-accent: var(--accent);
+    --text-on-accent: #000000;
+
+    /* Semantic colors */
+    --success: #6ccb5f;
+    --warning: #fce100;
+    --error: #ff99a4;
+    --info: var(--accent);
+
+    /* Shadows */
+    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    --shadow-flyout: 0 8px 16px rgba(0, 0, 0, 0.50), 0 0 0 1px rgba(255, 255, 255, 0.06);
+    --shadow-context-menu: 0 8px 20px rgba(0, 0, 0, 0.45), 0 4px 8px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.06);
+    --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.45);
+
+    /* Scrollbar */
+    --scrollbar-track: transparent;
+    --scrollbar-thumb: rgba(255, 255, 255, 0.30);
+    --scrollbar-thumb-hover: rgba(255, 255, 255, 0.45);
+
+    /* Focus ring */
+    --focus-ring: 0 0 0 2px var(--bg-solid), 0 0 0 4px var(--accent);
+
+    /* Badge colors */
+    --badge-deleted-bg: rgba(255, 153, 164, 0.15);
+    --badge-deleted-border: rgba(255, 153, 164, 0.30);
+    --badge-deleted-text: #ff99a4;
+
+    --badge-efs-bg: rgba(76, 194, 255, 0.15);
+    --badge-efs-border: rgba(76, 194, 255, 0.30);
+    --badge-efs-text: #4cc2ff;
+
+    /* Tree */
+    --tree-indent: 20px;
+    --tree-connector: rgba(255, 255, 255, 0.08);
+
+    /* Icon colors */
+    --icon-folder: #e8c77b;
+    --icon-folder-deleted: #9a8a5a;
+    --icon-file: #aaaaaa;
+    --icon-file-deleted: #666666;
+
+    /* Address bar */
+    --address-bg: #323232;
+    --address-border: rgba(255, 255, 255, 0.08);
+    --address-border-focus: var(--accent);
+
+    /* Header row */
+    --header-bg: #2d2d2d;
+    --header-border: rgba(255, 255, 255, 0.08);
+    --header-text: #c5c5c5;
+    --header-sort-icon: #8a8a8a;
+
+    color-scheme: dark;
+}

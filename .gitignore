@@ -9,3 +9,7 @@
 # More information here http://doc.crates.io/guide.html#cargotoml-vs-cargolock
 Cargo.lock
 *.rmeta
+
+external/
+.DS_Store
+.cursor/debug.log

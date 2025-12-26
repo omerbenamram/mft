@@ -1,0 +1,6 @@
+*.E?? filter=lfs diff=lfs merge=lfs -text
+*.e?? filter=lfs diff=lfs merge=lfs -text
+*.aff filter=lfs diff=lfs merge=lfs -text
+*.AFF filter=lfs diff=lfs merge=lfs -text
+*.dd filter=lfs diff=lfs merge=lfs -text
+*.DD filter=lfs diff=lfs merge=lfs -text
