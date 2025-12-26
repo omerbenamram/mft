@@ -10,15 +10,21 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Clone, Copy)]
 struct PageEntry {
     data_offset: usize,
-    compressed_len: usize,
-    is_zlib: bool,
+    data_len: usize,
+    flags: u32,
 }
 
-/// Minimal AFF (AFF1) reader that supports page segments (`pageNNN`) compressed with zlib.
+/// Minimal AFF (AFF1) reader.
+///
+/// Notes (per AFFLIBv3 semantics):
+/// - Missing pages represent zero-filled regions.
+/// - Pages may be stored uncompressed, zlib-compressed, or as a special "ZERO" compressor
+///   (4-byte segment value indicating the number of NUL bytes).
 #[derive(Debug)]
 pub struct AffImage {
     data: Arc<[u8]>,
     page_size: usize,
+    image_size: u64,
     pages: Vec<Option<PageEntry>>,
     cache: Mutex<LruCache<u64, Vec<u8>>>,
 }
@@ -38,6 +44,9 @@ impl AffImage {
         let mut cursor = 8usize;
 
         let mut page_size: Option<usize> = None;
+        let mut image_size: Option<u64> = None;
+        let mut sector_size: Option<u32> = None;
+        let mut device_sectors: Option<u64> = None;
         let mut pages_map: BTreeMap<u64, PageEntry> = BTreeMap::new();
 
         // Parsing strategy:
@@ -87,20 +96,39 @@ impl AffImage {
             if name == "pagesize" {
                 // In our fixtures pagesize is stored in the arg field.
                 page_size = Some(arg as usize);
+            } else if name == "sectorsize" {
+                sector_size = Some(arg);
+            } else if name == "devicesectors" {
+                if data_len != 8 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "AFF devicesectors segment must be 8 bytes",
+                    ));
+                }
+                let quad = data
+                    .get(data_offset..data_offset + data_len)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "segment data"))?;
+                device_sectors = Some(read_aff_quad(quad)?);
+            } else if name == "imagesize" {
+                if data_len != 8 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "AFF imagesize segment must be 8 bytes",
+                    ));
+                }
+                let quad = data
+                    .get(data_offset..data_offset + data_len)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "segment data"))?;
+                image_size = Some(read_aff_quad(quad)?);
             } else if let Some(page_index) = name.strip_prefix("page")
                 && let Ok(page) = page_index.parse::<u64>()
             {
-                let is_zlib = data_len >= 2
-                    && data
-                        .get(data_offset..data_offset + 2)
-                        .is_some_and(|h| h[0] == 0x78 && matches!(h[1], 0x01 | 0x5e | 0x9c | 0xda));
-
                 pages_map.insert(
                     page,
                     PageEntry {
                         data_offset,
-                        compressed_len: data_len,
-                        is_zlib,
+                        data_len,
+                        flags: arg,
                     },
                 );
             }
@@ -126,9 +154,19 @@ impl AffImage {
             }
         }
 
+        let image_size = image_size
+            .or_else(|| match (device_sectors, sector_size) {
+                (Some(sectors), Some(bytes_per_sector)) => {
+                    sectors.checked_mul(bytes_per_sector as u64)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| pages.len() as u64 * page_size as u64);
+
         Ok(Self {
             data,
             page_size,
+            image_size,
             pages,
             // Pages are very large in our fixtures (16MiB), keep the cache small.
             cache: Mutex::new(LruCache::new(NonZeroUsize::new(2).expect("2 > 0"))),
@@ -139,6 +177,10 @@ impl AffImage {
         self.page_size
     }
 
+    fn blank_page(&self) -> Vec<u8> {
+        vec![0u8; self.page_size]
+    }
+
     fn read_page(&self, page_index: u64) -> io::Result<Vec<u8>> {
         if let Some(hit) = self.cache.lock().expect("poisoned").get(&page_index) {
             return Ok(hit.clone());
@@ -146,27 +188,70 @@ impl AffImage {
 
         let idx = usize::try_from(page_index)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "page index overflow"))?;
-        let entry = self
-            .pages
-            .get(idx)
-            .and_then(|x| *x)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "page not present"))?;
+        let Some(entry) = self.pages.get(idx).and_then(|x| *x) else {
+            // Sparse / missing page => zero-filled region.
+            let out = self.blank_page();
+            self.cache
+                .lock()
+                .expect("poisoned")
+                .put(page_index, out.clone());
+            return Ok(out);
+        };
 
-        let compressed = self
+        let seg = self
             .data
-            .get(entry.data_offset..entry.data_offset + entry.compressed_len)
+            .get(entry.data_offset..entry.data_offset + entry.data_len)
             .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "page out of bounds"))?;
 
-        let mut out = vec![0u8; self.page_size];
-        if entry.is_zlib {
-            let cursor = io::Cursor::new(compressed);
-            let mut decoder = ZlibDecoder::new(cursor);
-            decoder.read_exact(&mut out)?;
+        // AFFLIBv3 flags (see `include/afflib/afflib.h`)
+        const AF_PAGE_COMPRESSED: u32 = 0x0001;
+        const AF_PAGE_COMP_ALG_MASK: u32 = 0x00F0;
+        const AF_PAGE_COMP_ALG_ZLIB: u32 = 0x0000;
+        const AF_PAGE_COMP_ALG_LZMA: u32 = 0x0020;
+        const AF_PAGE_COMP_ALG_ZERO: u32 = 0x0030;
+
+        let mut out = self.blank_page();
+        if (entry.flags & AF_PAGE_COMPRESSED) == 0 {
+            // Uncompressed page data stored directly in the segment (possibly partial for the last page).
+            let take = seg.len().min(out.len());
+            out[..take].copy_from_slice(&seg[..take]);
         } else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "unsupported AFF page compression",
-            ));
+            match entry.flags & AF_PAGE_COMP_ALG_MASK {
+                AF_PAGE_COMP_ALG_ZERO => {
+                    // ZERO compressor: segment is a 4-byte count of NUL bytes (AFFLIB uses ntohl()).
+                    // The page content is all zeros.
+                    if seg.len() != 4 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "AFF ZERO-compressed page must have 4 bytes of data",
+                        ));
+                    }
+                }
+                AF_PAGE_COMP_ALG_ZLIB => {
+                    let cursor = io::Cursor::new(seg);
+                    let mut decoder = ZlibDecoder::new(cursor);
+                    let mut written = 0usize;
+                    while written < out.len() {
+                        let n = decoder.read(&mut out[written..])?;
+                        if n == 0 {
+                            break;
+                        }
+                        written += n;
+                    }
+                }
+                AF_PAGE_COMP_ALG_LZMA => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "unsupported AFF page compression: LZMA",
+                    ));
+                }
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "unsupported AFF page compression",
+                    ));
+                }
+            }
         }
 
         self.cache
@@ -179,7 +264,7 @@ impl AffImage {
 
 impl ReadAt for AffImage {
     fn len(&self) -> u64 {
-        self.pages.len() as u64 * self.page_size as u64
+        self.image_size
     }
 
     fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
@@ -206,6 +291,23 @@ impl ReadAt for AffImage {
 
         Ok(())
     }
+}
+
+/// Reads an AFFLIB `aff_quad` (8 bytes) as `u64`.
+///
+/// The encoding is **little-endian in 32-bit words**:
+/// - bytes `[0..4]` are the low 32 bits in network order (`htonl(low)`),
+/// - bytes `[4..8]` are the high 32 bits in network order (`htonl(high)`).
+fn read_aff_quad(bytes: &[u8]) -> io::Result<u64> {
+    if bytes.len() != 8 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "AFF quad must be 8 bytes",
+        ));
+    }
+    let low = u32::from_be_bytes(bytes[0..4].try_into().expect("len=4"));
+    let high = u32::from_be_bytes(bytes[4..8].try_into().expect("len=4"));
+    Ok(((high as u64) << 32) | (low as u64))
 }
 
 fn read_u32_be(data: &[u8], cursor: &mut usize) -> io::Result<u32> {
