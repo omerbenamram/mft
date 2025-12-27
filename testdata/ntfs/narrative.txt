@@ -1,0 +1,20 @@
+NTFS1   (NTFS)
+
+An NTFS file system containing three directories: Raw, Compressed, and
+Encrypted.
+
+In each directory are the same files: some publicly available PDFs,
+some JPEGs, and a "logfile" that is incrementally written one line at
+a time to each of the directories with interleved writes (so that the
+files will naturally be fragmented.)
+
+The EFS encryption key is present in the root directory in two forms
+--- one exported without a password, one exported with the password
+"password."
+
+Please note that the report.xml and report.txt files are not present
+due to the inability of our tools to properly handle compressed and
+encrypted files at this time.
+
+
+

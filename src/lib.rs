@@ -19,6 +19,7 @@ pub mod csv;
 pub mod entry;
 pub mod err;
 pub mod mft;
+pub mod ntfs;
 
 pub(crate) mod macros;
 pub(crate) mod utils;

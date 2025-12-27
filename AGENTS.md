@@ -5,6 +5,7 @@ The crate root lives in `src/lib.rs` with supporting modules in `src/attribute`,
 
 ## Build, Test, and Development Commands
 Run `cargo build --all-targets` for a full local compile, and `cargo test --all-features` before pushing to mirror CI. Use `cargo bench --bench benchmark` when touching performance-critical code paths. `cargo fmt` and `cargo clippy --all-targets --all-features` should produce a clean workspace; address new lints or explain why they cannot be resolved.
+To catch formatting issues before CI, install the repo's pre-commit hook (`pre-commit install`) after installing `pre-commit`.
 
 ## Coding Style & Naming Conventions
 Follow Rust 2024 idioms and let `rustfmt` enforce four-space indentation and line wrapping. Favour descriptive snake_case for modules, functions, and test names, and PascalCase for types and enums. Prefer early returns with `?`, explicit error types via `thiserror`, and structured logging through the `log` macros. Keep public API additions documented with concise doc comments.

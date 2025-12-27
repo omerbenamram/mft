@@ -1,0 +1,13 @@
+[package]
+name = "forensic-image"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT/Apache-2.0"
+description = "Shared random-access image reading traits for forensic disk image formats"
+repository = "https://github.com/omerbenamram/mft"
+readme = "README.md"
+
+[dependencies]
+
+

@@ -19,8 +19,6 @@ use std::io::Read;
 use std::io::SeekFrom;
 use std::io::{Cursor, Seek};
 
-const SEQUENCE_NUMBER_STRIDE: usize = 512;
-
 pub const ZERO_HEADER: &[u8; 4] = b"\x00\x00\x00\x00";
 pub const BAAD_HEADER: &[u8; 4] = b"BAAD";
 pub const FILE_HEADER: &[u8; 4] = b"FILE";
@@ -262,48 +260,24 @@ impl MftEntry {
     /// The returned result is true if all fixup blocks had the fixup array value, or
     /// false if a block's fixup value did not match the array's value.
     fn apply_fixups(header: &EntryHeader, buffer: &mut [u8]) -> Result<bool> {
-        let mut valid_fixup = true;
-        let number_of_fixups = u32::from(header.usa_size - 1);
+        let number_of_fixups = u32::from(header.usa_size.saturating_sub(1));
         trace!("Number of fixups: {number_of_fixups}");
 
-        // Each fixup is a 2-byte element, and there are `usa_size` of them.
-        let fixups_start_offset = header.usa_offset as usize;
-        let fixups_end_offset = fixups_start_offset + (header.usa_size * 2) as usize;
-
-        let fixups = buffer[fixups_start_offset..fixups_end_offset].to_vec();
-        let mut fixups = fixups.chunks(2);
-
-        // There should always be bytes here, but just in case we put zeroes, so it will fail later.
-        let update_sequence = fixups.next().unwrap_or(&[0, 0]);
-
-        // We need to compare each last two bytes each 512-bytes stride with the update_sequence,
-        // And if they match, replace those bytes with the matching bytes from the fixup_sequence.
-        for (stride_number, fixup_bytes) in (0_usize..number_of_fixups as usize).zip(fixups) {
-            let sector_start_offset = stride_number * SEQUENCE_NUMBER_STRIDE;
-
-            let end_of_sector_bytes_end_offset = sector_start_offset + SEQUENCE_NUMBER_STRIDE;
-            let end_of_sector_bytes_start_offset = end_of_sector_bytes_end_offset - 2;
-
-            let end_of_sector_bytes =
-                &mut buffer[end_of_sector_bytes_start_offset..end_of_sector_bytes_end_offset];
-
-            if end_of_sector_bytes != update_sequence {
-                // An item in the block did not match the fixup array value
+        let entry_id = header.record_number;
+        crate::ntfs::apply_update_sequence_array_fixups_in_place_with(
+            buffer,
+            header.usa_offset,
+            header.usa_size,
+            |m| {
                 warn!(
                     "[entry: {}] fixup bytes are not equal to update sequence value - stride_number: {}, end_of_sector_bytes: {:?}, fixup_bytes: {:?}",
-                    header.record_number,
-                    stride_number,
-                    end_of_sector_bytes.to_vec(),
-                    fixup_bytes.to_vec()
+                    entry_id,
+                    m.sector_idx,
+                    m.end_of_sector_bytes.to_vec(),
+                    m.replacement_bytes.to_vec()
                 );
-
-                valid_fixup = false;
-            }
-
-            end_of_sector_bytes.copy_from_slice(fixup_bytes);
-        }
-
-        Ok(valid_fixup)
+            },
+        )
     }
 
     pub fn is_allocated(&self) -> bool {

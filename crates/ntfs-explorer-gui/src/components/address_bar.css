@@ -1,0 +1,156 @@
+/* ===== Address Bar (Windows 11 Breadcrumb style) ===== */
+.address-bar {
+    display: flex;
+    align-items: center;
+    height: 44px;
+    padding: 0 12px;
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-subtle);
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+/* Navigation button group */
+.address-nav-group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+/* Navigation buttons */
+.address-nav-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--text-secondary);
+    transition: all 0.08s ease;
+    padding: 0;
+}
+
+.address-nav-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    border-color: var(--border-subtle);
+    color: var(--text-primary);
+}
+
+.address-nav-btn:active:not(:disabled) {
+    background: var(--bg-selected);
+}
+
+.address-nav-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.address-nav-icon {
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.address-nav-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* Path breadcrumbs container */
+.address-path {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    height: 34px;
+    padding: 0 8px;
+    background: var(--address-bg);
+    border: 1px solid var(--address-border);
+    border-radius: 4px;
+    overflow: hidden;
+    gap: 2px;
+}
+
+.address-path:focus-within {
+    border-color: var(--address-border-focus);
+    box-shadow: 0 0 0 1px var(--address-border-focus);
+}
+
+/* Breadcrumb segment */
+.address-segment {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.08s ease;
+    background: transparent;
+    border: none;
+    font-family: inherit;
+    color: var(--text-secondary);
+}
+
+.address-segment:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.address-segment.is-current {
+    font-weight: 500;
+    color: var(--text-primary);
+    cursor: default;
+}
+
+.address-segment.is-current:hover {
+    background: transparent;
+}
+
+.address-segment.is-root {
+    color: var(--text-secondary);
+}
+
+.address-segment-icon {
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.address-segment-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* Scale down folder icons in breadcrumbs */
+.address-segment:not(.is-root) .address-segment-icon svg {
+    width: 14px;
+    height: 14px;
+}
+
+.address-segment-text {
+    font-size: 13px;
+}
+
+/* Separator */
+.address-separator {
+    color: var(--text-tertiary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 12px;
+    height: 16px;
+    flex-shrink: 0;
+}
+
+.address-separator svg {
+    width: 8px;
+    height: 16px;
+}

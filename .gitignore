@@ -9,3 +9,14 @@
 # More information here http://doc.crates.io/guide.html#cargotoml-vs-cargolock
 Cargo.lock
 *.rmeta
+
+# Vendored third-party code lives in `external/`.
+# Keep heavyweight deps ignored, but track `external/refs/` (specs/docs we cite from code).
+external/*
+# !external/refs/
+!external/refs/**/*.md
+!external/refs/**/*.pdf
+# Temporary scratch space for downloaded artifacts / experiments.
+external/refs/tmp/
+.DS_Store
+.cursor/debug.log
