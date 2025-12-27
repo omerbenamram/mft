@@ -20,16 +20,6 @@ fn test_aff_gen0_reads_ntfs_boot_sector() {
 }
 
 #[test]
-fn test_ewf_gen0_reads_ntfs_boot_sector() {
-    let path = common::ntfs_fixture_path("ntfs1-gen0.E01");
-    if !common::ensure_fixture(&path) {
-        return;
-    }
-    let img = EwfImage::open(path).unwrap();
-    assert_ntfs_boot_sector(&img);
-}
-
-#[test]
 fn test_gen0_aff_and_ewf_boot_sector_match() {
     let aff_path = common::ntfs_fixture_path("ntfs1-gen0.aff");
     if !common::ensure_fixture(&aff_path) {
@@ -60,22 +50,4 @@ fn test_aff_gen1_reads_ntfs_boot_sector() {
     assert_ntfs_boot_sector(&img);
 }
 
-#[test]
-fn test_ewf_gen1_reads_ntfs_boot_sector() {
-    let path = common::ntfs_fixture_path("ntfs1-gen1.E01");
-    if !common::ensure_fixture(&path) {
-        return;
-    }
-    let img = EwfImage::open(path).unwrap();
-    assert_ntfs_boot_sector(&img);
-}
-
-#[test]
-fn test_ewf_gen2_reads_ntfs_boot_sector() {
-    let path = common::ntfs_fixture_path("ntfs1-gen2.E01");
-    if !common::ensure_fixture(&path) {
-        return;
-    }
-    let img = EwfImage::open(path).unwrap();
-    assert_ntfs_boot_sector(&img);
-}
+// EWF backend fixture tests live in the `ewf` crate now.

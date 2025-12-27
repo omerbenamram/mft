@@ -35,6 +35,9 @@ aff = { path = "../aff" }
 # Reuse the existing MFT parser for record decoding (MIT/Apache).
 mft = { path = "../..", version = "0.7.0" }
 
+# EWF/E01 reader/writer (extracted from `ntfs::image::ewf`).
+ewf = { path = "../ewf" }
+
 [dev-dependencies]
 # Used by regression tests that validate file content hashes against `testdata/ntfs/ntfs1-gen2.xml`.
 sha1 = "0.10"

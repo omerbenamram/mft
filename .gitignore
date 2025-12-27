@@ -13,9 +13,15 @@ Cargo.lock
 # Vendored third-party code lives in `external/`.
 # Keep heavyweight deps ignored, but track `external/refs/` (specs/docs we cite from code).
 external/*
-# !external/refs/
+# Keep external/refs present for small, curated references.
+!external/refs/
+external/refs/**
 !external/refs/**/*.md
 !external/refs/**/*.pdf
+# Allow pinning upstream repo commits without vendoring full snapshots.
+!external/refs/repos/
+external/refs/repos/**
+!external/refs/repos/*.commit
 # Temporary scratch space for downloaded artifacts / experiments.
 external/refs/tmp/
 .DS_Store
