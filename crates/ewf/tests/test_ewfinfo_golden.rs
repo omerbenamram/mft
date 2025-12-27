@@ -137,7 +137,7 @@ fn make_section_descriptor(
     type_bytes[..copy_len].copy_from_slice(&src[..copy_len]);
     raw[..16].copy_from_slice(&type_bytes);
 
-    // next_offset (best-effort)
+    // next_offset (informational)
     let next_offset = start_offset.saturating_add(size);
     raw[16..24].copy_from_slice(&next_offset.to_le_bytes());
 
@@ -265,6 +265,40 @@ fn build_synthetic_l01(dir: &tempfile::TempDir) -> std::path::PathBuf {
     let path = dir.path().join("case.L01");
     std::fs::write(&path, &file).expect("write L01");
     path
+}
+
+#[test]
+fn test_ewfinfo_real_fixture_nps_formats_epoch_dates_and_reports_encase6() {
+    // Regression test for real-world EWF1 images where header dates are stored as Unix epoch
+    // seconds. libewf formats these according to `-d` (default: `ctime`) and reports `.E01` as
+    // "EnCase 6".
+    //
+    // We run the binary with a fixed TZ to keep output deterministic across CI environments.
+    let exe = env!("CARGO_BIN_EXE_ewfinfo");
+    let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testdata/ewf/nps-2010-emails.E01");
+    assert!(fixture.exists(), "missing fixture: {}", fixture.display());
+
+    let out = Command::new(exe)
+        .env("TZ", "UTC")
+        .arg(&fixture)
+        .output()
+        .expect("run ewfinfo");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let actual = normalize_text_output(&String::from_utf8_lossy(&out.stdout));
+
+    // Ensure we did not print the raw epoch value.
+    assert!(!actual.contains("1296677487"));
+    // Ensure the formatted ctime string is present (TZ=UTC).
+    assert!(actual.contains("Acquisition date:      Wed Feb  2 20:11:27 2011"));
+    assert!(actual.contains("System date:           Wed Feb  2 20:11:27 2011"));
+    // Ensure file format matches libewf.
+    assert!(actual.contains("File format:        EnCase 6"));
 }
 
 #[test]

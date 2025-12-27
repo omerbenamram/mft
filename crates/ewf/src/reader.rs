@@ -13,7 +13,7 @@ use crate::ewf1_volume;
 use crate::ewf2::file_header::{
     EWF2_EVF_SIGNATURE, EWF2_FILE_HEADER_SIZE, EWF2_LEF_SIGNATURE, Ewf2FileHeader, Ewf2Kind,
 };
-use crate::{Error, EwfCompression, EwfFormat, EwfInfo, Result};
+use crate::{Error, EwfCompression, EwfFileFormat, EwfFormat, EwfInfo, Result};
 use flate2::read::ZlibDecoder;
 use lru::LruCache;
 use md5::{Digest as _, Md5};
@@ -39,6 +39,43 @@ const ADCRYPT_SIGNATURE: [u8; 8] = [0x41, 0x44, 0x43, 0x52, 0x59, 0x50, 0x54, 0x
 const EWF1_FILE_HEADER_SIZE: usize = 8 + 1 + 2 + 2; // 13
 const EWF1_SECTION_DESCRIPTOR_SIZE: usize = 16 + 8 + 8 + 40 + 4; // 76
 const EWF1_TABLE_HEADER_SIZE: usize = 4 + 4 + 8 + 4 + 4; // 24
+
+fn detect_ewf1_file_format(container: EwfFormat, volume_section_body: &[u8]) -> EwfFileFormat {
+    // libewf's "file format" classification is broader than our container format.
+    //
+    // We keep this mapping intentionally conservative and spec-driven:
+    // - SMART can be detected from the 94-byte volume section signature ("SMART").
+    // - The original EWF (ASR02) "EWF specification" volume section uses a 5-byte signature that
+    //   contains the *prefix* of the EWF file header signature (see EWF spec: volume section).
+    // - EnCase/FTK/linen EWF-E01 all share the 1052-byte volume section variant and cannot be
+    //   reliably distinguished without additional heuristics, so we match libewf's default:
+    //   "EnCase 6".
+
+    // The container naming scheme already distinguishes `.s01` images in our reader.
+    if matches!(container, EwfFormat::S01) {
+        return EwfFileFormat::Smart;
+    }
+
+    // EWF spec "volume section" (94-byte variant):
+    // - offset 85, size 5: signature
+    //   - "SMART" for SMART
+    //   - EWF file header signature prefix for original EWF
+    if volume_section_body.len() >= 94 && volume_section_body.len() < 1052 {
+        let sig = &volume_section_body[85..90];
+        if sig == b"SMART" {
+            return EwfFileFormat::Smart;
+        }
+        // Prefix of "EVF\x09\x0d\x0a\xff\x00" (first 5 bytes).
+        const EWF_SIG_PREFIX: [u8; 5] = [0x45, 0x56, 0x46, 0x09, 0x0d];
+        if sig == EWF_SIG_PREFIX {
+            return EwfFileFormat::OriginalEwf;
+        }
+        return EwfFileFormat::Unknown;
+    }
+
+    // Default for EWF-E01.
+    EwfFileFormat::EnCase6
+}
 
 /// Random-access reader over an EWF image set.
 ///
@@ -625,6 +662,7 @@ impl Ewf2Reader {
 
         EwfInfo {
             format: self.format(),
+            file_format: EwfFileFormat::EnCase7V2,
             media_size: self.media_size,
             chunk_size: self.chunk_size,
             chunk_count: self.chunk_count,
@@ -752,6 +790,7 @@ impl Ewf2Reader {
 
         Ok(ImageMetadata {
             format: self.format(),
+            file_format: EwfFileFormat::EnCase7V2,
             segment_paths: self.segments.iter().map(|s| s.path.clone()).collect(),
             segment_file_version: Some((hdr.major as u16, hdr.minor as u16)),
             sectors_per_chunk,
@@ -1373,6 +1412,11 @@ impl Ewf1Reader {
     fn info(&self) -> EwfInfo {
         EwfInfo {
             format: self.format(),
+            file_format: match self.format() {
+                EwfFormat::S01 => EwfFileFormat::Smart,
+                // For EWF-E01, libewf defaults to "EnCase 6".
+                _ => EwfFileFormat::EnCase6,
+            },
             media_size: self.media_size,
             chunk_size: self.chunk_size,
             chunk_count: self.chunk_count,
@@ -1422,6 +1466,7 @@ impl Ewf1Reader {
             let (start, end) = volume_desc.data_range()?;
             read_file_range(&first.file, first.file_len, start, end)?
         };
+        let file_format = detect_ewf1_file_format(self.format(), &volume_data);
         let volume =
             ewf1_volume::Ewf1VolumeInfo::parse_from_volume_like_section_body(&volume_data)?;
 
@@ -1505,7 +1550,7 @@ impl Ewf1Reader {
         // `session` section; for now we mirror it into tracks as well.
         let tracks = sessions.clone();
 
-        let header_values = HeaderValues {
+        let mut header_values = HeaderValues {
             case_number: header_values.get("case_number").cloned(),
             evidence_number: header_values.get("evidence_number").cloned(),
             description: header_values.get("description").cloned(),
@@ -1518,6 +1563,17 @@ impl Ewf1Reader {
             acquisition_software_version: header_values.get("acquiry_software_version").cloned(),
             password: header_values.get("password").cloned(),
         };
+
+        // Real-world EWF1 header variants differ in how they populate the "software used" fields.
+        // In the wild (and in our fixtures), `header2` sometimes mirrors the same value as the
+        // ASCII header `acquiry_software_version`. libewf only prints a single "Software version
+        // used" line in that case. To match that behavior, drop the redundant "software used"
+        // value when it is identical to the version string.
+        if header_values.acquisition_software.is_some()
+            && header_values.acquisition_software == header_values.acquisition_software_version
+        {
+            header_values.acquisition_software = None;
+        }
 
         let media_type = match volume.media_type {
             ewf1_volume::Ewf1MediaType::RemovableDisk => MediaType::RemovableDisk,
@@ -1544,6 +1600,7 @@ impl Ewf1Reader {
 
         Ok(ImageMetadata {
             format: self.format(),
+            file_format,
             segment_paths: self.segments.iter().map(|s| s.path.clone()).collect(),
             segment_file_version: None,
             sectors_per_chunk: volume.sectors_per_chunk,
@@ -3503,7 +3560,7 @@ mod tests {
         type_bytes[..copy_len].copy_from_slice(&src[..copy_len]);
         raw[..16].copy_from_slice(&type_bytes);
 
-        // next_offset (best-effort; not used by our scanner if size != 0)
+        // next_offset (informational; not used by our scanner if size != 0)
         let next_offset = start_offset.saturating_add(size);
         raw[16..24].copy_from_slice(&next_offset.to_le_bytes());
 

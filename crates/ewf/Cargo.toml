@@ -23,7 +23,7 @@ rand = "0.9"
 clap = { version = "4", features = ["derive"] }
 miette = { version = "7", features = ["fancy"] }
 dfxml = { path = "../dfxml" }
-jiff = { version = "0.2.16", default-features = false, features = ["std", "alloc"] }
+jiff = { version = "0.2.16", default-features = false, features = ["std", "alloc", "tz-system", "tzdb-zoneinfo"] }
 textwrap = "0.16.2"
 
 [dev-dependencies]

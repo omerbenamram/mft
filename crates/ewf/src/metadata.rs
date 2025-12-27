@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use crate::{EwfCompression, EwfFormat};
+use crate::{EwfCompression, EwfFileFormat, EwfFormat};
 
 /// A contiguous run expressed in logical sectors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +70,8 @@ pub struct ImageDigests {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageMetadata {
     pub format: EwfFormat,
+    /// libewf-compatible file format classification.
+    pub file_format: EwfFileFormat,
     pub segment_paths: Vec<PathBuf>,
 
     /// Segment file version (EWF2/EVF2 only).

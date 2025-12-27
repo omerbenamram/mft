@@ -48,6 +48,7 @@ pub enum EwfInfoError {
     /// This variant is intentionally used for explicit, user-visible `TODO:` gaps when porting
     /// libewf behavior.
     #[error("unsupported: {0}")]
+    #[allow(dead_code)]
     Unsupported(String),
 
     /// The report data is internally inconsistent (should generally be treated as a bug).
@@ -260,12 +261,7 @@ impl EwfInfoReport {
             });
         }
 
-        let file_format_str = match meta.format {
-            EwfFormat::E01 => "EnCase 5",
-            EwfFormat::S01 => "SMART",
-            EwfFormat::Ex01 => "EnCase 7 (version 2)",
-            other => return Err(EwfInfoError::Unsupported(format!("TODO: {other:?}"))),
-        };
+        let file_format_str = meta.file_format.to_string();
 
         let compression_method_str = match meta.compression_method {
             EwfCompression::None => "none",
@@ -286,7 +282,7 @@ impl EwfInfoReport {
         ewf_information.push(InfoField {
             identifier: "file_format",
             description: "File format",
-            value: InfoValue::String(file_format_str.to_string()),
+            value: InfoValue::String(file_format_str),
         });
         if let Some((maj, min)) = meta.segment_file_version {
             ewf_information.push(InfoField {
@@ -522,6 +518,7 @@ fn format_datetime_value(value: &str, fmt: EwfInfoDateFormat) -> String {
     // Empirically (via libewf’s `ewfinfo`), the input header values are commonly encoded as:
     //
     // - `YYYY-MM-DD HH:MM:SS`
+    // - Unix epoch seconds (e.g. `1361530430`)
     //
     // and then rendered in one of the following formats:
     //
@@ -534,17 +531,35 @@ fn format_datetime_value(value: &str, fmt: EwfInfoDateFormat) -> String {
     // correctly compute weekday names for `ctime`.
     //
     // If parsing fails, we fall back to the original string (no silent coercion).
-    let dt = match jiff::fmt::strtime::parse("%F %T", value).and_then(|tm| tm.to_datetime()) {
-        Ok(dt) => dt,
-        Err(_) => return value.to_string(),
-    };
+    let value = value.trim();
 
-    match fmt {
-        EwfInfoDateFormat::Ctime => dt.strftime("%a %b %e %T %Y").to_string(),
-        EwfInfoDateFormat::Iso8601 => dt.strftime("%FT%T").to_string(),
-        EwfInfoDateFormat::DayMonth => dt.strftime("%d/%m/%Y %T").to_string(),
-        EwfInfoDateFormat::MonthDay => dt.strftime("%m/%d/%Y %T").to_string(),
+    // 1) Common case: `YYYY-MM-DD HH:MM:SS`
+    if let Ok(dt) = jiff::fmt::strtime::parse("%F %T", value).and_then(|tm| tm.to_datetime()) {
+        return match fmt {
+            EwfInfoDateFormat::Ctime => dt.strftime("%a %b %e %T %Y").to_string(),
+            EwfInfoDateFormat::Iso8601 => dt.strftime("%FT%T").to_string(),
+            EwfInfoDateFormat::DayMonth => dt.strftime("%d/%m/%Y %T").to_string(),
+            EwfInfoDateFormat::MonthDay => dt.strftime("%m/%d/%Y %T").to_string(),
+        };
     }
+
+    // 2) Unix epoch seconds (`time_t` style). libewf renders these in the system time zone.
+    // We accept an optional fractional component but ignore it for display (libewf prints seconds).
+    let secs_str = value.split_once('.').map(|(s, _)| s).unwrap_or(value);
+    if let Ok(secs) = secs_str.parse::<i64>() {
+        let tz = jiff::tz::TimeZone::try_system().unwrap_or(jiff::tz::TimeZone::UTC);
+        if let Ok(ts) = jiff::Timestamp::from_second(secs) {
+            let dt = ts.to_zoned(tz).datetime();
+            return match fmt {
+                EwfInfoDateFormat::Ctime => dt.strftime("%a %b %e %T %Y").to_string(),
+                EwfInfoDateFormat::Iso8601 => dt.strftime("%FT%T").to_string(),
+                EwfInfoDateFormat::DayMonth => dt.strftime("%d/%m/%Y %T").to_string(),
+                EwfInfoDateFormat::MonthDay => dt.strftime("%m/%d/%Y %T").to_string(),
+            };
+        }
+    }
+
+    value.to_string()
 }
 
 impl fmt::Display for HeaderCodepage {

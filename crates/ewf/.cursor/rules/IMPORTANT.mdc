@@ -1,0 +1,12 @@
+---
+alwaysApply: true
+---
+
+When writing code or debugging issues, YOU MUST compare with original libewf implementation AND SPEC.
+
+Reference:
+- libewf implementation: `external/libewf/`
+- libewf specification:
+  - `external/libewf/documentation/Expert Witness Compression Format (EWF).asciidoc`
+  - `external/libewf/documentation/Expert Witness Compression Format 2 (EWF2).asciidoc`
+
