@@ -519,6 +519,17 @@ impl Ewf2Reader {
         let sectors_per_chunk = parse_tag_u32(&case_tags, "sb")?;
         let chunk_count = parse_tag_u64(&case_tags, "tb")?;
 
+        // EWF2 chunk geometry must be valid before we compute `chunk_size`. Otherwise `chunk_size`
+        // can become 0 and later reads will panic on division-by-zero.
+        //
+        // This mirrors the EWF1 validation in `parse_volume_like_section_v1`, and matches libewf's
+        // behavior (it rejects a 0 chunk size when initializing its chunk data structures).
+        if bytes_per_sector == 0 || sectors_per_chunk == 0 {
+            return Err(Error::Invalid(format!(
+                "invalid EWF2 chunk geometry: bp={bytes_per_sector} sb={sectors_per_chunk}"
+            )));
+        }
+
         let media_size = number_of_sectors
             .checked_mul(bytes_per_sector as u64)
             .ok_or_else(|| Error::Invalid("media size overflow".to_string()))?;
@@ -3404,6 +3415,55 @@ mod tests {
     }
 
     #[test]
+    fn test_ewf2_ex01_rejects_zero_sectors_per_chunk() -> Result<()> {
+        // Regression test: EWF2 parsing must reject sb=0 (sectors per chunk).
+        //
+        // Prior to the fix, this could yield `chunk_size == 0`, allowing open() to succeed and
+        // causing a division-by-zero panic later in read_exact_at().
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("bad.Ex01");
+
+        let set_id = [0x33u8; 16];
+        let chunk = vec![b'Z'; 512];
+
+        let mut f = Ewf2TestFile::new_ex01(set_id);
+        f.device_information(512, 1);
+        f.case_data(0, 0);
+        let _ = f.sector_data_uncompressed_chunk(&chunk);
+        f.sector_table(0, &[]);
+        f.done();
+
+        std::fs::write(&path, &f.into_bytes())?;
+
+        let err = EwfReader::open(&path).unwrap_err();
+        assert!(matches!(err, Error::Invalid(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn test_ewf2_ex01_rejects_zero_bytes_per_sector() -> Result<()> {
+        // Regression test: EWF2 parsing must reject bp=0 (bytes per sector).
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("bad-bp0.Ex01");
+
+        let set_id = [0x34u8; 16];
+        let chunk = vec![b'Z'; 512];
+
+        let mut f = Ewf2TestFile::new_ex01(set_id);
+        f.device_information(0, 1);
+        f.case_data(1, 0);
+        let _ = f.sector_data_uncompressed_chunk(&chunk);
+        f.sector_table(0, &[]);
+        f.done();
+
+        std::fs::write(&path, &f.into_bytes())?;
+
+        let err = EwfReader::open(&path).unwrap_err();
+        assert!(matches!(err, Error::Invalid(_)));
+        Ok(())
+    }
+
+    #[test]
     fn test_ewf2_encrypted_section_is_rejected() -> Result<()> {
         // EWF2 supports encrypted sections, but libewf currently rejects them; we mirror that.
         let dir = tempfile::tempdir()?;
@@ -3729,6 +3789,56 @@ mod tests {
         let lef = LefReader::open(&path)?;
         let data = lef.read_file("hello.txt")?;
         assert_eq!(data, b"hello");
+        Ok(())
+    }
+
+    #[test]
+    fn test_lef_lx01_rejects_zero_sectors_per_chunk() -> Result<()> {
+        // Regression test: EWF2-Lx01 parsing must reject sb=0 (sectors per chunk).
+        //
+        // Prior to the fix, this could yield `chunk_size == 0`, allowing `LefReader::open()` to
+        // succeed and causing a division-by-zero panic later when reading file contents.
+        let chunk = hello_chunk_512();
+
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("bad.Lx01");
+
+        let set_id = [0x44u8; 16];
+        let mut f = Ewf2TestFile::new_lx01(set_id);
+        f.device_information(512, 1);
+        f.case_data(0, 0);
+        let _ = f.sector_data_uncompressed_chunk(&chunk);
+        f.sector_table(0, &[]);
+        let _ = f.single_files_data(ENCASE7_TREE_SINGLE_HELLO_TXT);
+        f.done();
+        std::fs::write(&path, &f.into_bytes())?;
+
+        let err = LefReader::open(&path).unwrap_err();
+        assert!(matches!(err, Error::Invalid(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn test_lef_lx01_rejects_zero_bytes_per_sector() -> Result<()> {
+        // Regression test: EWF2-Lx01 parsing must reject bp=0 (bytes per sector).
+        let chunk = hello_chunk_512();
+
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("bad-bp0.Lx01");
+
+        let set_id = [0x45u8; 16];
+        let mut f = Ewf2TestFile::new_lx01(set_id);
+        f.device_information(0, 1);
+        f.case_data(1, 0);
+        let _ = f.sector_data_uncompressed_chunk(&chunk);
+        f.sector_table(0, &[]);
+        let _ = f.single_files_data(ENCASE7_TREE_SINGLE_HELLO_TXT);
+        f.done();
+
+        std::fs::write(&path, &f.into_bytes())?;
+
+        let err = LefReader::open(&path).unwrap_err();
+        assert!(matches!(err, Error::Invalid(_)));
         Ok(())
     }
 }
