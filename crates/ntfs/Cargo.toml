@@ -26,6 +26,12 @@ openssl = { version = "0.10", features = ["vendored"] }
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
 
+# Shared random-access trait used by image backends.
+forensic-image = { path = "../forensic-image" }
+
+# Reuse the workspace AFF reader implementation.
+aff = { path = "../aff" }
+
 # Reuse the existing MFT parser for record decoding (MIT/Apache).
 mft = { path = "../..", version = "0.7.0" }
 

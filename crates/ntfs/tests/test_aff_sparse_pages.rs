@@ -28,6 +28,9 @@ fn aff_segment(name: &str, data: &[u8], arg: u32) -> Vec<u8> {
     out.extend_from_slice(name.as_bytes());
     out.extend_from_slice(data);
     out.extend_from_slice(b"ATT\0");
+    // Segment length (big-endian) includes header + name + data + trailer+length.
+    let seg_len = (16 + name.len() + data.len() + 8) as u32;
+    out.extend_from_slice(&seg_len.to_be_bytes());
     out
 }
 
@@ -36,12 +39,7 @@ fn build_aff1_file(segments: Vec<Vec<u8>>) -> Vec<u8> {
     // File signature: "AFF10\r\n\0" (8 bytes)
     out.extend_from_slice(b"AFF10\r\n\0");
 
-    for (i, seg) in segments.into_iter().enumerate() {
-        if i != 0 {
-            // Prefix/back-pointer field (AFFLIB uses this for reverse traversal).
-            // The current Rust parser ignores it but expects 4 bytes between segments.
-            out.extend_from_slice(&0u32.to_be_bytes());
-        }
+    for seg in segments {
         out.extend_from_slice(&seg);
     }
 

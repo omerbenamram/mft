@@ -7,22 +7,11 @@ mod raw;
 use std::io;
 use std::path::Path;
 
+pub use forensic_image::ReadAt;
+
 pub use aff::AffImage;
 pub use ewf::EwfImage;
 pub use raw::RawImage;
-
-/// Random-access reading over an image-like source.
-///
-/// This is intentionally minimal: higher layers (NTFS, VFS) should not care how bytes are
-/// retrieved (raw file, EWF, AFF, etc.).
-pub trait ReadAt: Send + Sync {
-    fn len(&self) -> u64;
-    fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()>;
-
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
 
 #[derive(Debug)]
 pub enum Image {
