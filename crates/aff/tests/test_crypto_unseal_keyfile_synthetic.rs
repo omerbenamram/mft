@@ -58,7 +58,7 @@ fn test_unseal_keyfile_derives_affkey_and_decrypts_aes256_segment() {
         use openssl::pkey::PKey;
         use openssl::rand::rand_bytes;
         use openssl::rsa::{Padding, Rsa};
-        use openssl::symm::{encrypt, Cipher};
+        use openssl::symm::{Cipher, encrypt};
 
         // RSA keypair for sealing/unsealing.
         let rsa = Rsa::generate(2048).unwrap();
@@ -86,8 +86,8 @@ fn test_unseal_keyfile_derives_affkey_and_decrypts_aes256_segment() {
         ek.truncate(ek_len);
 
         // Encrypt the AFF key using AES-256-CBC with PKCS7 padding (like EVP_Seal* would do).
-        let encrypted_affkey = encrypt(Cipher::aes_256_cbc(), &session_key, Some(&iv), &affkey)
-            .unwrap();
+        let encrypted_affkey =
+            encrypt(Cipher::aes_256_cbc(), &session_key, Some(&iv), &affkey).unwrap();
 
         // Build `affkey_evp0` segment data.
         let mut evp = Vec::new();
@@ -123,5 +123,3 @@ fn test_unseal_keyfile_derives_affkey_and_decrypts_aes256_segment() {
         assert_eq!(seg.data, plaintext);
     }
 }
-
-

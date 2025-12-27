@@ -39,5 +39,3 @@ pub(crate) trait Backend: ReadAt {
     /// Returns `Ok(None)` if the segment does not exist.
     fn read_segment(&self, name: &str) -> io::Result<Option<Segment>>;
 }
-
-

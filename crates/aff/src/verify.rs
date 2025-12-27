@@ -154,9 +154,11 @@ impl<'a> Verifier<'a> {
             // - segname including a terminating NUL byte
             // - arg in network byte order
             // - segment bytes
-            verifier.update(segname.as_bytes()).map_err(|e| Error::InvalidData {
-                message: format!("verifier update(segname) failed: {e}"),
-            })?;
+            verifier
+                .update(segname.as_bytes())
+                .map_err(|e| Error::InvalidData {
+                    message: format!("verifier update(segname) failed: {e}"),
+                })?;
             verifier.update(&[0]).map_err(|e| Error::InvalidData {
                 message: format!("verifier update(NUL) failed: {e}"),
             })?;
@@ -207,5 +209,3 @@ impl<'a> Verifier<'a> {
         }
     }
 }
-
-

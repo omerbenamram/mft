@@ -129,10 +129,9 @@ impl ReadAt for SplitRawImage {
                 (idx, off)
             };
 
-            let file = self
-                .files
-                .get(file_idx)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "missing split file"))?;
+            let file = self.files.get(file_idx).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::UnexpectedEof, "missing split file")
+            })?;
 
             let max_in_file = if self.maxsize == 0 {
                 // Single file.
@@ -179,7 +178,9 @@ fn increment_split_raw_extension(path: &mut PathBuf) -> bool {
 
     // Numeric case: 000..999 then A00.
     if bytes.iter().all(|b| b.is_ascii_digit()) {
-        let num = ((bytes[0] - b'0') as u32) * 100 + ((bytes[1] - b'0') as u32) * 10 + (bytes[2] - b'0') as u32;
+        let num = ((bytes[0] - b'0') as u32) * 100
+            + ((bytes[1] - b'0') as u32) * 10
+            + (bytes[2] - b'0') as u32;
         let next = if num == 999 {
             *b"A00"
         } else {
@@ -302,5 +303,3 @@ mod tests {
         assert_eq!(ext(&p), "00");
     }
 }
-
-

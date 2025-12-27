@@ -38,7 +38,9 @@ impl AfdImage {
         for entry in std::fs::read_dir(path)? {
             let entry = entry?;
             let file_name = entry.file_name();
-            let Some(s) = file_name.to_str() else { continue };
+            let Some(s) = file_name.to_str() else {
+                continue;
+            };
             if let Some(idx) = parse_afd_file_index(s) {
                 found.push((idx, entry.path()));
             }
@@ -174,5 +176,3 @@ fn parse_afd_file_index(name: &str) -> Option<u32> {
     }
     digits.parse::<u32>().ok()
 }
-
-

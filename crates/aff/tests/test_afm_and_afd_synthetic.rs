@@ -66,27 +66,35 @@ fn test_afd_unions_files_and_zero_fills_missing_pages() {
 
     let file0 = build_aff1_file(vec![
         aff_segment("pagesize", &[], page_size as u32),
-        aff_segment("imagesize", &{
-            let low = (image_size & 0xffff_ffff) as u32;
-            let high = (image_size >> 32) as u32;
-            let mut q = [0u8; 8];
-            q[0..4].copy_from_slice(&low.to_be_bytes());
-            q[4..8].copy_from_slice(&high.to_be_bytes());
-            q
-        }, 2),
+        aff_segment(
+            "imagesize",
+            &{
+                let low = (image_size & 0xffff_ffff) as u32;
+                let high = (image_size >> 32) as u32;
+                let mut q = [0u8; 8];
+                q[0..4].copy_from_slice(&low.to_be_bytes());
+                q[4..8].copy_from_slice(&high.to_be_bytes());
+                q
+            },
+            2,
+        ),
         aff_segment("foo", b"from0", 0),
         aff_segment("page0", b"AAAAAAAA", 0),
     ]);
     let file1 = build_aff1_file(vec![
         aff_segment("pagesize", &[], page_size as u32),
-        aff_segment("imagesize", &{
-            let low = (image_size & 0xffff_ffff) as u32;
-            let high = (image_size >> 32) as u32;
-            let mut q = [0u8; 8];
-            q[0..4].copy_from_slice(&low.to_be_bytes());
-            q[4..8].copy_from_slice(&high.to_be_bytes());
-            q
-        }, 2),
+        aff_segment(
+            "imagesize",
+            &{
+                let low = (image_size & 0xffff_ffff) as u32;
+                let high = (image_size >> 32) as u32;
+                let mut q = [0u8; 8];
+                q[0..4].copy_from_slice(&low.to_be_bytes());
+                q[4..8].copy_from_slice(&high.to_be_bytes());
+                q
+            },
+            2,
+        ),
         aff_segment("foo", b"from1", 0),
         aff_segment("page1", b"BBBBBBBB", 0),
     ]);
@@ -109,5 +117,3 @@ fn test_afd_unions_files_and_zero_fills_missing_pages() {
     assert_eq!(&buf[8..16], b"BBBBBBBB");
     assert_eq!(&buf[16..24], [0u8; 8].as_slice());
 }
-
-

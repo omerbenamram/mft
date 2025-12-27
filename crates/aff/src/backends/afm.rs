@@ -89,7 +89,10 @@ impl Backend for AfmImage {
         }
 
         // If the caller asks for `page<N>`, read it from the split-raw payload.
-        if let Some(page_index) = name.strip_prefix("page").and_then(|r| r.parse::<u64>().ok()) {
+        if let Some(page_index) = name
+            .strip_prefix("page")
+            .and_then(|r| r.parse::<u64>().ok())
+        {
             let data = self.read_page_segment(page_index)?;
             return Ok(Some(Segment {
                 name: name.to_string(),
@@ -147,5 +150,3 @@ fn replace_extension(path: &Path, new_ext: &str) -> Result<PathBuf> {
     }
     Ok(path.with_extension(new_ext))
 }
-
-

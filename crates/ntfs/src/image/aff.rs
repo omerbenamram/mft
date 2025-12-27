@@ -80,5 +80,3 @@ fn aff_error_to_io(e: ::aff::Error) -> io::Error {
         other => io::Error::new(io::ErrorKind::InvalidData, other.to_string()),
     }
 }
-
-

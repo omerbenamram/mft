@@ -2,14 +2,14 @@ use aff::{AffOpenOptions, SignatureStatus, Verifier};
 
 #[cfg(feature = "crypto")]
 fn build_aff_with_signed_segment(segname: &str, arg: u32, data: &[u8]) -> Vec<u8> {
+    use openssl::asn1::Asn1Integer;
+    use openssl::asn1::Asn1Time;
+    use openssl::bn::BigNum;
     use openssl::hash::MessageDigest;
     use openssl::pkey::PKey;
     use openssl::rsa::Rsa;
     use openssl::sign::Signer;
-    use openssl::asn1::Asn1Time;
-    use openssl::bn::BigNum;
-    use openssl::asn1::Asn1Integer;
-    use openssl::x509::{X509NameBuilder, X509};
+    use openssl::x509::{X509, X509NameBuilder};
 
     fn aff_segment(name: &str, data: &[u8], arg: u32) -> Vec<u8> {
         let mut out = Vec::new();
@@ -36,7 +36,9 @@ fn build_aff_with_signed_segment(segname: &str, arg: u32, data: &[u8]) -> Vec<u8
     let mut builder = X509::builder().unwrap();
     builder.set_version(2).unwrap();
     let mut serial = BigNum::new().unwrap();
-    serial.rand(64, openssl::bn::MsbOption::MAYBE_ZERO, false).unwrap();
+    serial
+        .rand(64, openssl::bn::MsbOption::MAYBE_ZERO, false)
+        .unwrap();
     let serial = Asn1Integer::from_bn(&serial).unwrap();
     builder.set_serial_number(&serial).unwrap();
     builder.set_subject_name(&name).unwrap();
@@ -79,7 +81,7 @@ fn build_aff_with_signed_page_mode1(segname: &str, page0: &[u8]) -> Vec<u8> {
     use openssl::pkey::PKey;
     use openssl::rsa::Rsa;
     use openssl::sign::Signer;
-    use openssl::x509::{X509NameBuilder, X509};
+    use openssl::x509::{X509, X509NameBuilder};
 
     fn aff_segment(name: &str, data: &[u8], arg: u32) -> Vec<u8> {
         let mut out = Vec::new();
@@ -150,11 +152,7 @@ fn build_aff_with_signed_page_mode1(segname: &str, page0: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&aff_segment("imagesize", &imagesize_quad, 2));
     out.extend_from_slice(&aff_segment(aff::format::SIGN256_CERT, &cert_pem, 0));
     out.extend_from_slice(&aff_segment(segname, page0, 0));
-    out.extend_from_slice(&aff_segment(
-        &sigseg,
-        &sig,
-        aff::format::AF_SIGNATURE_MODE1,
-    ));
+    out.extend_from_slice(&aff_segment(&sigseg, &sig, aff::format::AF_SIGNATURE_MODE1));
     out
 }
 
@@ -245,5 +243,3 @@ fn test_verify_mode1_page_signature_deprecated_seg_prefix() {
         assert_eq!(v.verify_segment("seg0").unwrap(), SignatureStatus::Good);
     }
 }
-
-

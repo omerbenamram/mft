@@ -60,5 +60,3 @@ fn main() -> anyhow::Result<()> {
     stdout.flush()?;
     Ok(())
 }
-
-

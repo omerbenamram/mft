@@ -9,7 +9,7 @@ fn build_aff_with_signed_segment(segname: &str, arg: u32, data: &[u8]) -> Vec<u8
     use openssl::pkey::PKey;
     use openssl::rsa::Rsa;
     use openssl::sign::Signer;
-    use openssl::x509::{X509NameBuilder, X509};
+    use openssl::x509::{X509, X509NameBuilder};
 
     fn aff_segment(name: &str, data: &[u8], arg: u32) -> Vec<u8> {
         let mut out = Vec::new();
@@ -72,26 +72,24 @@ fn build_aff_with_signed_segment(segname: &str, arg: u32, data: &[u8]) -> Vec<u8
 
 #[test]
 fn test_aff_cat_decrypts_afflib_fixture() {
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../external/refs/repos/sshock__AFFLIBv3@f6e51a8367cff73ea24c0adf09e533483c80ecd4/tests");
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../external/refs/repos/sshock__AFFLIBv3@f6e51a8367cff73ea24c0adf09e533483c80ecd4/tests",
+    );
     let aff_path = root.join("encrypted.aff");
     let raw_path = root.join("encrypted.raw");
     let raw = std::fs::read(&raw_path).unwrap();
 
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("aff-cat"));
-    cmd.arg(&aff_path)
-        .arg("--passphrase")
-        .arg("password");
+    cmd.arg(&aff_path).arg("--passphrase").arg("password");
 
-    cmd.assert()
-        .success()
-        .stdout(predicate::eq(raw));
+    cmd.assert().success().stdout(predicate::eq(raw));
 }
 
 #[test]
 fn test_aff_info_runs_and_reports_len() {
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../external/refs/repos/sshock__AFFLIBv3@f6e51a8367cff73ea24c0adf09e533483c80ecd4/tests");
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../external/refs/repos/sshock__AFFLIBv3@f6e51a8367cff73ea24c0adf09e533483c80ecd4/tests",
+    );
     let aff_path = root.join("encrypted.aff");
 
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("aff-info"));
@@ -134,5 +132,3 @@ fn test_aff_verify_exits_nonzero_on_bad_signature() {
             .failure();
     }
 }
-
-
