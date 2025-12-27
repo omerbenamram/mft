@@ -26,6 +26,8 @@ img.read_exact_at(0, &mut buf)?;
 - **`crypto`** (default): decrypt `/aes256` segments (read-side) + verify `/sha256` signatures (read-side)
 - **`lzma`** (default): LZMA page decompression (`AF_PAGE_COMP_ALG_LZMA`)
 
+For a human-maintained parity checklist against AFFLIBv3, see [`COMPAT.md`](./COMPAT.md).
+
 ## Reference materials
 
 This repo vendors reference materials under `external/refs/` (AFFLIBv3 snapshot + public specs).
