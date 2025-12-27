@@ -17,6 +17,8 @@
 //! tooling (header2/header, volume/data, table/tables). More metadata surface area is added as part
 //! of the later EWF2/LEF/delta work.
 
+use crate::ewf1_volume;
+use crate::ewf2::file_header::{EWF2_FILE_HEADER_SIZE, Ewf2FileHeader, Ewf2Kind};
 use crate::{Error, Result};
 use flate2::{Compression, write::ZlibEncoder};
 use md5::{Digest as _, Md5};
@@ -34,9 +36,6 @@ const EWF1_SECTION_DESCRIPTOR_SIZE: usize = 16 + 8 + 8 + 40 + 4; // 76
 const EWF1_TABLE_HEADER_SIZE: usize = 4 + 4 + 8 + 4 + 4; // 24
 
 // --- EWF2 constants (EnCase 7 "EVF2"/".Ex01") ---
-const EWF2_EVF_SIGNATURE: [u8; 8] = [0x45, 0x56, 0x46, 0x32, 0x0d, 0x0a, 0x81, 0x00]; // "EVF2\r\n\x81\0"
-
-const EWF2_FILE_HEADER_SIZE: usize = 32;
 const EWF2_SECTION_DESCRIPTOR_SIZE: usize = 64;
 const EWF2_TABLE_HEADER_SIZE: usize = 32; // 20 bytes header + 12 bytes alignment padding
 const EWF2_TABLE_ENTRY_SIZE: usize = 16;
@@ -699,12 +698,12 @@ impl EwfWriter {
     }
 
     fn write_e01_volume_section(&mut self) -> Result<()> {
-        let data = build_volume_section_e01(
+        let data = ewf1_volume::build_volume_section_e01_1052(
             self.chunk_count,
             self.sectors_per_chunk,
             self.bytes_per_sector,
             self.number_of_sectors,
-            self.opts.compression_level,
+            self.opts.compression_level.as_volume_byte(),
             self.set_identifier,
         );
         self.write_section_with_descriptor_v1("volume", &data)?;
@@ -712,12 +711,12 @@ impl EwfWriter {
     }
 
     fn write_e01_data_section(&mut self) -> Result<()> {
-        let data = build_volume_section_e01(
+        let data = ewf1_volume::build_volume_section_e01_1052(
             self.chunk_count,
             self.sectors_per_chunk,
             self.bytes_per_sector,
             self.number_of_sectors,
-            self.opts.compression_level,
+            self.opts.compression_level.as_volume_byte(),
             self.set_identifier,
         );
         self.write_section_with_descriptor_v1("data", &data)?;
@@ -725,7 +724,7 @@ impl EwfWriter {
     }
 
     fn write_s01_volume_section(&mut self) -> Result<()> {
-        let data = build_volume_section_s01(
+        let data = ewf1_volume::build_volume_section_s01_94(
             self.chunk_count,
             self.sectors_per_chunk,
             self.bytes_per_sector,
@@ -1364,49 +1363,6 @@ fn build_hash_section(md5: &[u8; 16]) -> Vec<u8> {
     // unknown [16..32] left zero (matches SMART + older EnCase variants)
     let checksum = adler32_rfc1950(&out[..32]).to_le_bytes();
     out[32..36].copy_from_slice(&checksum);
-    out
-}
-
-fn build_volume_section_e01(
-    chunk_count: u64,
-    sectors_per_chunk: u32,
-    bytes_per_sector: u32,
-    number_of_sectors: u64,
-    compression_level: Ewf1CompressionLevel,
-    set_identifier: [u8; 16],
-) -> Vec<u8> {
-    // FTK Imager / EnCase 1–7 / linen volume (1052 bytes) variant.
-    let mut out = vec![0u8; 1052];
-    out[0] = 0x01; // fixed media
-    out[4..8].copy_from_slice(&(chunk_count as u32).to_le_bytes());
-    out[8..12].copy_from_slice(&sectors_per_chunk.to_le_bytes());
-    out[12..16].copy_from_slice(&bytes_per_sector.to_le_bytes());
-    out[16..24].copy_from_slice(&number_of_sectors.to_le_bytes());
-    out[36] = 0x01; // media flags: “is an image file”
-    out[52] = compression_level.as_volume_byte();
-    out[64..80].copy_from_slice(&set_identifier);
-    // checksum over [0..1048]
-    let checksum = adler32_rfc1950(&out[..1048]).to_le_bytes();
-    out[1048..1052].copy_from_slice(&checksum);
-    out
-}
-
-fn build_volume_section_s01(
-    chunk_count: u64,
-    sectors_per_chunk: u32,
-    bytes_per_sector: u32,
-    number_of_sectors: u64,
-) -> Vec<u8> {
-    // EWF specification (94 bytes) variant used by SMART.
-    let mut out = vec![0u8; 94];
-    out[0..4].copy_from_slice(&1u32.to_le_bytes()); // reserved (contains 0x01)
-    out[4..8].copy_from_slice(&(chunk_count as u32).to_le_bytes());
-    out[8..12].copy_from_slice(&sectors_per_chunk.to_le_bytes());
-    out[12..16].copy_from_slice(&bytes_per_sector.to_le_bytes());
-    out[16..20].copy_from_slice(&(number_of_sectors as u32).to_le_bytes());
-    // signature at [85..90] is “SMART” in SMART files; we leave it zero to avoid guessing.
-    let checksum = adler32_rfc1950(&out[..90]).to_le_bytes();
-    out[90..94].copy_from_slice(&checksum);
     out
 }
 
@@ -2104,15 +2060,12 @@ impl Ewf2Writer {
     }
 
     fn write_ewf2_file_header(&mut self, segment_number: u32) -> Result<()> {
-        let compression_method = self.opts.compression_method.to_u16().to_le_bytes();
         let set_id = self.set_identifier;
+        let compression_method = self.opts.compression_method.to_u16();
+        let hdr = Ewf2FileHeader::new(Ewf2Kind::Ex01, compression_method, segment_number, set_id);
 
         let file = self.file_mut()?;
-        file.write_all(&EWF2_EVF_SIGNATURE)?;
-        file.write_all(&[2, 1])?; // major=2, minor=1
-        file.write_all(&compression_method)?;
-        file.write_all(&segment_number.to_le_bytes())?;
-        file.write_all(&set_id)?;
+        file.write_all(&hdr.to_bytes())?;
         self.file_offset += EWF2_FILE_HEADER_SIZE as u64;
         Ok(())
     }

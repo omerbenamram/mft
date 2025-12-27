@@ -19,6 +19,7 @@ members = [
     "crates/ewf",
     "crates/ntfs",
     "crates/ntfs-explorer-gui",
+    "crates/dfxml",
 ]
 
 [dependencies]

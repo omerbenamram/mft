@@ -20,6 +20,11 @@ lru = "0.16.1"
 md-5 = "0.10"
 sha1 = "0.10"
 rand = "0.9"
+clap = { version = "4", features = ["derive"] }
+miette = { version = "7", features = ["fancy"] }
+dfxml = { path = "../dfxml" }
+jiff = { version = "0.2.16", default-features = false, features = ["std", "alloc"] }
+textwrap = "0.16.2"
 
 [dev-dependencies]
 doc-comment = "0.3"
