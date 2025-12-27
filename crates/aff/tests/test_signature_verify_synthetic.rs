@@ -74,7 +74,7 @@ fn build_aff_with_signed_segment(segname: &str, arg: u32, data: &[u8]) -> Vec<u8
 }
 
 #[cfg(feature = "crypto")]
-fn build_aff_with_signed_page_mode1(segname: &str, page0: &[u8]) -> Vec<u8> {
+fn build_aff_with_signed_page_mode1(segname: &str, pagesize: u32, page0: &[u8]) -> Vec<u8> {
     use openssl::asn1::{Asn1Integer, Asn1Time};
     use openssl::bn::{BigNum, MsbOption};
     use openssl::hash::MessageDigest;
@@ -125,7 +125,6 @@ fn build_aff_with_signed_page_mode1(segname: &str, page0: &[u8]) -> Vec<u8> {
     let cert = builder.build();
     let cert_pem = cert.to_pem().unwrap();
 
-    let pagesize = page0.len() as u32;
     let imagesize = page0.len() as u64;
     let imagesize_quad = {
         let low = (imagesize & 0xffff_ffff) as u32;
@@ -199,7 +198,9 @@ fn test_verify_mode1_page_signature() {
     #[cfg(feature = "crypto")]
     {
         let page0 = b"ABCDEFGH";
-        let bytes = build_aff_with_signed_page_mode1("page0", page0);
+        // Regression: MODE1 hashes only the bytes returned by `af_get_page()`. For the final page,
+        // that can be less than `pagesize` (no implicit zero-padding).
+        let bytes = build_aff_with_signed_page_mode1("page0", 4096, page0);
 
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), &bytes).unwrap();
@@ -233,7 +234,7 @@ fn test_verify_mode1_page_signature_deprecated_seg_prefix() {
     #[cfg(feature = "crypto")]
     {
         let page0 = b"ABCDEFGH";
-        let bytes = build_aff_with_signed_page_mode1("seg0", page0);
+        let bytes = build_aff_with_signed_page_mode1("seg0", 4096, page0);
 
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), &bytes).unwrap();

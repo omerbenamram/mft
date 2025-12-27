@@ -165,6 +165,10 @@ impl<'a> Verifier<'a> {
 
             let (arg_net, bytes) = if sigmode == crate::format::AF_SIGNATURE_MODE1 {
                 // Mode1: arg=0 and uncompressed page bytes for page segments.
+                //
+                // Important: AFFLIB hashes only the bytes returned by `af_get_page()`, which may be
+                // less than `page_size` for the final (partial) page. Do **not** include any
+                // implicit zero-padding in the hash input.
                 let page_index = segname
                     .strip_prefix("page")
                     .or_else(|| segname.strip_prefix("seg"))
@@ -175,13 +179,18 @@ impl<'a> Verifier<'a> {
 
                 let page_size = self.img.page_size() as u64;
                 let base = page_index.saturating_mul(page_size);
-                let mut buf = vec![0u8; self.img.page_size()];
-                if base < self.img.len() {
-                    let take = (self.img.len() - base).min(page_size) as usize;
-                    self.img
-                        .read_exact_at(base, &mut buf[..take])
-                        .map_err(Error::Io)?;
+                let len = self.img.len();
+                let take = if base < len {
+                    (len - base).min(page_size) as usize
+                } else {
+                    0
+                };
+
+                let mut buf = vec![0u8; take];
+                if take > 0 {
+                    self.img.read_exact_at(base, &mut buf).map_err(Error::Io)?;
                 }
+
                 (0u32.to_be_bytes(), buf)
             } else {
                 let Some(seg) = self.img.read_segment(segname)? else {
