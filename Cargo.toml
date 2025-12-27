@@ -16,6 +16,7 @@ members = [
     ".",
     "crates/forensic-image",
     "crates/aff",
+    "crates/ewf",
     "crates/ntfs",
     "crates/ntfs-explorer-gui",
 ]

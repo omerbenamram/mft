@@ -30,7 +30,7 @@ impl Image {
             .to_ascii_lowercase();
 
         match lower.as_str() {
-            "e01" => Ok(Image::Ewf(EwfImage::open(path)?)),
+            "e01" | "s01" | "ex01" => Ok(Image::Ewf(EwfImage::open(path)?)),
             "aff" => Ok(Image::Aff(AffImage::open(path)?)),
             _ => Ok(Image::Raw(RawImage::open(path)?)),
         }
