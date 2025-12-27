@@ -2504,27 +2504,41 @@ fn open_lx01(path: &Path) -> Result<LefLx01> {
             Error::Invalid("missing EWF2 single files data section (0x20)".to_string())
         })?;
 
-    let raw_len: usize = (section
-        .data_size
-        .saturating_sub(section.padding_size as u64))
-    .try_into()
-    .map_err(|_| Error::Invalid("single files data size overflow".to_string()))?;
-
-    let bytes = read_file_range(
-        &last.file,
-        last.file_len,
-        section.data_start,
-        section.data_start.saturating_add(raw_len as u64),
-    )?;
-
-    let ltree_text = decode_utf16le_maybe_bom(&bytes)?;
-    let (total_bytes, entries) = parse_encase7_tree(&ltree_text)?;
+    let (total_bytes, entries) = parse_lx01_single_files_data_section(last, section)?;
 
     if total_bytes <= media.media_size {
         media.media_size = total_bytes;
     }
 
     Ok(LefLx01 { media, entries })
+}
+
+fn parse_lx01_single_files_data_section(
+    segment: &Ewf2Segment,
+    section: &Ewf2Section,
+) -> Result<(u64, Vec<LefEntry>)> {
+    // IMPORTANT: use `data_len`, not `data_size`.
+    //
+    // `data_len` is clamped to the actual space between `data_start` and the section descriptor
+    // offset. Using `data_size` directly could make us read beyond the section bounds in malformed
+    // files (and accidentally ingest bytes from the descriptor or the next section).
+    let mut raw_len = section.data_len;
+    if (section.padding_size as u64) <= raw_len {
+        raw_len = raw_len.saturating_sub(section.padding_size as u64);
+    }
+    let raw_len: usize = raw_len
+        .try_into()
+        .map_err(|_| Error::Invalid("single files data length overflow".to_string()))?;
+
+    let bytes = read_file_range(
+        &segment.file,
+        segment.file_len,
+        section.data_start,
+        section.data_start.saturating_add(raw_len as u64),
+    )?;
+
+    let ltree_text = decode_utf16le_maybe_bom(&bytes)?;
+    parse_encase7_tree(&ltree_text)
 }
 
 fn parse_chunk_geometry_v1_allow_zero_chunks(
@@ -3001,9 +3015,10 @@ mod tests {
         raw
     }
 
-    fn append_ewf2_section(
+    fn append_ewf2_section_with_flags(
         file: &mut Vec<u8>,
         section_type: u32,
+        data_flags: u32,
         previous_offset: u64,
         data: Vec<u8>,
         padding_size_field: u32,
@@ -3012,13 +3027,250 @@ mod tests {
         let desc_off = file.len() as u64;
         let desc = make_ewf2_section_descriptor(
             section_type,
-            0,
+            data_flags,
             previous_offset,
             data.len() as u64,
             padding_size_field,
         );
         file.extend_from_slice(&desc);
         desc_off
+    }
+
+    fn ewf2_main_object(pairs: &[(&str, u64)]) -> String {
+        let mut tags = String::new();
+        let mut values = String::new();
+
+        for (i, (tag, value)) in pairs.iter().enumerate() {
+            if i != 0 {
+                tags.push('\t');
+                values.push('\t');
+            }
+            tags.push_str(tag);
+            values.push_str(&value.to_string());
+        }
+
+        format!("1\nmain\n{tags}\n{values}")
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct Ewf2SectorTableEntrySpec {
+        offset: u64,
+        size: u32,
+        flags: u32,
+    }
+
+    fn build_ewf2_sector_table(first_chunk: u64, entries: &[Ewf2SectorTableEntrySpec]) -> Vec<u8> {
+        let number_of_entries: u32 = entries.len().try_into().expect("entries fit u32");
+
+        let mut table = Vec::new();
+
+        // Header (16 bytes + checksum + 12 bytes alignment padding) = 32 bytes total.
+        table.extend_from_slice(&first_chunk.to_le_bytes());
+        table.extend_from_slice(&number_of_entries.to_le_bytes());
+        table.extend_from_slice(&0u32.to_le_bytes()); // unknown/padding
+        let header_checksum = adler32_rfc1950(&table[..16]);
+        table.extend_from_slice(&header_checksum.to_le_bytes());
+        table.extend(std::iter::repeat_n(0u8, 12));
+
+        // Entries.
+        let mut entries_bytes =
+            Vec::with_capacity(entries.len().saturating_mul(EWF2_TABLE_ENTRY_SIZE));
+        for e in entries {
+            entries_bytes.extend_from_slice(&e.offset.to_le_bytes());
+            entries_bytes.extend_from_slice(&e.size.to_le_bytes());
+            entries_bytes.extend_from_slice(&e.flags.to_le_bytes());
+        }
+        table.extend_from_slice(&entries_bytes);
+
+        // Footer: checksum of the entries + 12 bytes alignment padding.
+        let footer_checksum = adler32_rfc1950(&entries_bytes);
+        table.extend_from_slice(&footer_checksum.to_le_bytes());
+        table.extend(std::iter::repeat_n(0u8, 12));
+
+        table
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct Ewf2WrittenSection {
+        desc_off: u64,
+        unpadded_len: u64,
+        pad: u32,
+    }
+
+    /// Small builder for EWF2 segment fixtures in tests.
+    ///
+    /// The goal is **legible** tests that read like the on-disk layout:
+    /// header → device information → case data → sector data → sector table → ... → done.
+    #[derive(Debug)]
+    struct Ewf2TestFile {
+        bytes: Vec<u8>,
+        prev_desc_off: u64,
+    }
+
+    impl Ewf2TestFile {
+        fn new_ex01(set_id: [u8; 16]) -> Self {
+            let mut bytes = Vec::new();
+            write_ewf2_header(&mut bytes, 1, EWF2_COMPRESSION_LZ, set_id);
+            Self {
+                bytes,
+                prev_desc_off: 0,
+            }
+        }
+
+        fn new_lx01(set_id: [u8; 16]) -> Self {
+            let mut bytes = Vec::new();
+            write_lef2_header(&mut bytes, 1, EWF2_COMPRESSION_LZ, set_id);
+            Self {
+                bytes,
+                prev_desc_off: 0,
+            }
+        }
+
+        fn push_section_with_flags(
+            &mut self,
+            section_type: u32,
+            data_flags: u32,
+            data: Vec<u8>,
+            padding_size_field: u32,
+        ) -> u64 {
+            let desc_off = append_ewf2_section_with_flags(
+                &mut self.bytes,
+                section_type,
+                data_flags,
+                self.prev_desc_off,
+                data,
+                padding_size_field,
+            );
+            self.prev_desc_off = desc_off;
+            desc_off
+        }
+
+        fn push_section(
+            &mut self,
+            section_type: u32,
+            data: Vec<u8>,
+            padding_size_field: u32,
+        ) -> u64 {
+            self.push_section_with_flags(section_type, 0, data, padding_size_field)
+        }
+
+        fn push_compressed_main_object(
+            &mut self,
+            section_type: u32,
+            data_flags: u32,
+            pairs: &[(&str, u64)],
+        ) -> u64 {
+            let s = ewf2_main_object(pairs);
+            let utf16 = encode_utf16le_with_bom(&s);
+            let mut data = zlib_compress(&utf16);
+            let pad = pad16(&mut data);
+            self.push_section_with_flags(section_type, data_flags, data, pad)
+        }
+
+        fn device_information(&mut self, bytes_per_sector: u32, number_of_sectors: u64) -> u64 {
+            let pairs = [
+                ("bp", u64::from(bytes_per_sector)),
+                ("ts", number_of_sectors),
+            ];
+            self.push_compressed_main_object(EWF2_SECTION_TYPE_DEVICE_INFORMATION, 0, &pairs)
+        }
+
+        fn device_information_with_flags(
+            &mut self,
+            bytes_per_sector: u32,
+            number_of_sectors: u64,
+            data_flags: u32,
+        ) -> u64 {
+            let pairs = [
+                ("bp", u64::from(bytes_per_sector)),
+                ("ts", number_of_sectors),
+            ];
+            self.push_compressed_main_object(
+                EWF2_SECTION_TYPE_DEVICE_INFORMATION,
+                data_flags,
+                &pairs,
+            )
+        }
+
+        fn case_data(&mut self, sectors_per_chunk: u32, chunk_count: u64) -> u64 {
+            let pairs = [("sb", u64::from(sectors_per_chunk)), ("tb", chunk_count)];
+            self.push_compressed_main_object(EWF2_SECTION_TYPE_CASE_DATA, 0, &pairs)
+        }
+
+        fn sector_data_uncompressed_chunk(&mut self, chunk: &[u8]) -> (u64, u32) {
+            // Capture the file offset where the chunk bytes will begin.
+            let chunk_offset = self.bytes.len() as u64;
+
+            assert!(
+                chunk.len() <= (u32::MAX as usize).saturating_sub(4),
+                "chunk too large for test fixture"
+            );
+
+            let mut sector_data = Vec::new();
+            sector_data.extend_from_slice(chunk);
+            let checksum = adler32_rfc1950(chunk);
+            sector_data.extend_from_slice(&checksum.to_le_bytes());
+
+            let chunk_data_size = sector_data.len() as u32;
+            let pad = pad16(&mut sector_data);
+
+            self.push_section(EWF2_SECTION_TYPE_SECTOR_DATA, sector_data, pad);
+            (chunk_offset, chunk_data_size)
+        }
+
+        fn sector_table(&mut self, first_chunk: u64, entries: &[Ewf2SectorTableEntrySpec]) -> u64 {
+            let table = build_ewf2_sector_table(first_chunk, entries);
+            // libewf uses padding_size=24 for sector tables (12 after header + 12 after footer).
+            self.push_section(EWF2_SECTION_TYPE_SECTOR_TABLE, table, 24)
+        }
+
+        fn utf16le_no_bom_section(&mut self, section_type: u32, text: &str) -> Ewf2WrittenSection {
+            let mut data = encode_utf16le_no_bom(text);
+            let unpadded_len = data.len() as u64;
+            let pad = pad16(&mut data);
+            let desc_off = self.push_section(section_type, data, pad);
+            Ewf2WrittenSection {
+                desc_off,
+                unpadded_len,
+                pad,
+            }
+        }
+
+        fn single_files_data(&mut self, ltree_text: &str) -> Ewf2WrittenSection {
+            self.utf16le_no_bom_section(EWF2_SECTION_TYPE_SINGLE_FILES_DATA, ltree_text)
+        }
+
+        fn done(&mut self) -> u64 {
+            self.push_section(EWF2_SECTION_TYPE_DONE, Vec::new(), 0)
+        }
+
+        fn patch_descriptor_data_size(&mut self, desc_off: u64, data_size: u64) -> Result<()> {
+            let desc_start: usize = desc_off
+                .try_into()
+                .map_err(|_| Error::Invalid("descriptor offset overflow".to_string()))?;
+            let desc_end = desc_start
+                .checked_add(EWF2_SECTION_DESCRIPTOR_SIZE)
+                .ok_or_else(|| Error::Invalid("descriptor offset overflow".to_string()))?;
+
+            self.bytes[desc_start + 16..desc_start + 24].copy_from_slice(&data_size.to_le_bytes());
+            let checksum = adler32_rfc1950(&self.bytes[desc_start..desc_end - 4]);
+            self.bytes[desc_end - 4..desc_end].copy_from_slice(&checksum.to_le_bytes());
+            Ok(())
+        }
+
+        fn into_bytes(self) -> Vec<u8> {
+            self.bytes
+        }
+    }
+
+    /// Minimal EnCase 7 `rec` + `entry` tree describing a single file `hello.txt` (5 bytes) at
+    /// extent `(chunk=1, offset=0, size=5)`.
+    const ENCASE7_TREE_SINGLE_HELLO_TXT: &str = "2\nrec\ntb\n5\n\nentry\n1\t1\np\tn\tls\tbe\n0\t1\n1\t\t0\t\n0\t0\n\thello.txt\t5\t1 0 5\n\n";
+
+    fn hello_chunk_512() -> Vec<u8> {
+        let mut chunk = vec![0u8; 512];
+        chunk[..5].copy_from_slice(b"hello");
+        chunk
     }
 
     #[test]
@@ -3125,98 +3377,21 @@ mod tests {
         let set_id = [0x11u8; 16];
         let chunk = vec![b'Z'; 512];
 
-        let mut file: Vec<u8> = Vec::new();
-        write_ewf2_header(&mut file, 1, EWF2_COMPRESSION_LZ, set_id);
-
-        let mut prev_desc_off = 0u64;
-
-        // Device information: bp=512, ts=1
-        let device_str = "1\nmain\nbp\tts\n512\t1\n";
-        let device_utf16 = encode_utf16le_with_bom(device_str);
-        let mut device_data = zlib_compress(&device_utf16);
-        let device_pad = pad16(&mut device_data);
-        prev_desc_off = append_ewf2_section(
-            &mut file,
-            EWF2_SECTION_TYPE_DEVICE_INFORMATION,
-            prev_desc_off,
-            device_data,
-            device_pad,
-        );
-
-        // Case data: sb=1, tb=1
-        let case_str = "1\nmain\nsb\ttb\n1\t1\n";
-        let case_utf16 = encode_utf16le_with_bom(case_str);
-        let mut case_data = zlib_compress(&case_utf16);
-        let case_pad = pad16(&mut case_data);
-        prev_desc_off = append_ewf2_section(
-            &mut file,
-            EWF2_SECTION_TYPE_CASE_DATA,
-            prev_desc_off,
-            case_data,
-            case_pad,
-        );
-
-        // Sector data section.
-        let sector_data_start = file.len() as u64;
-        let mut sector_data = Vec::new();
-        sector_data.extend_from_slice(&chunk);
-        let checksum = adler32_rfc1950(&chunk);
-        sector_data.extend_from_slice(&checksum.to_le_bytes());
-        let sector_pad = pad16(&mut sector_data); // 516 -> 528 (pad=12)
-        prev_desc_off = append_ewf2_section(
-            &mut file,
-            EWF2_SECTION_TYPE_SECTOR_DATA,
-            prev_desc_off,
-            sector_data,
-            sector_pad,
-        );
-
-        // Sector table section.
-        let chunk_data_offset = sector_data_start;
-        let chunk_data_size = (512 + 4) as u32; // chunk bytes + Adler32
-
-        let mut table = Vec::new();
-        // header (20)
-        table.extend_from_slice(&0u64.to_le_bytes()); // first chunk number
-        table.extend_from_slice(&1u32.to_le_bytes()); // number of entries
-        table.extend_from_slice(&0u32.to_le_bytes()); // unknown/padding
-        let header_checksum = adler32_rfc1950(&table[..16]);
-        table.extend_from_slice(&header_checksum.to_le_bytes());
-        // header alignment padding (12)
-        table.extend(std::iter::repeat_n(0u8, 12));
-
-        // entry (16)
-        let mut entry = Vec::new();
-        entry.extend_from_slice(&chunk_data_offset.to_le_bytes());
-        entry.extend_from_slice(&chunk_data_size.to_le_bytes());
-        entry.extend_from_slice(&EWF2_CHUNK_DATA_FLAG_CHECKSUMED.to_le_bytes());
-        table.extend_from_slice(&entry);
-
-        // footer checksum (Adler32 of entries) + footer alignment padding (12)
-        let footer_checksum = adler32_rfc1950(&entry);
-        table.extend_from_slice(&footer_checksum.to_le_bytes());
-        table.extend(std::iter::repeat_n(0u8, 12));
-
-        // libewf uses padding_size=24 for sector tables (12 after header + 12 after footer).
-        prev_desc_off = append_ewf2_section(
-            &mut file,
-            EWF2_SECTION_TYPE_SECTOR_TABLE,
-            prev_desc_off,
-            table,
-            24,
-        );
-
-        // Done section (no data).
-        prev_desc_off = append_ewf2_section(
-            &mut file,
-            EWF2_SECTION_TYPE_DONE,
-            prev_desc_off,
-            Vec::new(),
+        let mut f = Ewf2TestFile::new_ex01(set_id);
+        f.device_information(512, 1);
+        f.case_data(1, 1);
+        let (chunk_data_offset, chunk_data_size) = f.sector_data_uncompressed_chunk(&chunk);
+        f.sector_table(
             0,
+            &[Ewf2SectorTableEntrySpec {
+                offset: chunk_data_offset,
+                size: chunk_data_size,
+                flags: EWF2_CHUNK_DATA_FLAG_CHECKSUMED,
+            }],
         );
-        let _ = prev_desc_off;
+        f.done();
 
-        std::fs::write(&path, &file)?;
+        std::fs::write(&path, &f.into_bytes())?;
 
         let img = EwfReader::open(&path)?;
         assert_eq!(img.len(), 512);
@@ -3237,115 +3412,21 @@ mod tests {
         let set_id = [0x22u8; 16];
         let chunk = vec![b'Z'; 512];
 
-        let mut file: Vec<u8> = Vec::new();
-        write_ewf2_header(&mut file, 1, EWF2_COMPRESSION_LZ, set_id);
-
-        let mut prev_desc_off = 0u64;
-
-        fn append_ewf2_section_with_flags(
-            file: &mut Vec<u8>,
-            section_type: u32,
-            data_flags: u32,
-            previous_offset: u64,
-            data: Vec<u8>,
-            padding_size_field: u32,
-        ) -> u64 {
-            file.extend_from_slice(&data);
-            let desc_off = file.len() as u64;
-            let desc = make_ewf2_section_descriptor(
-                section_type,
-                data_flags,
-                previous_offset,
-                data.len() as u64,
-                padding_size_field,
-            );
-            file.extend_from_slice(&desc);
-            desc_off
-        }
-
-        // Device information marked encrypted.
-        let device_str = "1\nmain\nbp\tts\n512\t1\n";
-        let device_utf16 = encode_utf16le_with_bom(device_str);
-        let mut device_data = zlib_compress(&device_utf16);
-        let device_pad = pad16(&mut device_data);
-        prev_desc_off = append_ewf2_section_with_flags(
-            &mut file,
-            EWF2_SECTION_TYPE_DEVICE_INFORMATION,
-            EWF2_SECTION_DATA_FLAG_ENCRYPTED,
-            prev_desc_off,
-            device_data,
-            device_pad,
-        );
-
-        // Case data.
-        let case_str = "1\nmain\nsb\ttb\n1\t1\n";
-        let case_utf16 = encode_utf16le_with_bom(case_str);
-        let mut case_data = zlib_compress(&case_utf16);
-        let case_pad = pad16(&mut case_data);
-        prev_desc_off = append_ewf2_section(
-            &mut file,
-            EWF2_SECTION_TYPE_CASE_DATA,
-            prev_desc_off,
-            case_data,
-            case_pad,
-        );
-
-        // Sector data section.
-        let sector_data_start = file.len() as u64;
-        let mut sector_data = Vec::new();
-        sector_data.extend_from_slice(&chunk);
-        let checksum = adler32_rfc1950(&chunk);
-        sector_data.extend_from_slice(&checksum.to_le_bytes());
-        let sector_pad = pad16(&mut sector_data);
-        prev_desc_off = append_ewf2_section(
-            &mut file,
-            EWF2_SECTION_TYPE_SECTOR_DATA,
-            prev_desc_off,
-            sector_data,
-            sector_pad,
-        );
-
-        // Sector table section.
-        let chunk_data_offset = sector_data_start;
-        let chunk_data_size = (512 + 4) as u32;
-
-        let mut table = Vec::new();
-        table.extend_from_slice(&0u64.to_le_bytes()); // first chunk number
-        table.extend_from_slice(&1u32.to_le_bytes()); // number of entries
-        table.extend_from_slice(&0u32.to_le_bytes()); // unknown/padding
-        let header_checksum = adler32_rfc1950(&table[..16]);
-        table.extend_from_slice(&header_checksum.to_le_bytes());
-        table.extend(std::iter::repeat_n(0u8, 12));
-
-        let mut entry = Vec::new();
-        entry.extend_from_slice(&chunk_data_offset.to_le_bytes());
-        entry.extend_from_slice(&chunk_data_size.to_le_bytes());
-        entry.extend_from_slice(&EWF2_CHUNK_DATA_FLAG_CHECKSUMED.to_le_bytes());
-        table.extend_from_slice(&entry);
-
-        let footer_checksum = adler32_rfc1950(&entry);
-        table.extend_from_slice(&footer_checksum.to_le_bytes());
-        table.extend(std::iter::repeat_n(0u8, 12));
-
-        prev_desc_off = append_ewf2_section(
-            &mut file,
-            EWF2_SECTION_TYPE_SECTOR_TABLE,
-            prev_desc_off,
-            table,
-            24,
-        );
-
-        // Done.
-        prev_desc_off = append_ewf2_section(
-            &mut file,
-            EWF2_SECTION_TYPE_DONE,
-            prev_desc_off,
-            Vec::new(),
+        let mut f = Ewf2TestFile::new_ex01(set_id);
+        f.device_information_with_flags(512, 1, EWF2_SECTION_DATA_FLAG_ENCRYPTED);
+        f.case_data(1, 1);
+        let (chunk_data_offset, chunk_data_size) = f.sector_data_uncompressed_chunk(&chunk);
+        f.sector_table(
             0,
+            &[Ewf2SectorTableEntrySpec {
+                offset: chunk_data_offset,
+                size: chunk_data_size,
+                flags: EWF2_CHUNK_DATA_FLAG_CHECKSUMED,
+            }],
         );
-        let _ = prev_desc_off;
+        f.done();
 
-        std::fs::write(&path, &file)?;
+        std::fs::write(&path, &f.into_bytes())?;
 
         let err = EwfReader::open(&path).unwrap_err();
         match err {
@@ -3487,9 +3568,7 @@ mod tests {
 
     #[test]
     fn test_lef_l01_single_file_read() -> Result<()> {
-        let chunk_size = 512usize;
-        let mut chunk = vec![0u8; chunk_size];
-        chunk[..5].copy_from_slice(b"hello");
+        let chunk = hello_chunk_512();
 
         let mut file: Vec<u8> = Vec::new();
         write_lvf_header(&mut file, 1);
@@ -3527,7 +3606,7 @@ mod tests {
         append_section("table2", &table2_body);
 
         // ltree: EnCase 7 style serialized tree (UTF-16LE without BOM).
-        let ltree_text = "2\nrec\ntb\n5\n\nentry\n1\t1\np\tn\tls\tbe\n0\t1\n1\t\t0\t\n0\t0\n\thello.txt\t5\t1 0 5\n\n";
+        let ltree_text = ENCASE7_TREE_SINGLE_HELLO_TXT;
         let ltree_data = encode_utf16le_no_bom(ltree_text);
 
         let mut ltree_hdr = [0u8; 48];
@@ -3566,113 +3645,86 @@ mod tests {
 
     #[test]
     fn test_lef_lx01_single_file_read() -> Result<()> {
-        let chunk_size = 512usize;
-        let mut chunk = vec![0u8; chunk_size];
-        chunk[..5].copy_from_slice(b"hello");
+        let chunk = hello_chunk_512();
 
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("case.Lx01");
 
         let set_id = [9u8; 16];
-        let mut file: Vec<u8> = Vec::new();
-        write_lef2_header(&mut file, 1, EWF2_COMPRESSION_LZ, set_id);
-
-        let mut prev_desc_off: u64 = 0;
-
-        // Device information: bp=512, ts=1
-        let dev_str = "1\nmain\nbp\tts\n512\t1\n";
-        let dev_utf16 = encode_utf16le_with_bom(dev_str);
-        let mut dev_data = zlib_compress(&dev_utf16);
-        let dev_pad = pad16(&mut dev_data);
-        prev_desc_off = append_ewf2_section(
-            &mut file,
-            EWF2_SECTION_TYPE_DEVICE_INFORMATION,
-            prev_desc_off,
-            dev_data,
-            dev_pad,
+        let mut f = Ewf2TestFile::new_lx01(set_id);
+        f.device_information(512, 1);
+        f.case_data(1, 1);
+        let (chunk_data_offset, chunk_data_size) = f.sector_data_uncompressed_chunk(&chunk);
+        f.sector_table(
+            0,
+            &[Ewf2SectorTableEntrySpec {
+                offset: chunk_data_offset,
+                size: chunk_data_size,
+                flags: EWF2_CHUNK_DATA_FLAG_CHECKSUMED,
+            }],
         );
+        let _ = f.single_files_data(ENCASE7_TREE_SINGLE_HELLO_TXT);
+        f.done();
 
-        // Case data: sb=1, tb=1
-        let case_str = "1\nmain\nsb\ttb\n1\t1\n";
-        let case_utf16 = encode_utf16le_with_bom(case_str);
-        let mut case_data = zlib_compress(&case_utf16);
-        let case_pad = pad16(&mut case_data);
-        prev_desc_off = append_ewf2_section(
-            &mut file,
-            EWF2_SECTION_TYPE_CASE_DATA,
-            prev_desc_off,
-            case_data,
-            case_pad,
-        );
+        std::fs::write(&path, &f.into_bytes())?;
 
-        // Sector data section: uncompressed chunk + Adler32
-        let sector_data_start = file.len() as u64;
-        let mut sector_data = Vec::new();
-        sector_data.extend_from_slice(&chunk);
-        let checksum = adler32_rfc1950(&chunk);
-        sector_data.extend_from_slice(&checksum.to_le_bytes());
-        let sector_pad = pad16(&mut sector_data);
-        prev_desc_off = append_ewf2_section(
-            &mut file,
-            EWF2_SECTION_TYPE_SECTOR_DATA,
-            prev_desc_off,
-            sector_data,
-            sector_pad,
-        );
+        let lef = LefReader::open(&path)?;
+        let data = lef.read_file("hello.txt")?;
+        assert_eq!(data, b"hello");
+        Ok(())
+    }
 
-        // Sector table section.
-        let chunk_data_offset = sector_data_start;
-        let chunk_data_size = (512 + 4) as u32;
+    #[test]
+    fn test_lef_lx01_single_files_data_read_is_clamped_to_section_bounds() -> Result<()> {
+        let chunk = hello_chunk_512();
 
-        let mut table = Vec::new();
-        table.extend_from_slice(&0u64.to_le_bytes()); // first chunk number
-        table.extend_from_slice(&1u32.to_le_bytes()); // number of entries
-        table.extend_from_slice(&0u32.to_le_bytes()); // unknown/padding
-        let header_checksum = adler32_rfc1950(&table[..16]);
-        table.extend_from_slice(&header_checksum.to_le_bytes());
-        table.extend(std::iter::repeat_n(0u8, 12));
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("case-malformed-size.Lx01");
 
-        let mut entry = Vec::new();
-        entry.extend_from_slice(&chunk_data_offset.to_le_bytes());
-        entry.extend_from_slice(&chunk_data_size.to_le_bytes());
-        entry.extend_from_slice(&EWF2_CHUNK_DATA_FLAG_CHECKSUMED.to_le_bytes());
-        table.extend_from_slice(&entry);
+        let set_id = [0x55u8; 16];
+        let mut f = Ewf2TestFile::new_lx01(set_id);
+        f.device_information(512, 1);
+        f.case_data(1, 1);
 
-        let footer_checksum = adler32_rfc1950(&entry);
-        table.extend_from_slice(&footer_checksum.to_le_bytes());
-        table.extend(std::iter::repeat_n(0u8, 12));
-
-        prev_desc_off = append_ewf2_section(
-            &mut file,
-            EWF2_SECTION_TYPE_SECTOR_TABLE,
-            prev_desc_off,
-            table,
-            24,
+        let (chunk_data_offset, chunk_data_size) = f.sector_data_uncompressed_chunk(&chunk);
+        f.sector_table(
+            0,
+            &[Ewf2SectorTableEntrySpec {
+                offset: chunk_data_offset,
+                size: chunk_data_size,
+                flags: EWF2_CHUNK_DATA_FLAG_CHECKSUMED,
+            }],
         );
 
         // Single files data (0x20): EnCase 7 style tree (UTF-16LE without BOM).
-        let ltree_text = "2\nrec\ntb\n5\n\nentry\n1\t1\np\tn\tls\tbe\n0\t1\n1\t\t0\t\n0\t0\n\thello.txt\t5\t1 0 5\n\n";
-        let mut single_files_data = encode_utf16le_no_bom(ltree_text);
-        let single_pad = pad16(&mut single_files_data);
-        prev_desc_off = append_ewf2_section(
-            &mut file,
-            EWF2_SECTION_TYPE_SINGLE_FILES_DATA,
-            prev_desc_off,
-            single_files_data,
-            single_pad,
-        );
+        let single = f.single_files_data(ENCASE7_TREE_SINGLE_HELLO_TXT);
 
-        // Done section.
-        prev_desc_off = append_ewf2_section(
-            &mut file,
-            EWF2_SECTION_TYPE_DONE,
-            prev_desc_off,
-            Vec::new(),
-            0,
-        );
-        let _ = prev_desc_off;
+        // Add a "poison" section whose bytes look like a new (invalid) `rec` category. If we
+        // over-read beyond the single-files section bounds, parsing will fail.
+        let poison_text = "\n\nrec\nx\n";
+        let poison = f.utf16le_no_bom_section(0xdead_beefu32, poison_text);
 
-        std::fs::write(&path, &file)?;
+        // Corrupt the single-files section descriptor's `data_size` to claim the section extends
+        // past its descriptor and into the following section.
+        //
+        // `open_lx01` must clamp reads using `data_len` (which is bounded by the descriptor offset),
+        // otherwise it can read bytes from the descriptor/next section.
+        // Inflate `data_size` enough that a buggy `data_size - padding_size` read would include:
+        // - the section's own padding bytes,
+        // - the section descriptor,
+        // - and the full poison payload.
+        //
+        // We add `pad` twice so the buggy read length includes the original padding (otherwise it
+        // might only read a prefix of `poison`, which makes the regression less deterministic).
+        let inflated_data_size = single
+            .unpadded_len
+            .saturating_add(u64::from(single.pad).saturating_mul(2))
+            .saturating_add(EWF2_SECTION_DESCRIPTOR_SIZE as u64)
+            .saturating_add(poison.unpadded_len);
+        f.patch_descriptor_data_size(single.desc_off, inflated_data_size)?;
+
+        f.done();
+        std::fs::write(&path, &f.into_bytes())?;
 
         let lef = LefReader::open(&path)?;
         let data = lef.read_file("hello.txt")?;
