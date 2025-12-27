@@ -115,7 +115,16 @@ impl ReadAt for AfdImage {
 
             if let Some(&file_idx) = self.page_map.get(&page_index) {
                 let file = &self.files[file_idx];
-                file.read_exact_at(cur, &mut buf[out_pos..out_pos + take])?;
+                // Important: do **not** delegate to `Aff1Image::read_exact_at(cur, ...)` here.
+                //
+                // In AFD, the global image size is the max across subfiles, but an individual
+                // subfile may advertise a smaller `imagesize` (e.g. partial last page) while still
+                // storing a full `page<N>` segment. AFFLIB satisfies AFD reads by fetching pages by
+                // index via `af_get_page` / `af_get_seg` (see `lib/afflib_stream.cpp` +
+                // `lib/vnode_afd.cpp` in the vendored AFFLIBv3 snapshot), not by performing a
+                // per-subfile stream read with an `imagesize` bounds check.
+                let page = file.read_page(page_index)?;
+                buf[out_pos..out_pos + take].copy_from_slice(&page[within..within + take]);
             } else {
                 buf[out_pos..out_pos + take].fill(0);
             }
@@ -175,4 +184,85 @@ fn parse_afd_file_index(name: &str) -> Option<u32> {
         return None;
     }
     digits.parse::<u32>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::format;
+
+    fn aff_quad_u64(v: u64) -> [u8; 8] {
+        let low = (v & 0xffff_ffff) as u32;
+        let high = (v >> 32) as u32;
+        let mut out = [0u8; 8];
+        out[0..4].copy_from_slice(&low.to_be_bytes());
+        out[4..8].copy_from_slice(&high.to_be_bytes());
+        out
+    }
+
+    fn aff_segment(name: &str, data: &[u8], arg: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(format::SEG_MAGIC);
+        out.extend_from_slice(&(name.len() as u32).to_be_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(&arg.to_be_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(data);
+        out.extend_from_slice(format::SEG_TRAILER);
+        let seg_len = (16 + name.len() + data.len() + 8) as u32;
+        out.extend_from_slice(&seg_len.to_be_bytes());
+        out
+    }
+
+    fn build_aff1_file(segments: Vec<Vec<u8>>) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(format::AFF1_HEADER);
+        for seg in segments {
+            out.extend_from_slice(&seg);
+        }
+        out
+    }
+
+    #[test]
+    fn test_read_exact_at_ignores_subfile_imagesize_when_page_exists() {
+        // Regression test for a subtle AFD behavior:
+        //
+        // In AFFLIBv3, AFD reads are satisfied by fetching `page<N>` segments from whichever
+        // subfile contains them, while the *overall* stream length is the max `imagesize`
+        // across the directory (`afd_vstat` in `external/refs/repos/sshock__AFFLIBv3@.../lib/vnode_afd.cpp`).
+        //
+        // That means a subfile may advertise a smaller `imagesize` (partial last page) while still
+        // storing a full `page<N>` segment; reads within that page are valid as long as the AFD's
+        // global `imagesize` permits them.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("container.afd");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let page_size = 8usize;
+
+        // file_000: claims imagesize=9 (partial last page), but stores a full page1 segment.
+        let file0 = build_aff1_file(vec![
+            aff_segment("pagesize", &[], page_size as u32),
+            aff_segment("imagesize", &aff_quad_u64(9), 2),
+            aff_segment("page0", b"AAAAAAAA", 0),
+            aff_segment("page1", b"BBBBBBBB", 0),
+        ]);
+
+        // file_001: bumps the AFD global imagesize to 16 (2 full pages).
+        let file1 = build_aff1_file(vec![
+            aff_segment("pagesize", &[], page_size as u32),
+            aff_segment("imagesize", &aff_quad_u64(16), 2),
+        ]);
+
+        std::fs::write(dir.join("file_000.aff"), file0).unwrap();
+        std::fs::write(dir.join("file_001.aff"), file1).unwrap();
+
+        let afd = AfdImage::open_with(&dir, 2).unwrap();
+        assert_eq!(afd.page_size(), page_size);
+        assert_eq!(afd.len(), 16);
+
+        let mut page1 = [0u8; 8];
+        afd.read_exact_at(8, &mut page1).unwrap();
+        assert_eq!(&page1, b"BBBBBBBB");
+    }
 }

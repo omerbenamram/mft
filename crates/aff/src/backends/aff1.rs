@@ -312,7 +312,7 @@ impl Aff1Image {
         vec![0u8; self.page_size]
     }
 
-    fn read_page(&self, page_index: u64) -> io::Result<Vec<u8>> {
+    pub(crate) fn read_page(&self, page_index: u64) -> io::Result<Vec<u8>> {
         if let Some(hit) = self.cache.lock().expect("poisoned").get(&page_index) {
             return Ok(hit.clone());
         }
