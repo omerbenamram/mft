@@ -32,11 +32,99 @@
 
 use std::fmt;
 
+use crate::util::adler32_rfc1950;
 use crate::{Error, Result};
+use binrw::{BinRead as _, BinWrite as _, binrw};
+use bitflags::bitflags;
+use std::io::{Cursor, SeekFrom};
+
+#[binrw]
+#[brw(little)]
+#[derive(Debug, Clone)]
+struct RawEwf1VolumeLikeSectionBody {
+    /// Byte 0: media type code (in the 1052-byte variant).
+    ///
+    /// In the 94-byte “spec” variant, this is part of a 4-byte reserved field that commonly holds
+    /// `0x01 0x00 0x00 0x00`, which coincides with the “fixed disk” media type code.
+    media_type_code: u8,
+    #[brw(pad_after = 3)]
+    _reserved0: (),
+
+    _chunk_count: u32,
+    sectors_per_chunk: u32,
+    bytes_per_sector: u32,
+
+    // EWF1 stores the sector count as either 32-bit (older variants) or 64-bit (newer ones).
+    number_of_sectors_low: u32,
+    #[br(try)]
+    number_of_sectors_high: Option<u32>,
+
+    // Fields below are specific to the 1052-byte EnCase/FTK/linen variant. We read them with
+    // explicit offsets and tolerate missing data so this parser can operate on truncated inputs.
+    #[br(try, seek_before = SeekFrom::Start(36))]
+    media_flags_raw: Option<u8>,
+    #[br(try, seek_before = SeekFrom::Start(52))]
+    compression_level_raw: Option<u8>,
+    #[br(try, seek_before = SeekFrom::Start(56))]
+    error_granularity: Option<u32>,
+    #[br(try, seek_before = SeekFrom::Start(64))]
+    set_identifier_raw: Option<[u8; 16]>,
+}
+
+#[binrw]
+#[brw(little)]
+#[derive(Debug, Clone)]
+struct RawEwf1VolumeSectionE01_1052 {
+    media_type_code: u8,
+    #[brw(pad_after = 3)]
+    _reserved0: (),
+    chunk_count: u32,
+    sectors_per_chunk: u32,
+    bytes_per_sector: u32,
+    number_of_sectors: u64,
+
+    #[brw(pad_after = 12)]
+    _reserved1: (),
+    media_flags: u8,
+
+    #[brw(pad_after = 15)]
+    _reserved2: (),
+    compression_level: u8,
+
+    #[brw(pad_after = 3)]
+    _reserved3: (),
+    error_granularity: u32,
+
+    #[brw(pad_after = 4)]
+    _reserved4: (),
+    #[brw(pad_after = 968)]
+    set_identifier: [u8; 16],
+
+    checksum: u32,
+}
+
+#[binrw]
+#[brw(little)]
+#[derive(Debug, Clone)]
+struct RawEwf1VolumeSectionS01_94 {
+    reserved0_low: u8,
+    #[brw(pad_after = 3)]
+    _reserved0: (),
+    chunk_count: u32,
+    sectors_per_chunk: u32,
+    bytes_per_sector: u32,
+    number_of_sectors: u32,
+
+    #[brw(pad_after = 65)]
+    _reserved1: (),
+    #[brw(magic = b"SMART")]
+    _smart_signature: (),
+    checksum: u32,
+}
 
 /// EWF1 media type code (byte 0 of the volume-like section body).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Ewf1MediaType {
+pub(crate) enum Ewf1MediaType {
     RemovableDisk,
     FixedDisk,
     OpticalDisk,
@@ -46,7 +134,7 @@ pub(super) enum Ewf1MediaType {
 }
 
 impl Ewf1MediaType {
-    pub(super) fn from_code(code: u8) -> Self {
+    pub(crate) fn from_code(code: u8) -> Self {
         match code {
             0x00 => Self::RemovableDisk,
             0x01 => Self::FixedDisk,
@@ -72,28 +160,30 @@ impl fmt::Display for Ewf1MediaType {
     }
 }
 
-/// Media flags byte (offset 36 in the 1052-byte variant).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Ewf1MediaFlags {
-    raw: u8,
+bitflags! {
+    /// EWF1 media flags byte (offset 36 in the 1052-byte variant).
+    ///
+    /// Unknown bits are preserved (see [`Ewf1MediaFlags::from_raw`]).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct Ewf1MediaFlags: u8 {
+        /// libewf: `LIBEWF_MEDIA_FLAG_PHYSICAL`
+        const PHYSICAL = 0x02;
+    }
 }
 
 impl Ewf1MediaFlags {
-    // LIBEWF_MEDIA_FLAG_PHYSICAL
-    const PHYSICAL: u8 = 0x02;
-
-    pub(super) fn from_raw(raw: u8) -> Self {
-        Self { raw }
+    pub(crate) fn from_raw(raw: u8) -> Self {
+        Self::from_bits_retain(raw)
     }
 
-    pub(super) fn is_physical(self) -> bool {
-        (self.raw & Self::PHYSICAL) != 0
+    pub(crate) fn is_physical(self) -> bool {
+        self.contains(Self::PHYSICAL)
     }
 }
 
 /// Compression level hint byte (offset 52 in the 1052-byte variant).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Ewf1VolumeCompressionLevel {
+pub(crate) enum Ewf1VolumeCompressionLevel {
     NoCompression,
     GoodFastCompression,
     BestCompression,
@@ -102,7 +192,7 @@ pub(super) enum Ewf1VolumeCompressionLevel {
 }
 
 impl Ewf1VolumeCompressionLevel {
-    pub(super) fn from_optional_code(code: Option<u8>) -> Self {
+    pub(crate) fn from_optional_code(code: Option<u8>) -> Self {
         match code {
             Some(0x00) => Self::NoCompression,
             Some(0x01) => Self::GoodFastCompression,
@@ -129,16 +219,16 @@ impl fmt::Display for Ewf1VolumeCompressionLevel {
 
 /// Parsed EWF1 volume-like section fields used by `ewfinfo`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Ewf1VolumeInfo {
-    pub(super) sectors_per_chunk: u32,
-    pub(super) error_granularity: u32,
-    pub(super) bytes_per_sector: u32,
-    pub(super) number_of_sectors: u64,
-    pub(super) media_size: u64,
-    pub(super) compression_level: Ewf1VolumeCompressionLevel,
-    pub(super) set_identifier: Option<[u8; 16]>,
-    pub(super) media_type: Ewf1MediaType,
-    pub(super) is_physical: bool,
+pub(crate) struct Ewf1VolumeInfo {
+    pub(crate) sectors_per_chunk: u32,
+    pub(crate) error_granularity: u32,
+    pub(crate) bytes_per_sector: u32,
+    pub(crate) number_of_sectors: u64,
+    pub(crate) media_size: u64,
+    pub(crate) compression_level: Ewf1VolumeCompressionLevel,
+    pub(crate) set_identifier: Option<[u8; 16]>,
+    pub(crate) media_type: Ewf1MediaType,
+    pub(crate) is_physical: bool,
 }
 
 impl Ewf1VolumeInfo {
@@ -146,33 +236,36 @@ impl Ewf1VolumeInfo {
     ///
     /// The input must be the raw bytes of the `volume`/`disk`/`data` section body (not including
     /// the 76-byte section descriptor).
-    pub(super) fn parse_from_volume_like_section_body(data: &[u8]) -> Result<Self> {
+    pub(crate) fn parse_from_volume_like_section_body(data: &[u8]) -> Result<Self> {
         if data.len() < 20 {
             return Err(Error::Invalid(
                 "short EWF1 volume-like section body".to_string(),
             ));
         }
 
+        let raw = RawEwf1VolumeLikeSectionBody::read(&mut Cursor::new(data))
+            .map_err(|e| Error::Invalid(format!("invalid EWF1 volume-like section body: {e}")))?;
+
         // The 1052-byte EnCase/FTK/linen variant stores `media_type` at byte 0.
         // The 94-byte “EWF specification” variant uses a 4-byte reserved field at offset 0 that
         // *contains* 0x01, which coincides with the “fixed disk” media type code. We keep that
         // behavior for compatibility.
-        let media_type = Ewf1MediaType::from_code(data[0]);
+        let media_type = Ewf1MediaType::from_code(raw.media_type_code);
 
-        // NOTE: The `number_of_chunks` field exists at 0x04, but is currently unused by `ewfinfo`.
+        // NOTE: The `chunk_count` field exists at 0x04, but is currently unused by `ewfinfo`.
         // We still parse the geometry fields and sector count to compute media_size.
-        let sectors_per_chunk = u32::from_le_bytes(data[8..12].try_into().expect("len=4"));
-        let bytes_per_sector = u32::from_le_bytes(data[12..16].try_into().expect("len=4"));
+        let sectors_per_chunk = raw.sectors_per_chunk;
+        let bytes_per_sector = raw.bytes_per_sector;
 
         if sectors_per_chunk == 0 || bytes_per_sector == 0 {
             return Err(Error::Invalid("invalid EWF1 volume parameters".to_string()));
         }
 
         // In EWF1 the sector count is 32-bit in older variants and 64-bit in newer ones.
-        let number_of_sectors = if data.len() >= 24 {
-            u64::from_le_bytes(data[16..24].try_into().expect("len=8"))
+        let number_of_sectors = if let Some(high) = raw.number_of_sectors_high {
+            (u64::from(high) << 32) | u64::from(raw.number_of_sectors_low)
         } else {
-            u64::from(u32::from_le_bytes(data[16..20].try_into().expect("len=4")))
+            u64::from(raw.number_of_sectors_low)
         };
 
         let media_size = number_of_sectors
@@ -183,7 +276,7 @@ impl Ewf1VolumeInfo {
 
         // Media flags live at offset 36 in the 1052-byte EnCase/FTK/linen volume variant.
         let media_flags = if is_1052_variant {
-            data.get(36).copied().map(Ewf1MediaFlags::from_raw)
+            raw.media_flags_raw.map(Ewf1MediaFlags::from_raw)
         } else {
             None
         };
@@ -191,27 +284,22 @@ impl Ewf1VolumeInfo {
 
         // Sector error granularity lives at offset 56 in the 1052-byte EnCase/FTK/linen volume variant.
         let error_granularity = if is_1052_variant {
-            u32::from_le_bytes(data[56..60].try_into().expect("len=4"))
+            raw.error_granularity.unwrap_or(0)
         } else {
             0
         };
 
         // Compression level at offset 52 for the 1052-byte variant.
         let compression_level = if is_1052_variant {
-            Ewf1VolumeCompressionLevel::from_optional_code(data.get(52).copied())
+            Ewf1VolumeCompressionLevel::from_optional_code(raw.compression_level_raw)
         } else {
             Ewf1VolumeCompressionLevel::NotRecorded
         };
 
         // Set identifier is stored at [64..80] in the 1052-byte volume variant.
         let set_identifier = if is_1052_variant {
-            let mut id = [0u8; 16];
-            id.copy_from_slice(&data[64..80]);
-            if id.iter().any(|&b| b != 0) {
-                Some(id)
-            } else {
-                None
-            }
+            raw.set_identifier_raw
+                .and_then(|id| (id.iter().any(|&b| b != 0)).then_some(id))
         } else {
             None
         };
@@ -230,7 +318,7 @@ impl Ewf1VolumeInfo {
     }
 }
 
-pub(super) fn build_volume_section_e01_1052(
+pub(crate) fn build_volume_section_e01_1052(
     chunk_count: u64,
     sectors_per_chunk: u32,
     error_granularity: u32,
@@ -243,23 +331,33 @@ pub(super) fn build_volume_section_e01_1052(
     //
     // See `external/libewf/documentation/Expert Witness Compression Format (EWF).asciidoc`:
     // “Volume section” → “FTK Imager, EnCase 1 to 7 and linen 5 to 7 (EWF-E01)”.
+    let v = RawEwf1VolumeSectionE01_1052 {
+        media_type_code: 0x01, // fixed media
+        _reserved0: (),
+        chunk_count: chunk_count as u32,
+        sectors_per_chunk,
+        bytes_per_sector,
+        number_of_sectors,
+        _reserved1: (),
+        media_flags: 0x01, // “is an image file”
+        _reserved2: (),
+        compression_level,
+        _reserved3: (),
+        error_granularity,
+        _reserved4: (),
+        set_identifier,
+        checksum: 0,
+    };
+
     let mut out = vec![0u8; 1052];
-    out[0] = 0x01; // fixed media
-    out[4..8].copy_from_slice(&(chunk_count as u32).to_le_bytes());
-    out[8..12].copy_from_slice(&sectors_per_chunk.to_le_bytes());
-    out[12..16].copy_from_slice(&bytes_per_sector.to_le_bytes());
-    out[16..24].copy_from_slice(&number_of_sectors.to_le_bytes());
-    out[36] = 0x01; // media flags: “is an image file”
-    out[52] = compression_level;
-    out[56..60].copy_from_slice(&error_granularity.to_le_bytes());
-    out[64..80].copy_from_slice(&set_identifier);
-    // checksum over [0..1048]
+    v.write(&mut Cursor::new(&mut out[..]))
+        .expect("in-memory write cannot fail");
     let checksum = adler32_rfc1950(&out[..1048]).to_le_bytes();
     out[1048..1052].copy_from_slice(&checksum);
     out
 }
 
-pub(super) fn build_volume_section_s01_94(
+pub(crate) fn build_volume_section_s01_94(
     chunk_count: u64,
     sectors_per_chunk: u32,
     bytes_per_sector: u32,
@@ -269,28 +367,24 @@ pub(super) fn build_volume_section_s01_94(
     //
     // See `external/libewf/documentation/Expert Witness Compression Format (EWF).asciidoc`:
     // “Volume section” → “EWF specification” and “SMART (EWF-S01)”.
+    let v = RawEwf1VolumeSectionS01_94 {
+        reserved0_low: 0x01,
+        _reserved0: (),
+        chunk_count: chunk_count as u32,
+        sectors_per_chunk,
+        bytes_per_sector,
+        number_of_sectors: number_of_sectors as u32,
+        _reserved1: (),
+        _smart_signature: (),
+        checksum: 0,
+    };
+
     let mut out = vec![0u8; 94];
-    out[0..4].copy_from_slice(&1u32.to_le_bytes()); // reserved (contains 0x01)
-    out[4..8].copy_from_slice(&(chunk_count as u32).to_le_bytes());
-    out[8..12].copy_from_slice(&sectors_per_chunk.to_le_bytes());
-    out[12..16].copy_from_slice(&bytes_per_sector.to_le_bytes());
-    out[16..20].copy_from_slice(&(number_of_sectors as u32).to_le_bytes());
-    // SMART stores the string "SMART" as the signature at offset 85.
-    out[85..90].copy_from_slice(b"SMART");
+    v.write(&mut Cursor::new(&mut out[..]))
+        .expect("in-memory write cannot fail");
     let checksum = adler32_rfc1950(&out[..90]).to_le_bytes();
     out[90..94].copy_from_slice(&checksum);
     out
-}
-
-fn adler32_rfc1950(data: &[u8]) -> u32 {
-    const MOD_ADLER: u32 = 65521;
-    let mut a: u32 = 1;
-    let mut b: u32 = 0;
-    for &byte in data {
-        a = (a + u32::from(byte)) % MOD_ADLER;
-        b = (b + a) % MOD_ADLER;
-    }
-    (b << 16) | a
 }
 
 #[cfg(test)]

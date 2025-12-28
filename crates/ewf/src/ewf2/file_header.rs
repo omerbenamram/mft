@@ -18,6 +18,8 @@
 //!   - “Segment files” → “File header”
 
 use crate::{Error, Result};
+use binrw::{BinRead as _, BinWrite as _, binrw};
+use std::io::Cursor;
 
 pub(crate) const EWF2_FILE_HEADER_SIZE: usize = 32;
 
@@ -30,24 +32,31 @@ pub(crate) const EWF2_LEF_SIGNATURE: [u8; 8] = [0x4c, 0x45, 0x46, 0x32, 0x0d, 0x
 const EWF2_VERSION_MAJOR: u8 = 2;
 const EWF2_VERSION_MINOR: u8 = 1;
 
+/// EWF2 container kind (Ex01 vs Lx01).
+///
+/// The kind is encoded in the file header signature.
+#[binrw]
+#[brw(little)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Ewf2Kind {
+    /// EWF2-Ex01 (`EVF2\r\n\x81\x00`)
+    #[brw(magic = b"EVF2\r\n\x81\0")]
     Ex01,
+    /// EWF2-Lx01 (`LEF2\r\n\x81\x00`)
+    #[brw(magic = b"LEF2\r\n\x81\0")]
     Lx01,
 }
 
-impl Ewf2Kind {
-    pub(crate) fn signature(self) -> [u8; 8] {
-        match self {
-            Self::Ex01 => EWF2_EVF_SIGNATURE,
-            Self::Lx01 => EWF2_LEF_SIGNATURE,
-        }
-    }
-}
-
+#[binrw]
+#[brw(little)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Ewf2FileHeader {
     pub(crate) kind: Ewf2Kind,
+    #[br(assert(
+        major == EWF2_VERSION_MAJOR,
+        "unsupported EWF2 major version: {}",
+        major
+    ))]
     pub(crate) major: u8,
     pub(crate) minor: u8,
     pub(crate) compression_method: u16,
@@ -73,45 +82,18 @@ impl Ewf2FileHeader {
     }
 
     pub(crate) fn parse(bytes: &[u8; EWF2_FILE_HEADER_SIZE]) -> Result<Self> {
-        let signature: [u8; 8] = bytes[0..8].try_into().expect("len=8");
-        let kind = if signature == EWF2_EVF_SIGNATURE {
-            Ewf2Kind::Ex01
-        } else if signature == EWF2_LEF_SIGNATURE {
-            Ewf2Kind::Lx01
-        } else {
-            return Err(Error::Invalid("not an EWF2 segment file".to_string()));
-        };
-
-        let major = bytes[8];
-        let minor = bytes[9];
-        if major != EWF2_VERSION_MAJOR {
-            return Err(Error::Invalid(format!(
-                "unsupported EWF2 major version: {major}"
-            )));
-        }
-
-        let compression_method = u16::from_le_bytes(bytes[10..12].try_into().expect("len=2"));
-        let segment_number = u32::from_le_bytes(bytes[12..16].try_into().expect("len=4"));
-        let set_id: [u8; 16] = bytes[16..32].try_into().expect("len=16");
-
-        Ok(Self {
-            kind,
-            major,
-            minor,
-            compression_method,
-            segment_number,
-            set_id,
-        })
+        let mut cur = Cursor::new(bytes.as_slice());
+        let hdr = Self::read(&mut cur).map_err(|e| {
+            // Most failures here are signature/version mismatches, which callers expect as “invalid”.
+            Error::Invalid(format!("invalid EWF2 segment file header: {e}"))
+        })?;
+        Ok(hdr)
     }
 
     pub(crate) fn to_bytes(self) -> [u8; EWF2_FILE_HEADER_SIZE] {
         let mut out = [0u8; EWF2_FILE_HEADER_SIZE];
-        out[0..8].copy_from_slice(&self.kind.signature());
-        out[8] = self.major;
-        out[9] = self.minor;
-        out[10..12].copy_from_slice(&self.compression_method.to_le_bytes());
-        out[12..16].copy_from_slice(&self.segment_number.to_le_bytes());
-        out[16..32].copy_from_slice(&self.set_id);
+        self.write(&mut Cursor::new(&mut out[..]))
+            .expect("in-memory write cannot fail");
         out
     }
 }

@@ -25,6 +25,9 @@ miette = { version = "7", features = ["fancy"] }
 dfxml = { path = "../dfxml" }
 jiff = { version = "0.2.16", default-features = false, features = ["std", "alloc", "tz-system", "tzdb-zoneinfo"] }
 textwrap = "0.16.2"
+quick-xml = "0.38.4"
+binrw = "0.15.0"
+bitflags = "2.10.0"
 
 [dev-dependencies]
 doc-comment = "0.3"

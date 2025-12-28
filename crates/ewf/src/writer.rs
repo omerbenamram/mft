@@ -17,8 +17,21 @@
 //! tooling (header2/header, volume/data, table/tables). More metadata surface area is added as part
 //! of the later EWF2/LEF/delta work.
 
-use crate::ewf1_volume;
+use crate::ewf1::file_header::{Ewf1FileHeader, Ewf1Signature};
+use crate::ewf1::section::{
+    Ewf1SectionDescriptor, Ewf1SectionType, make_ewf1_section_descriptor, make_ewf1_table_header,
+};
+use crate::ewf1::volume as ewf1_volume;
+use crate::ewf1::{
+    EWF1_EVF_SIGNATURE, EWF1_FILE_HEADER_SIZE, EWF1_SECTION_DESCRIPTOR_SIZE, EWF1_TABLE_HEADER_SIZE,
+};
+use crate::ewf2::chunk::Ewf2ChunkDataFlags;
 use crate::ewf2::file_header::{EWF2_FILE_HEADER_SIZE, Ewf2FileHeader, Ewf2Kind};
+use crate::ewf2::section::{
+    EWF2_SECTION_DESCRIPTOR_SIZE, Ewf2SectionDataFlags, Ewf2SectionType,
+    make_ewf2_section_descriptor,
+};
+use crate::util::{adler32_rfc1950, read_exact_at, read_file_range};
 use crate::{Error, Result};
 use flate2::{Compression, write::ZlibEncoder};
 use md5::{Digest as _, Md5};
@@ -28,35 +41,10 @@ use std::fs::File;
 use std::io::{self, Read as _, Seek, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 
-// EWF1 file header signature ("EVF\t\r\n\xff\0")
-const EWF1_EVF_SIGNATURE: [u8; 8] = [0x45, 0x56, 0x46, 0x09, 0x0d, 0x0a, 0xff, 0x00];
-
-const EWF1_FILE_HEADER_SIZE: usize = 8 + 1 + 2 + 2; // 13
-const EWF1_SECTION_DESCRIPTOR_SIZE: usize = 16 + 8 + 8 + 40 + 4; // 76
-const EWF1_TABLE_HEADER_SIZE: usize = 4 + 4 + 8 + 4 + 4; // 24
-
 // --- EWF2 constants (EnCase 7 "EVF2"/".Ex01") ---
-const EWF2_SECTION_DESCRIPTOR_SIZE: usize = 64;
 const EWF2_TABLE_HEADER_SIZE: usize = 32; // 20 bytes header + 12 bytes alignment padding
 const EWF2_TABLE_ENTRY_SIZE: usize = 16;
 const EWF2_TABLE_FOOTER_SIZE: usize = 16; // 4 bytes footer + 12 bytes alignment padding
-
-const EWF2_SECTION_TYPE_DEVICE_INFORMATION: u32 = 0x0000_0001;
-const EWF2_SECTION_TYPE_CASE_DATA: u32 = 0x0000_0002;
-const EWF2_SECTION_TYPE_SECTOR_DATA: u32 = 0x0000_0003;
-const EWF2_SECTION_TYPE_SECTOR_TABLE: u32 = 0x0000_0004;
-const EWF2_SECTION_TYPE_MD5_HASH: u32 = 0x0000_0008;
-const EWF2_SECTION_TYPE_SHA1_HASH: u32 = 0x0000_0009;
-const EWF2_SECTION_TYPE_NEXT: u32 = 0x0000_000d;
-const EWF2_SECTION_TYPE_DONE: u32 = 0x0000_000f;
-
-const EWF2_SECTION_DATA_FLAG_MD5HASHED: u32 = 0x0000_0001;
-#[allow(dead_code)]
-const EWF2_SECTION_DATA_FLAG_ENCRYPTED: u32 = 0x0000_0002;
-
-const EWF2_CHUNK_DATA_FLAG_COMPRESSED: u32 = 0x0000_0001;
-const EWF2_CHUNK_DATA_FLAG_CHECKSUMED: u32 = 0x0000_0002;
-const EWF2_CHUNK_DATA_FLAG_PATTERNFILL: u32 = 0x0000_0004;
 
 /// EWF1 writer format (segment file naming + structural differences).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +98,170 @@ pub struct EwfHeaderValues {
     pub acquisition_software: String,
     pub acquisition_software_version: String,
     pub acquisition_os: String,
+}
+
+impl EwfHeaderValues {
+    /// Build an EWF1 `header` section body (before zlib compression).
+    ///
+    /// This produces a minimal, stable EnCase-style header with CRLF line endings.
+    ///
+    /// References:
+    /// - `external/libewf/documentation/Expert Witness Compression Format (EWF).asciidoc`
+    ///   (“Header section”)
+    fn to_ewf1_header_ascii(&self, compression: Ewf1CompressionLevel) -> String {
+        // Minimal EnCase-like header structure:
+        // - 1 category (“main”)
+        // - identifiers line + values line
+        // Lines end with CRLF in EnCase-style headers.
+        //
+        // We keep the value set small but stable; tooling generally treats these as informational.
+        let mut s = String::new();
+        s.push_str("1\r\n");
+        s.push_str("main\r\n");
+        s.push_str("c\tn\ta\te\tt\tav\tov\tm\tu\tp\tr\r\n");
+        s.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\r\n",
+            self.case_number,
+            self.evidence_number,
+            self.description,
+            self.examiner_name,
+            self.notes,
+            // `av` is the acquisition software version.
+            self.acquisition_software_version,
+            self.acquisition_os,
+            self.acquisition_datetime,
+            self.system_datetime,
+            "0", // password hash placeholder (no encryption for EWF1)
+            match compression {
+                Ewf1CompressionLevel::None => "n",
+                Ewf1CompressionLevel::Fast => "f",
+                Ewf1CompressionLevel::Best => "b",
+            }
+        ));
+        s.push_str("\r\n");
+        s
+    }
+
+    fn xml_escape(value: &str) -> String {
+        let mut out = String::with_capacity(value.len());
+        for ch in value.chars() {
+            match ch {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '"' => out.push_str("&quot;"),
+                '\'' => out.push_str("&apos;"),
+                _ => out.push(ch),
+            }
+        }
+        out
+    }
+
+    /// Build an EWFX `xheader` section body (before zlib compression).
+    ///
+    /// The EWF spec documents `xheader` as UTF-8 XML. This is where libewf stores both
+    /// `acquiry_software` (name) and `acquiry_software_version`.
+    ///
+    /// References:
+    /// - `external/libewf/documentation/Expert Witness Compression Format (EWF).asciidoc`
+    ///   (“EWF-X” → “Xheader”)
+    fn to_ewfx_xheader_xml(&self) -> String {
+        let mut s = String::new();
+        s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        s.push_str("<xheader>\n");
+        s.push_str(&format!(
+            "\t<case_number>{}</case_number>\n",
+            Self::xml_escape(&self.case_number)
+        ));
+        s.push_str(&format!(
+            "\t<description>{}</description>\n",
+            Self::xml_escape(&self.description)
+        ));
+        s.push_str(&format!(
+            "\t<examiner_name>{}</examiner_name>\n",
+            Self::xml_escape(&self.examiner_name)
+        ));
+        s.push_str(&format!(
+            "\t<evidence_number>{}</evidence_number>\n",
+            Self::xml_escape(&self.evidence_number)
+        ));
+        s.push_str(&format!(
+            "\t<notes>{}</notes>\n",
+            Self::xml_escape(&self.notes)
+        ));
+        s.push_str(&format!(
+            "\t<acquiry_operating_system>{}</acquiry_operating_system>\n",
+            Self::xml_escape(&self.acquisition_os)
+        ));
+        s.push_str(&format!(
+            "\t<acquiry_date>{}</acquiry_date>\n",
+            Self::xml_escape(&self.acquisition_datetime)
+        ));
+        s.push_str(&format!(
+            "\t<acquiry_software>{}</acquiry_software>\n",
+            Self::xml_escape(&self.acquisition_software)
+        ));
+        s.push_str(&format!(
+            "\t<acquiry_software_version>{}</acquiry_software_version>\n",
+            Self::xml_escape(&self.acquisition_software_version)
+        ));
+        s.push_str("</xheader>\n");
+        s
+    }
+
+    /// Build an EWF1 `header2` section body (before zlib compression).
+    ///
+    /// This produces a minimal EnCase 5–7 style header2: UTF-16LE with BOM and LF line endings.
+    ///
+    /// References:
+    /// - `external/libewf/documentation/Expert Witness Compression Format (EWF).asciidoc`
+    ///   (“Header2 values”)
+    fn to_ewf1_header2_utf16le(&self) -> Vec<u8> {
+        // The full header2 semantics are extensive (categories, sources, subjects). We generate a
+        // structurally valid, minimal variant with empty categories beyond “main”.
+        let mut s = String::new();
+        s.push_str("3\n");
+        s.push_str("main\n");
+        s.push_str("a\tc\tn\te\tt\tmd\tsn\tav\tov\tm\tu\tp\n");
+        s.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t0\n",
+            self.description,
+            self.case_number,
+            self.evidence_number,
+            self.examiner_name,
+            self.notes,
+            "", // media model
+            "", // serial
+            // `av` is the acquisition *software version*.
+            self.acquisition_software_version,
+            self.acquisition_os,
+            self.acquisition_datetime,
+            self.system_datetime,
+        ));
+        s.push('\n');
+
+        // srce category placeholder
+        s.push_str("srce\n");
+        s.push_str("0 1\n");
+        s.push_str("p\tn\tid\tev\ttb\tlo\tpo\tah\tsh\tgu\taq\n");
+        s.push_str("0 0\n");
+        s.push('\n');
+
+        // sub category placeholder
+        s.push_str("sub\n");
+        s.push_str("0 1\n");
+        s.push_str("p\tn\tid\tnu\tco\tgu\n");
+        s.push_str("0 0\n");
+        s.push('\n');
+
+        // UTF-16LE with BOM.
+        let mut out = Vec::with_capacity(2 + s.len() * 2);
+        out.extend_from_slice(&[0xff, 0xfe]);
+        for u in s.encode_utf16() {
+            out.extend_from_slice(&u.to_le_bytes());
+        }
+        out
+    }
 }
 
 /// Options for creating or resuming an EWF1 writer.
@@ -683,31 +835,40 @@ impl EwfWriter {
         if segment_number == 0 || segment_number > u16::MAX as u32 {
             return Err(Error::Invalid("segment number out of bounds".to_string()));
         }
-        let file = self.file_mut()?;
-        file.write_all(&EWF1_EVF_SIGNATURE)?;
-        file.write_all(&[0x01])?; // start of fields
-        file.write_all(&(segment_number as u16).to_le_bytes())?;
-        file.write_all(&0u16.to_le_bytes())?; // end of fields
+        let hdr = Ewf1FileHeader::new(Ewf1Signature::Evf, segment_number as u16);
+        self.file_mut()?.write_all(&hdr.to_bytes())?;
         self.file_offset += EWF1_FILE_HEADER_SIZE as u64;
         Ok(())
     }
 
     fn write_e01_header_sections(&mut self) -> Result<()> {
         // EnCase 4–7: header2 twice, then header once (all zlib-compressed).
-        let header2 = build_header2_utf16le(&self.opts.header_values);
+        let header2 = self.opts.header_values.to_ewf1_header2_utf16le();
         let header2_z = zlib_compress(&header2, Compression::default())?;
         self.write_section_with_descriptor_v1("header2", &header2_z)?;
         self.write_section_with_descriptor_v1("header2", &header2_z)?;
 
-        let header = build_header_ascii(&self.opts.header_values, self.opts.compression_level);
+        let header = self
+            .opts
+            .header_values
+            .to_ewf1_header_ascii(self.opts.compression_level);
         let header_z = zlib_compress(header.as_bytes(), Compression::default())?;
         self.write_section_with_descriptor_v1("header", &header_z)?;
+
+        // EWF-X (EWFX) XML header section. This is where libewf stores `acquiry_software` and
+        // `acquiry_software_version` as distinct values.
+        let xheader = self.opts.header_values.to_ewfx_xheader_xml();
+        let xheader_z = zlib_compress(xheader.as_bytes(), Compression::default())?;
+        self.write_section_with_descriptor_v1("xheader", &xheader_z)?;
         Ok(())
     }
 
     fn write_s01_header_section(&mut self) -> Result<()> {
         // SMART: a single header section, compressed using the same compression level as chunks.
-        let header = build_header_ascii(&self.opts.header_values, self.opts.compression_level);
+        let header = self
+            .opts
+            .header_values
+            .to_ewf1_header_ascii(self.opts.compression_level);
         let header_z = zlib_compress(header.as_bytes(), self.opts.compression_level.as_flate2())?;
         self.write_section_with_descriptor_v1("header", &header_z)?;
         Ok(())
@@ -1098,8 +1259,8 @@ fn parse_segment_for_resume(path: &Path, format: Ewf1Format) -> Result<Ewf1Parse
         return Err(Error::Invalid("unsupported EWF1 signature".to_string()));
     }
 
-    let sections = parse_ewf1_section_descriptors(&file, file_len, EWF1_FILE_HEADER_SIZE as u64)?;
-    let last_section_type = sections.last().map(|s| s.type_string.clone());
+    let sections = Ewf1SectionDescriptor::scan(&file, file_len, EWF1_FILE_HEADER_SIZE as u64)?;
+    let last_section_type = sections.last().map(|s| s.section_type.as_str().to_string());
 
     let table_type = match format {
         Ewf1Format::E01 => "table2",
@@ -1285,30 +1446,11 @@ fn make_section_descriptor_v1(
     next_offset: u64,
     size: u64,
 ) -> [u8; EWF1_SECTION_DESCRIPTOR_SIZE] {
-    let mut raw = [0u8; EWF1_SECTION_DESCRIPTOR_SIZE];
-
-    let mut type_bytes = [0u8; 16];
-    let src = type_string.as_bytes();
-    let copy_len = src.len().min(type_bytes.len().saturating_sub(1));
-    type_bytes[..copy_len].copy_from_slice(&src[..copy_len]);
-    raw[..16].copy_from_slice(&type_bytes);
-
-    raw[16..24].copy_from_slice(&next_offset.to_le_bytes());
-    raw[24..32].copy_from_slice(&size.to_le_bytes());
-
-    // padding [32..72] left zero
-    let checksum = adler32_rfc1950(&raw[..EWF1_SECTION_DESCRIPTOR_SIZE - 4]);
-    raw[EWF1_SECTION_DESCRIPTOR_SIZE - 4..].copy_from_slice(&checksum.to_le_bytes());
-    raw
+    make_ewf1_section_descriptor(type_string, _start_offset, next_offset, size)
 }
 
 fn make_table_header_v1(number_of_entries: u32, base_offset: u64) -> [u8; EWF1_TABLE_HEADER_SIZE] {
-    let mut hdr = [0u8; EWF1_TABLE_HEADER_SIZE];
-    hdr[0..4].copy_from_slice(&number_of_entries.to_le_bytes());
-    hdr[8..16].copy_from_slice(&base_offset.to_le_bytes());
-    let checksum = adler32_rfc1950(&hdr[..EWF1_TABLE_HEADER_SIZE - 4]);
-    hdr[EWF1_TABLE_HEADER_SIZE - 4..].copy_from_slice(&checksum.to_le_bytes());
-    hdr
+    make_ewf1_table_header(number_of_entries, base_offset)
 }
 
 fn build_table_section_v1(base_offset: u64, entries: &[u32]) -> Result<Vec<u8>> {
@@ -1384,176 +1526,7 @@ fn build_hash_section(md5: &[u8; 16]) -> Vec<u8> {
     out
 }
 
-fn build_header_ascii(values: &EwfHeaderValues, compression: Ewf1CompressionLevel) -> String {
-    // Minimal EnCase-like header structure:
-    // - 1 category (“main”)
-    // - identifiers line + values line
-    // Lines end with CRLF in EnCase-style headers.
-    //
-    // We keep the value set small but stable; tooling generally treats these as informational.
-    let mut s = String::new();
-    s.push_str("1\r\n");
-    s.push_str("main\r\n");
-    s.push_str("c\tn\ta\te\tt\tav\tov\tm\tu\tp\tr\r\n");
-    s.push_str(&format!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\r\n",
-        values.case_number,
-        values.evidence_number,
-        values.description,
-        values.examiner_name,
-        values.notes,
-        values.acquisition_software_version,
-        values.acquisition_os,
-        values.acquisition_datetime,
-        values.system_datetime,
-        "0", // password hash placeholder (no encryption for EWF1)
-        match compression {
-            Ewf1CompressionLevel::None => "n",
-            Ewf1CompressionLevel::Fast => "f",
-            Ewf1CompressionLevel::Best => "b",
-        }
-    ));
-    s.push_str("\r\n");
-    s
-}
-
-fn build_header2_utf16le(values: &EwfHeaderValues) -> Vec<u8> {
-    // Minimal EnCase 5–7 style header2: UTF-16LE text with BOM and LF line endings.
-    //
-    // The full header2 semantics are extensive (categories, sources, subjects). We generate a
-    // structurally valid, minimal variant with empty categories beyond “main”.
-    let mut s = String::new();
-    s.push_str("3\n");
-    s.push_str("main\n");
-    s.push_str("a\tc\tn\te\tt\tmd\tsn\tav\tov\tm\tu\tp\n");
-    s.push_str(&format!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t0\n",
-        values.description,
-        values.case_number,
-        values.evidence_number,
-        values.examiner_name,
-        values.notes,
-        "", // media model
-        "", // serial
-        values.acquisition_software,
-        values.acquisition_os,
-        values.acquisition_datetime,
-        values.system_datetime,
-    ));
-    s.push('\n');
-
-    // srce category placeholder
-    s.push_str("srce\n");
-    s.push_str("0 1\n");
-    s.push_str("p\tn\tid\tev\ttb\tlo\tpo\tah\tsh\tgu\taq\n");
-    s.push_str("0 0\n");
-    s.push('\n');
-
-    // sub category placeholder
-    s.push_str("sub\n");
-    s.push_str("0 1\n");
-    s.push_str("p\tn\tid\tnu\tco\tgu\n");
-    s.push_str("0 0\n");
-    s.push('\n');
-
-    // UTF-16LE with BOM.
-    let mut out = Vec::with_capacity(2 + s.len() * 2);
-    out.extend_from_slice(&[0xff, 0xfe]);
-    for u in s.encode_utf16() {
-        out.extend_from_slice(&u.to_le_bytes());
-    }
-    out
-}
-
-fn adler32_rfc1950(data: &[u8]) -> u32 {
-    const MOD_ADLER: u32 = 65521;
-    let mut a: u32 = 1;
-    let mut b: u32 = 0;
-    for &byte in data {
-        a = (a + u32::from(byte)) % MOD_ADLER;
-        b = (b + a) % MOD_ADLER;
-    }
-    (b << 16) | a
-}
-
 // --- Minimal parsing utilities reused by resume hashing ---
-
-#[derive(Debug, Clone)]
-struct Ewf1SectionDescriptor {
-    start_offset: u64,
-    type_string: String,
-    size: u64,
-}
-
-impl Ewf1SectionDescriptor {
-    fn parse_at(file: &File, file_len: u64, start_offset: u64) -> Result<Self> {
-        if start_offset >= file_len {
-            return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
-        }
-        let mut raw = [0u8; EWF1_SECTION_DESCRIPTOR_SIZE];
-        read_exact_at(file, start_offset, &mut raw)?;
-
-        let stored = u32::from_le_bytes(
-            raw[EWF1_SECTION_DESCRIPTOR_SIZE - 4..]
-                .try_into()
-                .expect("len=4"),
-        );
-        let calculated = adler32_rfc1950(&raw[..EWF1_SECTION_DESCRIPTOR_SIZE - 4]);
-        if stored != calculated {
-            return Err(Error::Corrupt(
-                "section descriptor checksum mismatch".to_string(),
-            ));
-        }
-
-        let type_string = parse_ascii_nul_terminated(&raw[0..16]);
-        let next_offset = u64::from_le_bytes(raw[16..24].try_into().expect("len=8"));
-        let mut size = u64::from_le_bytes(raw[24..32].try_into().expect("len=8"));
-        if size == 0 && next_offset != start_offset && next_offset >= start_offset {
-            size = next_offset - start_offset;
-        }
-        Ok(Self {
-            start_offset,
-            type_string,
-            size,
-        })
-    }
-
-    fn data_range(&self) -> Result<(u64, u64)> {
-        let start = self.start_offset + EWF1_SECTION_DESCRIPTOR_SIZE as u64;
-        let end = self.start_offset + self.size;
-        Ok((start, end))
-    }
-}
-
-fn parse_ewf1_section_descriptors(
-    file: &File,
-    file_len: u64,
-    first_offset: u64,
-) -> Result<Vec<Ewf1SectionDescriptor>> {
-    let mut sections = Vec::new();
-    let mut offset = first_offset;
-    for _ in 0..100_000 {
-        if offset == 0 || offset >= file_len {
-            break;
-        }
-        let desc = Ewf1SectionDescriptor::parse_at(file, file_len, offset)?;
-        let is_last = desc.type_string == "next" || desc.type_string == "done";
-        let advance = if desc.size != 0 {
-            desc.size
-        } else {
-            EWF1_SECTION_DESCRIPTOR_SIZE as u64
-        };
-        sections.push(desc);
-        if is_last {
-            break;
-        }
-        offset = offset.saturating_add(advance);
-    }
-    if sections.is_empty() {
-        return Err(Error::Invalid("no EWF sections found".to_string()));
-    }
-    Ok(sections)
-}
 
 #[derive(Debug, Clone)]
 struct TableV1 {
@@ -1625,11 +1598,11 @@ fn parse_chunk_groups_v1(
     let mut pending_sectors_end: Option<u64> = None;
 
     for desc in sections {
-        match desc.type_string.as_str() {
-            "sectors" | "sector" => {
+        match &desc.section_type {
+            Ewf1SectionType::Sectors | Ewf1SectionType::Sector => {
                 pending_sectors_end = Some(desc.start_offset.saturating_add(desc.size));
             }
-            x if x == table_type => {
+            _ if desc.section_type.as_str() == table_type => {
                 let table = parse_table_section_v1(file, file_len, desc)?;
                 let chunk_data_end = pending_sectors_end
                     .take()
@@ -1678,43 +1651,6 @@ fn chunk_range_v1(group: &Ewf1ChunkGroup, idx: usize) -> Result<(u64, u64, bool)
         group.chunk_data_end
     };
     Ok((start, end, is_compressed))
-}
-
-fn read_exact_at(file: &File, offset: u64, mut buf: &mut [u8]) -> io::Result<()> {
-    #[cfg(unix)]
-    use std::os::unix::fs::FileExt as _;
-    #[cfg(windows)]
-    use std::os::windows::fs::FileExt as _;
-
-    let mut cur = offset;
-    while !buf.is_empty() {
-        #[cfg(unix)]
-        let n = file.read_at(buf, cur)?;
-        #[cfg(windows)]
-        let n = file.seek_read(buf, cur)?;
-        if n == 0 {
-            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
-        }
-        cur += n as u64;
-        buf = &mut buf[n..];
-    }
-    Ok(())
-}
-
-fn read_file_range(file: &File, file_len: u64, start: u64, end: u64) -> Result<Vec<u8>> {
-    if end > file_len || start >= end {
-        return Err(Error::Invalid("file range out of bounds".to_string()));
-    }
-    let len =
-        usize::try_from(end - start).map_err(|_| Error::Invalid("range overflow".to_string()))?;
-    let mut buf = vec![0u8; len];
-    read_exact_at(file, start, &mut buf)?;
-    Ok(buf)
-}
-
-fn parse_ascii_nul_terminated(bytes: &[u8]) -> String {
-    let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-    String::from_utf8_lossy(&bytes[..len]).to_string()
 }
 
 // === EWF2 writer (EWF2-Ex01 / EVF2) ===
@@ -1780,7 +1716,7 @@ impl Ewf2Naming {
 struct Ewf2TableEntry {
     offset_raw: [u8; 8],
     size: u32,
-    flags: u32,
+    flags: Ewf2ChunkDataFlags,
 }
 
 /// Streaming writer for EWF2-Ex01 images.
@@ -2112,8 +2048,8 @@ impl Ewf2Writer {
         };
         let pad = pad16_bytes(&mut data);
         self.write_ewf2_section_with_descriptor(
-            EWF2_SECTION_TYPE_DEVICE_INFORMATION,
-            EWF2_SECTION_DATA_FLAG_MD5HASHED,
+            Ewf2SectionType::DeviceInformation,
+            Ewf2SectionDataFlags::MD5_HASHED,
             pad,
             &data,
         )?;
@@ -2140,8 +2076,8 @@ impl Ewf2Writer {
         };
         let pad = pad16_bytes(&mut data);
         self.write_ewf2_section_with_descriptor(
-            EWF2_SECTION_TYPE_CASE_DATA,
-            EWF2_SECTION_DATA_FLAG_MD5HASHED,
+            Ewf2SectionType::CaseData,
+            Ewf2SectionDataFlags::MD5_HASHED,
             pad,
             &data,
         )?;
@@ -2154,26 +2090,26 @@ impl Ewf2Writer {
             self.table_entries.push(Ewf2TableEntry {
                 offset_raw: [0u8; 8], // pattern = 0
                 size: 0,
-                flags: EWF2_CHUNK_DATA_FLAG_COMPRESSED | EWF2_CHUNK_DATA_FLAG_PATTERNFILL,
+                flags: Ewf2ChunkDataFlags::COMPRESSED | Ewf2ChunkDataFlags::PATTERNFILL,
             });
             return Ok(());
         }
 
         let data_offset = self.file_offset;
 
-        let (stored, flags): (Vec<u8>, u32) = match self.opts.compression_method {
+        let (stored, flags): (Vec<u8>, Ewf2ChunkDataFlags) = match self.opts.compression_method {
             Ewf2CompressionMethod::None => {
                 // Uncompressed + Adler32 checksum.
                 let mut v = Vec::with_capacity(self.chunk_size + 4);
                 v.extend_from_slice(chunk);
                 let checksum = adler32_rfc1950(chunk);
                 v.extend_from_slice(&checksum.to_le_bytes());
-                (v, EWF2_CHUNK_DATA_FLAG_CHECKSUMED)
+                (v, Ewf2ChunkDataFlags::CHECKSUMED)
             }
             Ewf2CompressionMethod::Zlib => {
                 // Always compress; this matches libewf's behavior for formats that force compression.
                 let z = zlib_compress_bytes(chunk)?;
-                (z, EWF2_CHUNK_DATA_FLAG_COMPRESSED)
+                (z, Ewf2ChunkDataFlags::COMPRESSED)
             }
             Ewf2CompressionMethod::Bzip2 => {
                 return Err(Error::Unsupported(
@@ -2222,8 +2158,8 @@ impl Ewf2Writer {
 
         let sector_md5: [u8; 16] = self.sector_data_md5.clone().finalize().into();
         self.write_ewf2_section_descriptor_only(
-            EWF2_SECTION_TYPE_SECTOR_DATA,
-            EWF2_SECTION_DATA_FLAG_MD5HASHED,
+            Ewf2SectionType::SectorData,
+            Ewf2SectionDataFlags::MD5_HASHED,
             self.sector_data_padding_total,
             sector_data_size,
             sector_md5,
@@ -2235,8 +2171,8 @@ impl Ewf2Writer {
             &self.table_entries,
         )?;
         self.write_ewf2_section_with_descriptor(
-            EWF2_SECTION_TYPE_SECTOR_TABLE,
-            EWF2_SECTION_DATA_FLAG_MD5HASHED,
+            Ewf2SectionType::SectorTable,
+            Ewf2SectionDataFlags::MD5_HASHED,
             24, // libewf convention: 12 bytes after header + 12 bytes after footer
             &table_data,
         )?;
@@ -2244,9 +2180,9 @@ impl Ewf2Writer {
         if last_segment {
             self.write_ewf2_hash_sections()?;
             // Done marker (no data).
-            self.write_ewf2_empty_section(EWF2_SECTION_TYPE_DONE)?;
+            self.write_ewf2_empty_section(Ewf2SectionType::Done)?;
         } else {
-            self.write_ewf2_empty_section(EWF2_SECTION_TYPE_NEXT)?;
+            self.write_ewf2_empty_section(Ewf2SectionType::Next)?;
         }
 
         // Close file.
@@ -2260,16 +2196,16 @@ impl Ewf2Writer {
 
         let md5_data = build_ewf2_md5_section_data(&md5);
         self.write_ewf2_section_with_descriptor(
-            EWF2_SECTION_TYPE_MD5_HASH,
-            EWF2_SECTION_DATA_FLAG_MD5HASHED,
+            Ewf2SectionType::Md5Hash,
+            Ewf2SectionDataFlags::MD5_HASHED,
             12,
             &md5_data,
         )?;
 
         let sha1_data = build_ewf2_sha1_section_data(&sha1);
         self.write_ewf2_section_with_descriptor(
-            EWF2_SECTION_TYPE_SHA1_HASH,
-            EWF2_SECTION_DATA_FLAG_MD5HASHED,
+            Ewf2SectionType::Sha1Hash,
+            Ewf2SectionDataFlags::MD5_HASHED,
             8,
             &sha1_data,
         )?;
@@ -2277,19 +2213,25 @@ impl Ewf2Writer {
         Ok(())
     }
 
-    fn write_ewf2_empty_section(&mut self, section_type: u32) -> Result<()> {
+    fn write_ewf2_empty_section(&mut self, section_type: Ewf2SectionType) -> Result<()> {
         let empty_md5: [u8; 16] = Md5::new().finalize().into();
-        self.write_ewf2_section_descriptor_only(section_type, 0, 0, 0, empty_md5)
+        self.write_ewf2_section_descriptor_only(
+            section_type,
+            Ewf2SectionDataFlags::new(0),
+            0,
+            0,
+            empty_md5,
+        )
     }
 
     fn write_ewf2_section_with_descriptor(
         &mut self,
-        section_type: u32,
-        data_flags: u32,
+        section_type: Ewf2SectionType,
+        data_flags: Ewf2SectionDataFlags,
         padding_size_field: u32,
         data: &[u8],
     ) -> Result<()> {
-        let md5_hash: [u8; 16] = if (data_flags & EWF2_SECTION_DATA_FLAG_MD5HASHED) != 0 {
+        let md5_hash: [u8; 16] = if data_flags.has_md5_integrity_hash() {
             let mut h = Md5::new();
             h.update(data);
             h.finalize().into()
@@ -2319,8 +2261,8 @@ impl Ewf2Writer {
 
     fn write_ewf2_section_descriptor_only(
         &mut self,
-        section_type: u32,
-        data_flags: u32,
+        section_type: Ewf2SectionType,
+        data_flags: Ewf2SectionDataFlags,
         padding_size_field: u32,
         data_size: u64,
         md5_hash: [u8; 16],
@@ -2341,28 +2283,6 @@ impl Ewf2Writer {
             .saturating_add(EWF2_SECTION_DESCRIPTOR_SIZE as u64);
         Ok(())
     }
-}
-
-fn make_ewf2_section_descriptor(
-    section_type: u32,
-    data_flags: u32,
-    previous_offset: u64,
-    data_size: u64,
-    padding_size: u32,
-    data_integrity_hash: [u8; 16],
-) -> [u8; EWF2_SECTION_DESCRIPTOR_SIZE] {
-    let mut raw = [0u8; EWF2_SECTION_DESCRIPTOR_SIZE];
-    raw[0..4].copy_from_slice(&section_type.to_le_bytes());
-    raw[4..8].copy_from_slice(&data_flags.to_le_bytes());
-    raw[8..16].copy_from_slice(&previous_offset.to_le_bytes());
-    raw[16..24].copy_from_slice(&data_size.to_le_bytes());
-    raw[24..28].copy_from_slice(&(EWF2_SECTION_DESCRIPTOR_SIZE as u32).to_le_bytes());
-    raw[28..32].copy_from_slice(&padding_size.to_le_bytes());
-    raw[32..48].copy_from_slice(&data_integrity_hash);
-    // raw[48..60] padding is left as zeros.
-    let checksum = adler32_rfc1950(&raw[..EWF2_SECTION_DESCRIPTOR_SIZE - 4]);
-    raw[EWF2_SECTION_DESCRIPTOR_SIZE - 4..].copy_from_slice(&checksum.to_le_bytes());
-    raw
 }
 
 fn encode_utf16le_with_bom(s: &str) -> Vec<u8> {
@@ -2407,7 +2327,9 @@ fn build_ewf2_case_data_string(
     //
     // libewf’s case-data object string includes many more tags; we keep a small subset required for
     // `ewfinfo` and media geometry.
-    format!("1\nmain\ntb\tcp\tsb\tgr\n{chunk_count}\t{compression_method}\t{sectors_per_chunk}\t{error_granularity}\n")
+    format!(
+        "1\nmain\ntb\tcp\tsb\tgr\n{chunk_count}\t{compression_method}\t{sectors_per_chunk}\t{error_granularity}\n"
+    )
 }
 
 fn build_ewf2_sector_table_section_data(
@@ -2438,7 +2360,7 @@ fn build_ewf2_sector_table_section_data(
     for e in entries {
         entries_bytes.extend_from_slice(&e.offset_raw);
         entries_bytes.extend_from_slice(&e.size.to_le_bytes());
-        entries_bytes.extend_from_slice(&e.flags.to_le_bytes());
+        entries_bytes.extend_from_slice(&e.flags.raw().to_le_bytes());
     }
     out.extend_from_slice(&entries_bytes);
 

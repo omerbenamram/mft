@@ -2,9 +2,15 @@
 alwaysApply: true
 ---
 
+# Spec driven development
+
 When writing code or debugging issues, YOU MUST compare with original libewf implementation AND SPEC.
 AVOID using web search/firecrawl to find sources from libewf! you must use local sources.
+
 If you are running in a worktree - you can clone the libewf as specified by the commit hash in the external/refs/repos/libyal__libewf.commit file.
+
+When accessing resources from libewf local sources, your built- grep tool may not be able to find the sources.
+Instead prefer using ripgrep (--no-ignore) to search the local sources.
 
 Reference:
 - libewf implementation: `external/libewf/`
@@ -12,3 +18,64 @@ Reference:
   - `external/libewf/documentation/Expert Witness Compression Format (EWF).asciidoc`
   - `external/libewf/documentation/Expert Witness Compression Format 2 (EWF2).asciidoc`
 
+# Rust style
+
+Prefer storing structs in:
+
+  - 'src/ewf1/...'
+  - 'src/ewf2/...'
+
+generally:
+  - modules should have documentation that explains reference to spec.
+  - all public functions, and struct members should have documentation outline that explain their purpose, and provenance.
+  - prefer attaching methods/parsing to their structs, rather than having "c-style" free floating functions.
+
+
+## Binary parsing
+
+We strive to maintain symmetry between the reader and writer implementations.
+We use binrw to parse and write binary data.
+
+DO use binrw methods to make parser declerative and self describing.
+```
+/// EWF2 container kind (Ex01 vs Lx01).
+///
+/// The kind is encoded in the file header signature.
+#[binrw]
+#[brw(little)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ewf2Kind {
+    /// EWF2-Ex01 (`EVF2\r\n\x81\x00`)
+    #[brw(magic = b"EVF2\r\n\x81\0")]
+    Ex01,
+    /// EWF2-Lx01 (`LEF2\r\n\x81\x00`)
+    #[brw(magic = b"LEF2\r\n\x81\0")]
+    Lx01,
+}
+
+impl Ewf2Kind {
+    pub(crate) fn signature(self) -> [u8; 8] {
+        match self {
+            Self::Ex01 => EWF2_EVF_SIGNATURE,
+            Self::Lx01 => EWF2_LEF_SIGNATURE,
+        }
+    }
+}
+
+#[binrw]
+#[brw(little)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Ewf2FileHeader {
+    pub(crate) kind: Ewf2Kind,
+    #[br(assert(
+        major == EWF2_VERSION_MAJOR,
+        "unsupported EWF2 major version: {}",
+        major
+    ))]
+    pub(crate) major: u8,
+    pub(crate) minor: u8,
+    pub(crate) compression_method: u16,
+    pub(crate) segment_number: u32,
+    pub(crate) set_id: [u8; 16],
+}
+```

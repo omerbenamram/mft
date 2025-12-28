@@ -9,10 +9,18 @@
 //!
 //! EWF2 (`.Ex01`, `.Lx01`) and logical evidence (`.L01`) are wired in later in this task series.
 
-use crate::ewf1_volume;
+use crate::ewf1::runs::{Ewf1Error2Section, Ewf1SessionSection};
+use crate::ewf1::section::{Ewf1SectionDescriptor, Ewf1SectionType};
+use crate::ewf1::volume as ewf1_volume;
+use crate::ewf1::{
+    EWF1_EVF_SIGNATURE, EWF1_FILE_HEADER_SIZE, EWF1_LVF_SIGNATURE, EWF1_TABLE_HEADER_SIZE,
+};
+use crate::ewf2::chunk::Ewf2ChunkDataFlags;
 use crate::ewf2::file_header::{
     EWF2_EVF_SIGNATURE, EWF2_FILE_HEADER_SIZE, EWF2_LEF_SIGNATURE, Ewf2FileHeader, Ewf2Kind,
 };
+use crate::ewf2::section::{Ewf2Section, Ewf2SectionType};
+use crate::util::{adler32_rfc1950, read_exact_at, read_file_range};
 use crate::{Error, EwfCompression, EwfFileFormat, EwfFormat, EwfInfo, Result};
 use flate2::read::ZlibDecoder;
 use lru::LruCache;
@@ -24,21 +32,8 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-#[cfg(unix)]
-use std::os::unix::fs::FileExt as _;
-
-#[cfg(windows)]
-use std::os::windows::fs::FileExt as _;
-
 // --- EWF signatures (file header; first 8 bytes) ---
-const EWF1_EVF_SIGNATURE: [u8; 8] = [0x45, 0x56, 0x46, 0x09, 0x0d, 0x0a, 0xff, 0x00]; // "EVF\t\r\n\xff\0"
-const EWF1_LVF_SIGNATURE: [u8; 8] = [0x4c, 0x56, 0x46, 0x09, 0x0d, 0x0a, 0xff, 0x00]; // "LVF\t\r\n\xff\0" (logical evidence)
-const ADCRYPT_SIGNATURE: [u8; 8] = [0x41, 0x44, 0x43, 0x52, 0x59, 0x50, 0x54, 0x00]; // "ADCRYPT\0"
-
-// --- EWF1 constants ---
-const EWF1_FILE_HEADER_SIZE: usize = 8 + 1 + 2 + 2; // 13
-const EWF1_SECTION_DESCRIPTOR_SIZE: usize = 16 + 8 + 8 + 40 + 4; // 76
-const EWF1_TABLE_HEADER_SIZE: usize = 4 + 4 + 8 + 4 + 4; // 24
+const ADCRYPT_SIGNATURE: [u8; 8] = *b"ADCRYPT\0";
 
 fn detect_ewf1_file_format(container: EwfFormat, volume_section_body: &[u8]) -> EwfFileFormat {
     // libewf's "file format" classification is broader than our container format.
@@ -193,57 +188,13 @@ struct Ewf1ChunkGroup {
 }
 
 // --- EWF2 constants ---
-const EWF2_SECTION_DESCRIPTOR_SIZE: usize = 64;
 const EWF2_TABLE_HEADER_SIZE: usize = 32; // 20 bytes header + 12 bytes alignment padding
 const EWF2_TABLE_ENTRY_SIZE: usize = 16;
 const EWF2_TABLE_FOOTER_SIZE: usize = 16; // 4 bytes footer + 12 bytes alignment padding
 
-const EWF2_SECTION_TYPE_DEVICE_INFORMATION: u32 = 0x0000_0001;
-const EWF2_SECTION_TYPE_CASE_DATA: u32 = 0x0000_0002;
-const EWF2_SECTION_TYPE_SECTOR_DATA: u32 = 0x0000_0003;
-const EWF2_SECTION_TYPE_SECTOR_TABLE: u32 = 0x0000_0004;
-const EWF2_SECTION_TYPE_MD5_HASH: u32 = 0x0000_0008;
-const EWF2_SECTION_TYPE_SHA1_HASH: u32 = 0x0000_0009;
-const EWF2_SECTION_TYPE_NEXT: u32 = 0x0000_000d;
-const EWF2_SECTION_TYPE_DONE: u32 = 0x0000_000f;
-const EWF2_SECTION_TYPE_SINGLE_FILES_DATA: u32 = 0x0000_0020;
-
-const EWF2_SECTION_DATA_FLAG_MD5HASHED: u32 = 0x0000_0001;
-const EWF2_SECTION_DATA_FLAG_ENCRYPTED: u32 = 0x0000_0002;
-
-const EWF2_CHUNK_DATA_FLAG_COMPRESSED: u32 = 0x0000_0001;
-const EWF2_CHUNK_DATA_FLAG_CHECKSUMED: u32 = 0x0000_0002;
-const EWF2_CHUNK_DATA_FLAG_PATTERNFILL: u32 = 0x0000_0004;
-
 const EWF2_COMPRESSION_NONE: u16 = 0;
 const EWF2_COMPRESSION_LZ: u16 = 1;
 const EWF2_COMPRESSION_BZIP2: u16 = 2;
-
-#[derive(Debug, Clone)]
-struct Ewf2Section {
-    section_type: u32,
-    data_flags: u32,
-    previous_offset: u64,
-    #[allow(dead_code)]
-    data_size: u64,
-    #[allow(dead_code)]
-    descriptor_size: u32,
-    padding_size: u32,
-    #[allow(dead_code)]
-    data_integrity_hash: [u8; 16],
-
-    /// Offset of the section descriptor (the descriptor is stored *at the end* of the section).
-    #[allow(dead_code)]
-    descriptor_offset: u64,
-
-    /// Start offset of the section data (relative to the start of the segment file).
-    data_start: u64,
-
-    /// Length of the section data that is considered valid by `data_size`.
-    ///
-    /// Some tools may append extra bytes beyond `data_size` (e.g., after abort/restart scenarios).
-    data_len: u64,
-}
 
 #[derive(Debug)]
 struct Ewf2Segment {
@@ -260,7 +211,7 @@ struct Ewf2Segment {
 struct Ewf2TableEntry {
     offset_raw: [u8; 8],
     size: u32,
-    flags: u32,
+    flags: Ewf2ChunkDataFlags,
 }
 
 #[derive(Debug)]
@@ -466,11 +417,8 @@ impl Ewf2Reader {
                 set_id = Some(hdr.set_id);
             }
 
-            let sections = parse_ewf2_section_descriptors(&file, file_len)?;
-            if sections
-                .iter()
-                .any(|s| (s.data_flags & EWF2_SECTION_DATA_FLAG_ENCRYPTED) != 0)
-            {
+            let sections = Ewf2Section::scan(&file, file_len)?;
+            if sections.iter().any(|s| s.data_flags.is_encrypted()) {
                 return Err(Error::Unsupported(
                     "EWF2 encrypted images are not supported (matches libewf)".to_string(),
                 ));
@@ -495,12 +443,12 @@ impl Ewf2Reader {
                 return Err(Error::Invalid("EWF2 segment has no sections".to_string()));
             };
             if is_last {
-                if last.section_type != EWF2_SECTION_TYPE_DONE {
+                if last.section_type != Ewf2SectionType::Done {
                     return Err(Error::Invalid(
                         "EWF2 last segment does not end with done section".to_string(),
                     ));
                 }
-            } else if last.section_type != EWF2_SECTION_TYPE_NEXT {
+            } else if last.section_type != Ewf2SectionType::Next {
                 return Err(Error::Invalid(
                     "EWF2 non-last segment does not end with next section".to_string(),
                 ));
@@ -512,7 +460,7 @@ impl Ewf2Reader {
         let any_sector_data = segments.iter().any(|seg| {
             seg.sections
                 .iter()
-                .any(|s| s.section_type == EWF2_SECTION_TYPE_SECTOR_DATA)
+                .any(|s| s.section_type == Ewf2SectionType::SectorData)
         });
         if !any_sector_data {
             return Err(Error::Invalid(
@@ -528,12 +476,12 @@ impl Ewf2Reader {
         let device_section = first
             .sections
             .iter()
-            .find(|s| s.section_type == EWF2_SECTION_TYPE_DEVICE_INFORMATION)
+            .find(|s| s.section_type == Ewf2SectionType::DeviceInformation)
             .ok_or_else(|| Error::Invalid("missing EWF2 device information section".to_string()))?;
         let case_section = first
             .sections
             .iter()
-            .find(|s| s.section_type == EWF2_SECTION_TYPE_CASE_DATA)
+            .find(|s| s.section_type == Ewf2SectionType::CaseData)
             .ok_or_else(|| Error::Invalid("missing EWF2 case data section".to_string()))?;
 
         let device_tags = parse_ewf2_main_object_tags(&read_ewf2_compressed_object_string(
@@ -585,7 +533,7 @@ impl Ewf2Reader {
         let mut groups: Vec<Ewf2ChunkGroup> = Vec::new();
         for (seg_idx, seg) in segments.iter().enumerate() {
             for section in &seg.sections {
-                if section.section_type == EWF2_SECTION_TYPE_SECTOR_TABLE {
+                if section.section_type == Ewf2SectionType::SectorTable {
                     let (first_chunk, entries) = parse_ewf2_sector_table_section(seg, section)?;
                     groups.push(Ewf2ChunkGroup {
                         segment_idx: seg_idx,
@@ -687,12 +635,12 @@ impl Ewf2Reader {
         let device_section = first
             .sections
             .iter()
-            .find(|s| s.section_type == EWF2_SECTION_TYPE_DEVICE_INFORMATION)
+            .find(|s| s.section_type == Ewf2SectionType::DeviceInformation)
             .ok_or_else(|| Error::Invalid("missing EWF2 device information section".to_string()))?;
         let case_section = first
             .sections
             .iter()
-            .find(|s| s.section_type == EWF2_SECTION_TYPE_CASE_DATA)
+            .find(|s| s.section_type == Ewf2SectionType::CaseData)
             .ok_or_else(|| Error::Invalid("missing EWF2 case data section".to_string()))?;
 
         let device_tags = parse_ewf2_main_object_tags(&read_ewf2_compressed_object_string(
@@ -749,7 +697,7 @@ impl Ewf2Reader {
                     continue;
                 }
 
-                if section.section_type == EWF2_SECTION_TYPE_MD5_HASH {
+                if section.section_type == Ewf2SectionType::Md5Hash {
                     let bytes = read_file_range(
                         &seg.file,
                         seg.file_len,
@@ -761,7 +709,7 @@ impl Ewf2Reader {
                         m.copy_from_slice(&bytes[0..16]);
                         md5 = Some(m);
                     }
-                } else if section.section_type == EWF2_SECTION_TYPE_SHA1_HASH {
+                } else if section.section_type == Ewf2SectionType::Sha1Hash {
                     let bytes = read_file_range(
                         &seg.file,
                         seg.file_len,
@@ -834,11 +782,11 @@ impl Ewf2Reader {
     fn verify_section_md5(&self, include_sector_data: bool) -> Result<()> {
         for seg in &self.segments {
             for section in &seg.sections {
-                let has_md5 = (section.data_flags & EWF2_SECTION_DATA_FLAG_MD5HASHED) != 0;
+                let has_md5 = section.data_flags.has_md5_integrity_hash();
                 if !has_md5 {
                     continue;
                 }
-                if !include_sector_data && section.section_type == EWF2_SECTION_TYPE_SECTOR_DATA {
+                if !include_sector_data && section.section_type == Ewf2SectionType::SectorData {
                     continue;
                 }
                 let digest = md5_file_range(
@@ -850,7 +798,7 @@ impl Ewf2Reader {
                 if digest != section.data_integrity_hash {
                     return Err(Error::Corrupt(format!(
                         "EWF2 section MD5 mismatch (type=0x{:08x})",
-                        section.section_type
+                        section.section_type.as_u32()
                     )));
                 }
             }
@@ -896,10 +844,10 @@ impl Ewf2Reader {
             Error::Invalid("chunk index out of range in sector table".to_string())
         })?;
 
-        let is_compressed = (entry.flags & EWF2_CHUNK_DATA_FLAG_COMPRESSED) != 0;
-        let is_checksumed = (entry.flags & EWF2_CHUNK_DATA_FLAG_CHECKSUMED) != 0;
+        let is_compressed = entry.flags.contains(Ewf2ChunkDataFlags::COMPRESSED);
+        let is_checksumed = entry.flags.contains(Ewf2ChunkDataFlags::CHECKSUMED);
         let is_pattern_fill =
-            is_compressed && (entry.flags & EWF2_CHUNK_DATA_FLAG_PATTERNFILL) != 0;
+            is_compressed && entry.flags.contains(Ewf2ChunkDataFlags::PATTERNFILL);
 
         let mut out = vec![0u8; self.chunk_size];
 
@@ -1024,117 +972,12 @@ fn parse_ewf2_file_header(file: &File) -> Result<Ewf2FileHeader> {
     Ewf2FileHeader::parse(&buf)
 }
 
-fn parse_ewf2_section_descriptors(file: &File, file_len: u64) -> Result<Vec<Ewf2Section>> {
-    let min_len =
-        (EWF2_FILE_HEADER_SIZE as u64).saturating_add(EWF2_SECTION_DESCRIPTOR_SIZE as u64);
-    if file_len < min_len {
-        return Err(Error::Invalid("file too small for EWF2".to_string()));
-    }
-
-    let mut sections_rev: Vec<Ewf2Section> = Vec::new();
-    let mut desc_off = file_len
-        .checked_sub(EWF2_SECTION_DESCRIPTOR_SIZE as u64)
-        .ok_or_else(|| Error::Invalid("file too small for EWF2".to_string()))?;
-
-    // Hard guard against loops on corrupt inputs.
-    for _ in 0..1_000_000u32 {
-        let section = parse_ewf2_section_descriptor_at(file, file_len, desc_off)?;
-        let prev = section.previous_offset;
-        sections_rev.push(section);
-
-        if prev == 0 {
-            break;
-        }
-        if prev >= desc_off {
-            return Err(Error::Invalid(
-                "EWF2 previous section offset does not move backwards".to_string(),
-            ));
-        }
-        desc_off = prev;
-    }
-
-    if sections_rev.is_empty() {
-        return Err(Error::Invalid("no EWF2 sections found".to_string()));
-    }
-
-    sections_rev.reverse();
-    Ok(sections_rev)
-}
-
-fn parse_ewf2_section_descriptor_at(
-    file: &File,
-    file_len: u64,
-    descriptor_offset: u64,
-) -> Result<Ewf2Section> {
-    let _ = file_len;
-    let mut buf = [0u8; EWF2_SECTION_DESCRIPTOR_SIZE];
-    read_exact_at(file, descriptor_offset, &mut buf)?;
-
-    let stored = u32::from_le_bytes(buf[60..64].try_into().expect("len=4"));
-    let calculated = adler32_rfc1950(&buf[0..60]);
-    if stored != calculated {
-        return Err(Error::Corrupt(
-            "EWF2 section descriptor checksum mismatch".to_string(),
-        ));
-    }
-
-    let section_type = u32::from_le_bytes(buf[0..4].try_into().expect("len=4"));
-    let data_flags = u32::from_le_bytes(buf[4..8].try_into().expect("len=4"));
-    // If the section has an MD5 integrity hash, the hash covers the (possibly encrypted) section data.
-    // We currently do not verify it during open; chunk-level checksums and section descriptor checksums
-    // provide basic corruption detection already.
-    let _has_md5_integrity_hash = (data_flags & EWF2_SECTION_DATA_FLAG_MD5HASHED) != 0;
-    let previous_offset = u64::from_le_bytes(buf[8..16].try_into().expect("len=8"));
-    let data_size = u64::from_le_bytes(buf[16..24].try_into().expect("len=8"));
-    let descriptor_size = u32::from_le_bytes(buf[24..28].try_into().expect("len=4"));
-    let padding_size = u32::from_le_bytes(buf[28..32].try_into().expect("len=4"));
-    let data_integrity_hash: [u8; 16] = buf[32..48].try_into().expect("len=16");
-
-    if descriptor_size as usize != EWF2_SECTION_DESCRIPTOR_SIZE {
-        return Err(Error::Invalid(format!(
-            "unsupported EWF2 section descriptor size: {descriptor_size}"
-        )));
-    }
-
-    // The descriptor links to the previous section descriptor (by offset). The section data begins
-    // after the previous descriptor (or after the file header for the first section).
-    let data_start = if previous_offset == 0 {
-        EWF2_FILE_HEADER_SIZE as u64
-    } else {
-        previous_offset.saturating_add(descriptor_size as u64)
-    };
-
-    if data_start > descriptor_offset {
-        return Err(Error::Invalid(
-            "EWF2 section data start offset out of bounds".to_string(),
-        ));
-    }
-
-    // `data_size` is the amount of data considered part of the section (including any padding
-    // described by `padding_size`). If tools appended extra bytes between sections, we ignore them.
-    let max_len = descriptor_offset.saturating_sub(data_start);
-    let data_len = data_size.min(max_len);
-
-    Ok(Ewf2Section {
-        section_type,
-        data_flags,
-        previous_offset,
-        data_size,
-        descriptor_size,
-        padding_size,
-        data_integrity_hash,
-        descriptor_offset,
-        data_start,
-        data_len,
-    })
-}
-
 fn read_ewf2_compressed_object_string(
     segment: &Ewf2Segment,
     section: &Ewf2Section,
     compression_method: u16,
 ) -> Result<String> {
-    if (section.data_flags & EWF2_SECTION_DATA_FLAG_ENCRYPTED) != 0 {
+    if section.data_flags.is_encrypted() {
         return Err(Error::Unsupported(
             "EWF2 encrypted metadata sections are not supported yet".to_string(),
         ));
@@ -1286,7 +1129,7 @@ fn parse_ewf2_sector_table_section(
     segment: &Ewf2Segment,
     section: &Ewf2Section,
 ) -> Result<(u64, Vec<Ewf2TableEntry>)> {
-    if (section.data_flags & EWF2_SECTION_DATA_FLAG_ENCRYPTED) != 0 {
+    if section.data_flags.is_encrypted() {
         return Err(Error::Unsupported(
             "EWF2 encrypted sector tables are not supported yet".to_string(),
         ));
@@ -1350,7 +1193,8 @@ fn parse_ewf2_sector_table_section(
     for chunk in entries_bytes.chunks_exact(EWF2_TABLE_ENTRY_SIZE) {
         let offset_raw: [u8; 8] = chunk[0..8].try_into().expect("len=8");
         let size = u32::from_le_bytes(chunk[8..12].try_into().expect("len=4"));
-        let flags = u32::from_le_bytes(chunk[12..16].try_into().expect("len=4"));
+        let flags_raw = u32::from_le_bytes(chunk[12..16].try_into().expect("len=4"));
+        let flags = Ewf2ChunkDataFlags::from_raw(flags_raw);
         entries.push(Ewf2TableEntry {
             offset_raw,
             size,
@@ -1447,25 +1291,34 @@ impl Ewf1Reader {
             .last()
             .ok_or_else(|| Error::Invalid("missing last segment".to_string()))?;
 
-        let first_sections = parse_ewf1_section_descriptors(
-            &first.file,
-            first.file_len,
-            EWF1_FILE_HEADER_SIZE as u64,
-        )?;
-        let last_sections = parse_ewf1_section_descriptors(
-            &last.file,
-            last.file_len,
-            EWF1_FILE_HEADER_SIZE as u64,
-        )?;
+        let first_sections =
+            Ewf1SectionDescriptor::scan(&first.file, first.file_len, EWF1_FILE_HEADER_SIZE as u64)?;
+        let last_sections =
+            Ewf1SectionDescriptor::scan(&last.file, last.file_len, EWF1_FILE_HEADER_SIZE as u64)?;
 
-        let header_desc = first_sections.iter().find(|s| s.type_string == "header");
-        let header2_desc = first_sections.iter().find(|s| s.type_string == "header2");
+        let header_desc = first_sections
+            .iter()
+            .find(|s| matches!(s.section_type, Ewf1SectionType::Header));
+        let header2_desc = first_sections
+            .iter()
+            .find(|s| matches!(s.section_type, Ewf1SectionType::Header2));
+        let xheader_desc = first_sections
+            .iter()
+            .find(|s| matches!(s.section_type, Ewf1SectionType::XHeader));
 
         let volume_desc = first_sections
             .iter()
-            .find(|s| s.type_string == "volume")
-            .or_else(|| first_sections.iter().find(|s| s.type_string == "disk"))
-            .or_else(|| first_sections.iter().find(|s| s.type_string == "data"))
+            .find(|s| matches!(s.section_type, Ewf1SectionType::Volume))
+            .or_else(|| {
+                first_sections
+                    .iter()
+                    .find(|s| matches!(s.section_type, Ewf1SectionType::Disk))
+            })
+            .or_else(|| {
+                first_sections
+                    .iter()
+                    .find(|s| matches!(s.section_type, Ewf1SectionType::Data))
+            })
             .ok_or_else(|| {
                 Error::Invalid("missing required section `volume` (or `disk`/`data`)".to_string())
             })?;
@@ -1478,8 +1331,7 @@ impl Ewf1Reader {
         let volume =
             ewf1_volume::Ewf1VolumeInfo::parse_from_volume_like_section_body(&volume_data)?;
 
-        let mut header_values: std::collections::HashMap<&'static str, String> =
-            std::collections::HashMap::new();
+        let mut header_values = HeaderValues::default();
 
         if let Some(desc) = header_desc {
             let compressed = {
@@ -1487,7 +1339,8 @@ impl Ewf1Reader {
                 read_file_range(&first.file, first.file_len, start, end)?
             };
             let decompressed = zlib_decompress_all(&compressed)?;
-            parse_ewf1_header_ascii(&decompressed, &mut header_values)?;
+            crate::ewf1::header::Ewf1HeaderAscii::new(&decompressed)
+                .parse_into(&mut header_values)?;
         }
 
         if let Some(desc) = header2_desc {
@@ -1496,12 +1349,31 @@ impl Ewf1Reader {
                 read_file_range(&first.file, first.file_len, start, end)?
             };
             let decompressed = zlib_decompress_all(&compressed)?;
-            parse_ewf1_header2_utf16le(&decompressed, &mut header_values)?;
+            crate::ewf1::header::Ewf1Header2Utf16Le::new(&decompressed)
+                .parse_into(&mut header_values)?;
         }
 
+        // EWF-X (EWFX) optional XML header section (`xheader`), if present.
+        // This is where libewf stores `acquiry_software` and `acquiry_software_version`.
+        if let Some(desc) = xheader_desc {
+            let compressed = {
+                let (start, end) = desc.data_range()?;
+                read_file_range(&first.file, first.file_len, start, end)?
+            };
+            let decompressed = zlib_decompress_all(&compressed)?;
+            crate::ewf1::header::EwfxXHeaderXml::new(&decompressed)
+                .parse_into(&mut header_values)?;
+        }
+
+        crate::ewf1::header::normalize_header_values(&mut header_values);
+
         // Digest/hash sections live (typically) in the last segment.
-        let digest_desc = last_sections.iter().find(|s| s.type_string == "digest");
-        let hash_desc = last_sections.iter().find(|s| s.type_string == "hash");
+        let digest_desc = last_sections
+            .iter()
+            .find(|s| matches!(s.section_type, Ewf1SectionType::Digest));
+        let hash_desc = last_sections
+            .iter()
+            .find(|s| matches!(s.section_type, Ewf1SectionType::Hash));
 
         let mut md5: Option<[u8; 16]> = None;
         let mut sha1: Option<[u8; 20]> = None;
@@ -1532,56 +1404,35 @@ impl Ewf1Reader {
         }
 
         // Session and error sections are optional and only show for optical media / read errors.
-        let sessions = if let Some(desc) = last_sections.iter().find(|s| s.type_string == "session")
+        let sessions = if let Some(desc) = last_sections
+            .iter()
+            .find(|s| matches!(s.section_type, Ewf1SectionType::Session))
         {
             let data = {
                 let (start, end) = desc.data_range()?;
                 read_file_range(&last.file, last.file_len, start, end)?
             };
-            parse_ewf1_session_runs(&data, volume.number_of_sectors)?
+            Ewf1SessionSection::new(&data).runs(volume.number_of_sectors)?
         } else {
             Vec::new()
         };
 
-        let acquisition_read_errors =
-            if let Some(desc) = last_sections.iter().find(|s| s.type_string == "error2") {
-                let data = {
-                    let (start, end) = desc.data_range()?;
-                    read_file_range(&last.file, last.file_len, start, end)?
-                };
-                parse_ewf1_error2_runs(&data)?
-            } else {
-                Vec::new()
+        let acquisition_read_errors = if let Some(desc) = last_sections
+            .iter()
+            .find(|s| matches!(s.section_type, Ewf1SectionType::Error2))
+        {
+            let data = {
+                let (start, end) = desc.data_range()?;
+                read_file_range(&last.file, last.file_len, start, end)?
             };
+            Ewf1Error2Section::new(&data).runs()?
+        } else {
+            Vec::new()
+        };
 
         // NOTE: libewf exposes both “sessions” and “tracks”. The EWF spec documents only the
         // `session` section; for now we mirror it into tracks as well.
         let tracks = sessions.clone();
-
-        let mut header_values = HeaderValues {
-            case_number: header_values.get("case_number").cloned(),
-            evidence_number: header_values.get("evidence_number").cloned(),
-            description: header_values.get("description").cloned(),
-            examiner_name: header_values.get("examiner_name").cloned(),
-            notes: header_values.get("notes").cloned(),
-            acquisition_datetime: header_values.get("acquiry_date").cloned(),
-            system_datetime: header_values.get("system_date").cloned(),
-            acquisition_os: header_values.get("acquiry_operating_system").cloned(),
-            acquisition_software: header_values.get("acquiry_software").cloned(),
-            acquisition_software_version: header_values.get("acquiry_software_version").cloned(),
-            password: header_values.get("password").cloned(),
-        };
-
-        // Real-world EWF1 header variants differ in how they populate the "software used" fields.
-        // In the wild (and in our fixtures), `header2` sometimes mirrors the same value as the
-        // ASCII header `acquiry_software_version`. libewf only prints a single "Software version
-        // used" line in that case. To match that behavior, drop the redundant "software used"
-        // value when it is identical to the version string.
-        if header_values.acquisition_software.is_some()
-            && header_values.acquisition_software == header_values.acquisition_software_version
-        {
-            header_values.acquisition_software = None;
-        }
 
         let media_type = match volume.media_type {
             ewf1_volume::Ewf1MediaType::RemovableDisk => MediaType::RemovableDisk,
@@ -1718,8 +1569,10 @@ impl Ewf1Reader {
             }
 
             let sections =
-                parse_ewf1_section_descriptors(&file, file_len, hdr.sections_start_offset())?;
-            any_table2 |= sections.iter().any(|s| s.type_string == "table2");
+                Ewf1SectionDescriptor::scan(&file, file_len, hdr.sections_start_offset())?;
+            any_table2 |= sections
+                .iter()
+                .any(|s| matches!(s.section_type, Ewf1SectionType::Table2));
 
             parsed.push(Ewf1SegmentParsed {
                 path: seg_path.clone(),
@@ -1938,108 +1791,6 @@ impl Ewf1FileHeader {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Ewf1SectionDescriptor {
-    start_offset: u64,
-    type_string: String,
-    size: u64,
-}
-
-impl Ewf1SectionDescriptor {
-    fn parse_at(file: &File, file_len: u64, start_offset: u64) -> Result<Self> {
-        if start_offset >= file_len {
-            return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
-        }
-
-        let mut raw = [0u8; EWF1_SECTION_DESCRIPTOR_SIZE];
-        read_exact_at(file, start_offset, &mut raw)?;
-
-        let stored_checksum = u32::from_le_bytes(
-            raw[EWF1_SECTION_DESCRIPTOR_SIZE - 4..]
-                .try_into()
-                .expect("len=4"),
-        );
-        let calculated_checksum = adler32_rfc1950(&raw[..EWF1_SECTION_DESCRIPTOR_SIZE - 4]);
-        if stored_checksum != calculated_checksum {
-            return Err(Error::Corrupt(
-                "section descriptor checksum mismatch".to_string(),
-            ));
-        }
-
-        let type_string = parse_ascii_nul_terminated(&raw[0..16]);
-        let next_offset = u64::from_le_bytes(raw[16..24].try_into().expect("len=8"));
-        let mut size = u64::from_le_bytes(raw[24..32].try_into().expect("len=8"));
-
-        // libewf behavior: some writers leave size = 0, but set next_offset; infer size from that.
-        if size == 0 && next_offset != start_offset && next_offset >= start_offset {
-            size = next_offset - start_offset;
-        }
-
-        Ok(Self {
-            start_offset,
-            type_string,
-            size,
-        })
-    }
-
-    fn data_range(&self) -> Result<(u64, u64)> {
-        let start = self
-            .start_offset
-            .checked_add(EWF1_SECTION_DESCRIPTOR_SIZE as u64)
-            .ok_or_else(|| Error::Invalid("section range overflow".to_string()))?;
-        let end = self
-            .start_offset
-            .checked_add(self.size)
-            .ok_or_else(|| Error::Invalid("section range overflow".to_string()))?;
-        Ok((start, end))
-    }
-}
-
-fn parse_ewf1_section_descriptors(
-    file: &File,
-    file_len: u64,
-    first_section_offset: u64,
-) -> Result<Vec<Ewf1SectionDescriptor>> {
-    let mut sections = Vec::new();
-    let mut offset = first_section_offset;
-
-    // Hard safety cap: avoid pathological scans on corrupted inputs.
-    for _ in 0..100_000 {
-        if offset == 0 || offset >= file_len {
-            break;
-        }
-
-        let desc = Ewf1SectionDescriptor::parse_at(file, file_len, offset)?;
-        let is_last = desc.type_string == "next" || desc.type_string == "done";
-
-        let advance = if desc.size != 0 {
-            desc.size
-        } else {
-            // libewf: for last sections (`next`/`done`) some writers set size=0; advance by descriptor size.
-            EWF1_SECTION_DESCRIPTOR_SIZE as u64
-        };
-
-        if advance == 0 {
-            return Err(Error::Invalid(
-                "zero advance while scanning sections".to_string(),
-            ));
-        }
-
-        sections.push(desc);
-        if is_last {
-            break;
-        }
-
-        offset = offset.saturating_add(advance);
-    }
-
-    if sections.is_empty() {
-        return Err(Error::Invalid("no EWF sections found".to_string()));
-    }
-
-    Ok(sections)
-}
-
 #[derive(Debug, Clone, Copy)]
 struct VolumeV1 {
     number_of_chunks: u32,
@@ -2055,7 +1806,12 @@ fn parse_volume_like_section_v1(
     // For multi-segment EWF1, non-first segments may contain a `data` section that mirrors volume.
     let volume_desc = sections
         .iter()
-        .find(|s| s.type_string == "volume" || s.type_string == "disk" || s.type_string == "data")
+        .find(|s| {
+            matches!(
+                s.section_type,
+                Ewf1SectionType::Volume | Ewf1SectionType::Disk | Ewf1SectionType::Data
+            )
+        })
         .ok_or_else(|| {
             Error::Invalid("missing required section `volume` (or `disk`/`data`)".to_string())
         })?;
@@ -2192,13 +1948,13 @@ fn parse_chunk_groups_v1(
     let mut pending_sectors_end: Option<u64> = None;
 
     for desc in sections {
-        match desc.type_string.as_str() {
+        match &desc.section_type {
             // Chunk data section. The table that follows describes offsets into this region.
-            "sectors" | "sector" => {
+            Ewf1SectionType::Sectors | Ewf1SectionType::Sector => {
                 let end = desc.start_offset.saturating_add(desc.size);
                 pending_sectors_end = Some(end);
             }
-            x if x == table_type => {
+            _ if desc.section_type.as_str() == table_type => {
                 let table = parse_table_section_v1(file, file_len, desc)?;
                 if table.entries.is_empty() {
                     return Err(Error::Invalid("table has no entries".to_string()));
@@ -2286,7 +2042,7 @@ fn compute_chunk_data_end_offset_v1(
 ) -> Result<u64> {
     let last_chunk_data_offset = base_offset.saturating_add((last_entry & 0x7fff_ffff) as u64);
 
-    let end = if table_desc.type_string == "table2" {
+    let end = if matches!(table_desc.section_type, Ewf1SectionType::Table2) {
         // libewf: For table2 the chunk data is stored 2 sections before the table2 section.
         table_desc.start_offset.saturating_sub(table_desc.size)
     } else if last_chunk_data_offset < table_desc.start_offset {
@@ -2478,34 +2234,6 @@ fn discover_segment_paths(base_path: &Path, naming: EwfxNaming) -> Result<Vec<Pa
 
 // --- File IO helpers ---
 
-fn read_exact_at(file: &File, offset: u64, mut buf: &mut [u8]) -> io::Result<()> {
-    let mut cur = offset;
-    while !buf.is_empty() {
-        #[cfg(unix)]
-        let n = file.read_at(buf, cur)?;
-        #[cfg(windows)]
-        let n = file.seek_read(buf, cur)?;
-
-        if n == 0 {
-            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
-        }
-        cur = cur.saturating_add(n as u64);
-        buf = &mut buf[n..];
-    }
-    Ok(())
-}
-
-fn read_file_range(file: &File, file_len: u64, start: u64, end: u64) -> Result<Vec<u8>> {
-    if end > file_len || start >= end {
-        return Err(Error::Invalid("file range out of bounds".to_string()));
-    }
-    let len = usize::try_from(end - start)
-        .map_err(|_| Error::Invalid("range length overflow".to_string()))?;
-    let mut buf = vec![0u8; len];
-    read_exact_at(file, start, &mut buf)?;
-    Ok(buf)
-}
-
 fn md5_file_range(file: &File, file_len: u64, start: u64, len: u64) -> Result<[u8; 16]> {
     if start >= file_len {
         return Err(Error::Invalid("file range out of bounds".to_string()));
@@ -2533,32 +2261,11 @@ fn md5_file_range(file: &File, file_len: u64, start: u64, len: u64) -> Result<[u
     Ok(h.finalize().into())
 }
 
-// --- Parsing helpers ---
-
-fn parse_ascii_nul_terminated(bytes: &[u8]) -> String {
-    let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-    String::from_utf8_lossy(&bytes[..len]).to_string()
-}
-
 fn div_ceil_u64(a: u64, b: u64) -> u64 {
     if b == 0 {
         return 0;
     }
     a / b + u64::from(!a.is_multiple_of(b))
-}
-
-fn adler32_rfc1950(data: &[u8]) -> u32 {
-    // RFC1950 adler32; same as zlib's adler32.
-    const MOD_ADLER: u32 = 65521;
-    let mut a: u32 = 1;
-    let mut b: u32 = 0;
-
-    for &byte in data {
-        a = (a + u32::from(byte)) % MOD_ADLER;
-        b = (b + a) % MOD_ADLER;
-    }
-
-    (b << 16) | a
 }
 
 #[derive(Debug)]
@@ -2790,9 +2497,10 @@ fn open_l01(path: &Path) -> Result<LefL01> {
             )));
         }
 
-        let sections =
-            parse_ewf1_section_descriptors(&file, file_len, hdr.sections_start_offset())?;
-        any_table2 |= sections.iter().any(|s| s.type_string == "table2");
+        let sections = Ewf1SectionDescriptor::scan(&file, file_len, hdr.sections_start_offset())?;
+        any_table2 |= sections
+            .iter()
+            .any(|s| matches!(s.section_type, Ewf1SectionType::Table2));
 
         parsed.push(Ewf1SegmentParsed {
             path: seg_path.clone(),
@@ -2875,7 +2583,7 @@ fn open_lx01(path: &Path) -> Result<LefLx01> {
     let section = last
         .sections
         .iter()
-        .find(|s| s.section_type == EWF2_SECTION_TYPE_SINGLE_FILES_DATA)
+        .find(|s| s.section_type == Ewf2SectionType::SingleFilesData)
         .ok_or_else(|| {
             Error::Invalid("missing EWF2 single files data section (0x20)".to_string())
         })?;
@@ -2925,7 +2633,7 @@ fn parse_chunk_geometry_v1_allow_zero_chunks(
     // bytes_per_sector still describe the chunk size.
     let candidate = ["data", "disk", "volume"]
         .into_iter()
-        .find_map(|name| sections.iter().find(|s| s.type_string == name));
+        .find_map(|name| sections.iter().find(|s| s.section_type.as_str() == name));
 
     let sec =
         candidate.ok_or_else(|| Error::Invalid("missing data/disk/volume section".to_string()))?;
@@ -2958,7 +2666,7 @@ fn parse_ewf1_ltree(
 ) -> Result<(u64, Vec<LefEntry>)> {
     let ltree = sections
         .iter()
-        .find(|s| s.type_string == "ltree")
+        .find(|s| matches!(s.section_type, Ewf1SectionType::LTree))
         .ok_or_else(|| Error::Invalid("missing ltree section".to_string()))?;
     let (start, end) = ltree.data_range()?;
     if end.saturating_sub(start) < 48 {
@@ -3307,252 +3015,14 @@ fn zlib_decompress_all(data: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn parse_ewf1_header_ascii(
-    decompressed: &[u8],
-    out: &mut std::collections::HashMap<&'static str, String>,
-) -> Result<()> {
-    let s = String::from_utf8_lossy(decompressed);
-    let mut lines = s.lines();
-
-    let _category_count = lines
-        .next()
-        .ok_or_else(|| Error::Invalid("EWF1 header missing category count".to_string()))?;
-    let _category = lines
-        .next()
-        .ok_or_else(|| Error::Invalid("EWF1 header missing category name".to_string()))?;
-
-    let tags_line = lines
-        .next()
-        .ok_or_else(|| Error::Invalid("EWF1 header missing tags line".to_string()))?;
-    let values_line = lines
-        .next()
-        .ok_or_else(|| Error::Invalid("EWF1 header missing values line".to_string()))?;
-
-    let tags: Vec<&str> = tags_line.trim_end_matches('\r').split('\t').collect();
-    let values: Vec<&str> = values_line.trim_end_matches('\r').split('\t').collect();
-
-    if tags.len() != values.len() {
-        return Err(Error::Invalid(
-            "EWF1 header tags/values column count mismatch".to_string(),
-        ));
-    }
-
-    for (t, v) in tags.into_iter().zip(values) {
-        let v = v.to_string();
-        match t {
-            "c" => {
-                out.insert("case_number", v);
-            }
-            "n" => {
-                out.insert("evidence_number", v);
-            }
-            "a" => {
-                out.insert("description", v);
-            }
-            "e" => {
-                out.insert("examiner_name", v);
-            }
-            "t" => {
-                out.insert("notes", v);
-            }
-            "av" => {
-                out.insert("acquiry_software_version", v);
-            }
-            "ov" => {
-                out.insert("acquiry_operating_system", v);
-            }
-            "m" => {
-                out.insert("acquiry_date", v);
-            }
-            "u" => {
-                out.insert("system_date", v);
-            }
-            "p" => {
-                // libewf prints N/A if not set; treat "0" as unset (matches our writer placeholder).
-                if v != "0" {
-                    out.insert("password", v);
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-fn parse_ewf1_header2_utf16le(
-    decompressed: &[u8],
-    out: &mut std::collections::HashMap<&'static str, String>,
-) -> Result<()> {
-    let mut bytes = decompressed;
-    if bytes.len() >= 2 && bytes[0..2] == [0xff, 0xfe] {
-        bytes = &bytes[2..];
-    }
-    if !bytes.len().is_multiple_of(2) {
-        return Err(Error::Invalid(
-            "EWF1 header2 UTF-16LE has odd byte length".to_string(),
-        ));
-    }
-    let u16s: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes(c.try_into().expect("len=2")))
-        .collect();
-    let s = String::from_utf16_lossy(&u16s);
-
-    let mut lines = s.lines();
-    let _category_count = lines
-        .next()
-        .ok_or_else(|| Error::Invalid("EWF1 header2 missing category count".to_string()))?;
-    let _category = lines
-        .next()
-        .ok_or_else(|| Error::Invalid("EWF1 header2 missing category name".to_string()))?;
-    let tags_line = lines
-        .next()
-        .ok_or_else(|| Error::Invalid("EWF1 header2 missing tags line".to_string()))?;
-    let values_line = lines
-        .next()
-        .ok_or_else(|| Error::Invalid("EWF1 header2 missing values line".to_string()))?;
-
-    let tags: Vec<&str> = tags_line.trim_end_matches('\r').split('\t').collect();
-    let values: Vec<&str> = values_line.trim_end_matches('\r').split('\t').collect();
-    if tags.len() != values.len() {
-        return Err(Error::Invalid(
-            "EWF1 header2 tags/values column count mismatch".to_string(),
-        ));
-    }
-
-    for (t, v) in tags.into_iter().zip(values) {
-        let v = v.to_string();
-        match t {
-            "c" => {
-                out.insert("case_number", v);
-            }
-            "n" => {
-                out.insert("evidence_number", v);
-            }
-            "a" => {
-                out.insert("description", v);
-            }
-            "e" => {
-                out.insert("examiner_name", v);
-            }
-            "t" => {
-                out.insert("notes", v);
-            }
-            "av" => {
-                out.insert("acquiry_software", v);
-            }
-            "ov" => {
-                out.insert("acquiry_operating_system", v);
-            }
-            "m" => {
-                out.insert("acquiry_date", v);
-            }
-            "u" => {
-                out.insert("system_date", v);
-            }
-            "p" => {
-                if v != "0" {
-                    out.insert("password", v);
-                }
-            }
-            "sn" => {
-                out.insert("serial_number", v);
-            }
-            "md" => {
-                out.insert("model", v);
-            }
-            _ => {}
-        }
-    }
-
-    Ok(())
-}
-
-fn parse_ewf1_session_runs(
-    data: &[u8],
-    total_sectors: u64,
-) -> Result<Vec<crate::metadata::SectorRun>> {
-    if data.len() < 36 + 4 {
-        return Err(Error::Invalid("short EWF1 session section".to_string()));
-    }
-    let count = u32::from_le_bytes(data[0..4].try_into().expect("len=4")) as usize;
-    let entries_start = 36usize;
-    let entries_len = count
-        .checked_mul(32)
-        .ok_or_else(|| Error::Invalid("session entry count overflow".to_string()))?;
-    let entries_end = entries_start
-        .checked_add(entries_len)
-        .ok_or_else(|| Error::Invalid("session entries end overflow".to_string()))?;
-    let footer_end = entries_end
-        .checked_add(4)
-        .ok_or_else(|| Error::Invalid("session footer end overflow".to_string()))?;
-    if footer_end > data.len() {
-        return Err(Error::Invalid("truncated EWF1 session section".to_string()));
-    }
-
-    let mut starts: Vec<u64> = Vec::with_capacity(count);
-    for i in 0..count {
-        let off = entries_start + i * 32;
-        let start_sector = u32::from_le_bytes(data[off + 4..off + 8].try_into().expect("len=4"));
-        starts.push(u64::from(start_sector));
-    }
-
-    let mut runs: Vec<crate::metadata::SectorRun> = Vec::with_capacity(count);
-    for (i, start) in starts.iter().copied().enumerate() {
-        let sector_count = if let Some(next) = starts.get(i + 1).copied() {
-            next.saturating_sub(start)
-        } else {
-            total_sectors.saturating_sub(start)
-        };
-        runs.push(crate::metadata::SectorRun {
-            start_sector: start,
-            sector_count,
-        });
-    }
-    Ok(runs)
-}
-
-fn parse_ewf1_error2_runs(data: &[u8]) -> Result<Vec<crate::metadata::SectorRun>> {
-    const HEADER_SIZE: usize = 520;
-    const ENTRY_SIZE: usize = 8;
-    const FOOTER_SIZE: usize = 4;
-
-    if data.len() < HEADER_SIZE + FOOTER_SIZE {
-        return Err(Error::Invalid("short EWF1 error2 section".to_string()));
-    }
-
-    let count = u32::from_le_bytes(data[0..4].try_into().expect("len=4")) as usize;
-    let entries_start = HEADER_SIZE;
-    let entries_len = count
-        .checked_mul(ENTRY_SIZE)
-        .ok_or_else(|| Error::Invalid("error2 entry count overflow".to_string()))?;
-    let entries_end = entries_start
-        .checked_add(entries_len)
-        .ok_or_else(|| Error::Invalid("error2 entries end overflow".to_string()))?;
-    let footer_end = entries_end
-        .checked_add(FOOTER_SIZE)
-        .ok_or_else(|| Error::Invalid("error2 footer end overflow".to_string()))?;
-
-    if footer_end > data.len() {
-        return Err(Error::Invalid("truncated EWF1 error2 section".to_string()));
-    }
-
-    let mut runs: Vec<crate::metadata::SectorRun> = Vec::with_capacity(count);
-    for i in 0..count {
-        let off = entries_start + i * ENTRY_SIZE;
-        let start_sector = u32::from_le_bytes(data[off..off + 4].try_into().expect("len=4"));
-        let sector_count = u32::from_le_bytes(data[off + 4..off + 8].try_into().expect("len=4"));
-        runs.push(crate::metadata::SectorRun {
-            start_sector: u64::from(start_sector),
-            sector_count: u64::from(sector_count),
-        });
-    }
-    Ok(runs)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ewf1::EWF1_SECTION_DESCRIPTOR_SIZE;
+    use crate::ewf2::section::{
+        EWF2_SECTION_DESCRIPTOR_SIZE, Ewf2SectionDataFlags, Ewf2SectionType,
+        make_ewf2_section_descriptor as make_ewf2_section_descriptor_bytes,
+    };
     use std::io::Write as _;
 
     fn make_section_descriptor(
@@ -3666,42 +3136,23 @@ mod tests {
         pad as u32
     }
 
-    fn make_ewf2_section_descriptor(
-        section_type: u32,
-        data_flags: u32,
-        previous_offset: u64,
-        data_size: u64,
-        padding_size: u32,
-    ) -> [u8; EWF2_SECTION_DESCRIPTOR_SIZE] {
-        let mut raw = [0u8; EWF2_SECTION_DESCRIPTOR_SIZE];
-        raw[0..4].copy_from_slice(&section_type.to_le_bytes());
-        raw[4..8].copy_from_slice(&data_flags.to_le_bytes());
-        raw[8..16].copy_from_slice(&previous_offset.to_le_bytes());
-        raw[16..24].copy_from_slice(&data_size.to_le_bytes());
-        raw[24..28].copy_from_slice(&(EWF2_SECTION_DESCRIPTOR_SIZE as u32).to_le_bytes());
-        raw[28..32].copy_from_slice(&padding_size.to_le_bytes());
-        // data_integrity_hash (16) + padding (12) left as zeros
-        let checksum = adler32_rfc1950(&raw[..EWF2_SECTION_DESCRIPTOR_SIZE - 4]);
-        raw[EWF2_SECTION_DESCRIPTOR_SIZE - 4..].copy_from_slice(&checksum.to_le_bytes());
-        raw
-    }
-
     fn append_ewf2_section_with_flags(
         file: &mut Vec<u8>,
-        section_type: u32,
-        data_flags: u32,
+        section_type: Ewf2SectionType,
+        data_flags: Ewf2SectionDataFlags,
         previous_offset: u64,
         data: Vec<u8>,
         padding_size_field: u32,
     ) -> u64 {
         file.extend_from_slice(&data);
         let desc_off = file.len() as u64;
-        let desc = make_ewf2_section_descriptor(
+        let desc = make_ewf2_section_descriptor_bytes(
             section_type,
             data_flags,
             previous_offset,
             data.len() as u64,
             padding_size_field,
+            [0u8; 16],
         );
         file.extend_from_slice(&desc);
         desc_off
@@ -3727,7 +3178,7 @@ mod tests {
     struct Ewf2SectorTableEntrySpec {
         offset: u64,
         size: u32,
-        flags: u32,
+        flags: Ewf2ChunkDataFlags,
     }
 
     fn build_ewf2_sector_table(first_chunk: u64, entries: &[Ewf2SectorTableEntrySpec]) -> Vec<u8> {
@@ -3749,7 +3200,7 @@ mod tests {
         for e in entries {
             entries_bytes.extend_from_slice(&e.offset.to_le_bytes());
             entries_bytes.extend_from_slice(&e.size.to_le_bytes());
-            entries_bytes.extend_from_slice(&e.flags.to_le_bytes());
+            entries_bytes.extend_from_slice(&e.flags.raw().to_le_bytes());
         }
         table.extend_from_slice(&entries_bytes);
 
@@ -3799,8 +3250,8 @@ mod tests {
 
         fn push_section_with_flags(
             &mut self,
-            section_type: u32,
-            data_flags: u32,
+            section_type: Ewf2SectionType,
+            data_flags: Ewf2SectionDataFlags,
             data: Vec<u8>,
             padding_size_field: u32,
         ) -> u64 {
@@ -3818,17 +3269,22 @@ mod tests {
 
         fn push_section(
             &mut self,
-            section_type: u32,
+            section_type: Ewf2SectionType,
             data: Vec<u8>,
             padding_size_field: u32,
         ) -> u64 {
-            self.push_section_with_flags(section_type, 0, data, padding_size_field)
+            self.push_section_with_flags(
+                section_type,
+                Ewf2SectionDataFlags::new(0),
+                data,
+                padding_size_field,
+            )
         }
 
         fn push_compressed_main_object(
             &mut self,
-            section_type: u32,
-            data_flags: u32,
+            section_type: Ewf2SectionType,
+            data_flags: Ewf2SectionDataFlags,
             pairs: &[(&str, u64)],
         ) -> u64 {
             let s = ewf2_main_object(pairs);
@@ -3843,29 +3299,33 @@ mod tests {
                 ("bp", u64::from(bytes_per_sector)),
                 ("ts", number_of_sectors),
             ];
-            self.push_compressed_main_object(EWF2_SECTION_TYPE_DEVICE_INFORMATION, 0, &pairs)
+            self.push_compressed_main_object(
+                Ewf2SectionType::DeviceInformation,
+                Ewf2SectionDataFlags::new(0),
+                &pairs,
+            )
         }
 
         fn device_information_with_flags(
             &mut self,
             bytes_per_sector: u32,
             number_of_sectors: u64,
-            data_flags: u32,
+            data_flags: Ewf2SectionDataFlags,
         ) -> u64 {
             let pairs = [
                 ("bp", u64::from(bytes_per_sector)),
                 ("ts", number_of_sectors),
             ];
-            self.push_compressed_main_object(
-                EWF2_SECTION_TYPE_DEVICE_INFORMATION,
-                data_flags,
-                &pairs,
-            )
+            self.push_compressed_main_object(Ewf2SectionType::DeviceInformation, data_flags, &pairs)
         }
 
         fn case_data(&mut self, sectors_per_chunk: u32, chunk_count: u64) -> u64 {
             let pairs = [("sb", u64::from(sectors_per_chunk)), ("tb", chunk_count)];
-            self.push_compressed_main_object(EWF2_SECTION_TYPE_CASE_DATA, 0, &pairs)
+            self.push_compressed_main_object(
+                Ewf2SectionType::CaseData,
+                Ewf2SectionDataFlags::new(0),
+                &pairs,
+            )
         }
 
         fn sector_data_uncompressed_chunk(&mut self, chunk: &[u8]) -> (u64, u32) {
@@ -3885,17 +3345,21 @@ mod tests {
             let chunk_data_size = sector_data.len() as u32;
             let pad = pad16(&mut sector_data);
 
-            self.push_section(EWF2_SECTION_TYPE_SECTOR_DATA, sector_data, pad);
+            self.push_section(Ewf2SectionType::SectorData, sector_data, pad);
             (chunk_offset, chunk_data_size)
         }
 
         fn sector_table(&mut self, first_chunk: u64, entries: &[Ewf2SectorTableEntrySpec]) -> u64 {
             let table = build_ewf2_sector_table(first_chunk, entries);
             // libewf uses padding_size=24 for sector tables (12 after header + 12 after footer).
-            self.push_section(EWF2_SECTION_TYPE_SECTOR_TABLE, table, 24)
+            self.push_section(Ewf2SectionType::SectorTable, table, 24)
         }
 
-        fn utf16le_no_bom_section(&mut self, section_type: u32, text: &str) -> Ewf2WrittenSection {
+        fn utf16le_no_bom_section(
+            &mut self,
+            section_type: Ewf2SectionType,
+            text: &str,
+        ) -> Ewf2WrittenSection {
             let mut data = encode_utf16le_no_bom(text);
             let unpadded_len = data.len() as u64;
             let pad = pad16(&mut data);
@@ -3908,11 +3372,11 @@ mod tests {
         }
 
         fn single_files_data(&mut self, ltree_text: &str) -> Ewf2WrittenSection {
-            self.utf16le_no_bom_section(EWF2_SECTION_TYPE_SINGLE_FILES_DATA, ltree_text)
+            self.utf16le_no_bom_section(Ewf2SectionType::SingleFilesData, ltree_text)
         }
 
         fn done(&mut self) -> u64 {
-            self.push_section(EWF2_SECTION_TYPE_DONE, Vec::new(), 0)
+            self.push_section(Ewf2SectionType::Done, Vec::new(), 0)
         }
 
         fn patch_descriptor_data_size(&mut self, desc_off: u64, data_size: u64) -> Result<()> {
@@ -4057,7 +3521,7 @@ mod tests {
             &[Ewf2SectorTableEntrySpec {
                 offset: chunk_data_offset,
                 size: chunk_data_size,
-                flags: EWF2_CHUNK_DATA_FLAG_CHECKSUMED,
+                flags: Ewf2ChunkDataFlags::CHECKSUMED,
             }],
         );
         f.done();
@@ -4133,7 +3597,7 @@ mod tests {
         let chunk = vec![b'Z'; 512];
 
         let mut f = Ewf2TestFile::new_ex01(set_id);
-        f.device_information_with_flags(512, 1, EWF2_SECTION_DATA_FLAG_ENCRYPTED);
+        f.device_information_with_flags(512, 1, Ewf2SectionDataFlags::ENCRYPTED);
         f.case_data(1, 1);
         let (chunk_data_offset, chunk_data_size) = f.sector_data_uncompressed_chunk(&chunk);
         f.sector_table(
@@ -4141,7 +3605,7 @@ mod tests {
             &[Ewf2SectorTableEntrySpec {
                 offset: chunk_data_offset,
                 size: chunk_data_size,
-                flags: EWF2_CHUNK_DATA_FLAG_CHECKSUMED,
+                flags: Ewf2ChunkDataFlags::CHECKSUMED,
             }],
         );
         f.done();
@@ -4435,7 +3899,7 @@ mod tests {
             &[Ewf2SectorTableEntrySpec {
                 offset: chunk_data_offset,
                 size: chunk_data_size,
-                flags: EWF2_CHUNK_DATA_FLAG_CHECKSUMED,
+                flags: Ewf2ChunkDataFlags::CHECKSUMED,
             }],
         );
         let _ = f.single_files_data(ENCASE7_TREE_SINGLE_HELLO_TXT);
@@ -4467,7 +3931,7 @@ mod tests {
             &[Ewf2SectorTableEntrySpec {
                 offset: chunk_data_offset,
                 size: chunk_data_size,
-                flags: EWF2_CHUNK_DATA_FLAG_CHECKSUMED,
+                flags: Ewf2ChunkDataFlags::CHECKSUMED,
             }],
         );
 
@@ -4477,7 +3941,7 @@ mod tests {
         // Add a "poison" section whose bytes look like a new (invalid) `rec` category. If we
         // over-read beyond the single-files section bounds, parsing will fail.
         let poison_text = "\n\nrec\nx\n";
-        let poison = f.utf16le_no_bom_section(0xdead_beefu32, poison_text);
+        let poison = f.utf16le_no_bom_section(Ewf2SectionType::Unknown(0xdead_beef), poison_text);
 
         // Corrupt the single-files section descriptor's `data_size` to claim the section extends
         // past its descriptor and into the following section.
@@ -4558,6 +4022,41 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_ewf1_header_ascii_av_maps_to_acquiry_software_version() -> Result<()> {
+        let header = concat!(
+            "1\r\n",
+            "main\r\n",
+            "c\tn\ta\te\tt\tav\tov\tm\tu\tp\tr\r\n",
+            "1\t1.1\tDesc\tExam\tNotes\tVERS\tLinux\t2006-01-02 03:04:05\t2006-01-02 03:04:05\t0\tn\r\n"
+        );
+
+        let mut out = crate::metadata::HeaderValues::default();
+        crate::ewf1::header::Ewf1HeaderAscii::new(header.as_bytes()).parse_into(&mut out)?;
+
+        assert_eq!(out.acquisition_software_version.as_deref(), Some("VERS"));
+        assert!(out.acquisition_software.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_ewf1_header2_av_maps_to_acquiry_software_version() -> Result<()> {
+        let header2 = concat!(
+            "1\n",
+            "main\n",
+            "a\tc\tn\te\tt\tmd\tsn\tav\tov\tm\tu\tp\n",
+            "Desc\t1\t1.1\tExam\tNotes\t\t\tVERS\tLinux\t2006-01-02 03:04:05\t2006-01-02 03:04:05\t0\n"
+        );
+
+        let mut out = crate::metadata::HeaderValues::default();
+        let bytes = encode_utf16le_with_bom(header2);
+        crate::ewf1::header::Ewf1Header2Utf16Le::new(&bytes).parse_into(&mut out)?;
+
+        assert_eq!(out.acquisition_software_version.as_deref(), Some("VERS"));
+        assert!(out.acquisition_software.is_none());
+        Ok(())
+    }
+
+    #[test]
     fn test_ewf1_image_metadata_extracts_header_volume_and_digests() -> Result<()> {
         use crate::writer::{
             Ewf1CompressionLevel, Ewf1Format, EwfHeaderValues, EwfWriter, EwfWriterOptions,
@@ -4600,6 +4099,14 @@ mod tests {
         assert_eq!(meta.sectors_per_chunk, 64);
         assert_eq!(meta.error_granularity, 7);
         assert_eq!(meta.header_values.case_number.as_deref(), Some("1"));
+        assert_eq!(
+            meta.header_values.acquisition_software.as_deref(),
+            Some("ewfacquire")
+        );
+        assert_eq!(
+            meta.header_values.acquisition_software_version.as_deref(),
+            Some("20061209")
+        );
 
         // Set identifier should be present.
         assert_eq!(meta.set_identifier, Some(set_id));

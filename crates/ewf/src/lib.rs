@@ -10,10 +10,10 @@
 //! expand format coverage (EWF2, delta/shadow files, write resume, etc.).
 
 mod error;
-#[path = "reader/ewf1_volume.rs"]
-mod ewf1_volume;
+mod ewf1;
 mod ewf2;
 mod info;
+mod util;
 
 pub mod delta;
 pub mod metadata;

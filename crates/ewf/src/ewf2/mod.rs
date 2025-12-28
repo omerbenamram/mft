@@ -6,4 +6,6 @@
 //! Reference material:
 //! - `external/libewf/documentation/Expert Witness Compression Format 2 (EWF2).asciidoc`
 
+pub(crate) mod chunk;
 pub(crate) mod file_header;
+pub(crate) mod section;
