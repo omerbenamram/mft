@@ -1,0 +1,7 @@
+---
+alwaysApply: true
+---
+
+# No best-effort code.
+
+When commiting code to this repository - AVOID using "best-effort" code. If you do not have the means to implement some part of a solution to be SPEC EXACT - prefer leaving a TODO, or unimplemented path altogether!

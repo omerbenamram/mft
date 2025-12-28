@@ -19,7 +19,7 @@ Reference commit pinned in this repository:
 - [x] Uncompressed chunks
 - [x] Chunk Adler32 verification
 - [ ] EnCase 5/6 metadata edge-cases (header/header2 variants) — partial
-- [ ] EWF1 “sessions” section (optical media) — not implemented
+- [x] EWF1 “sessions” section (optical media) — run parsing (used for `ewfinfo` output)
 
 ### EWF2 (EVF2) — `.Ex01`
 
@@ -79,4 +79,36 @@ Reference commit pinned in this repository:
 ## Encrypted containers (non-EWF)
 
 - [x] AccessData “ADCRYPT” container (FTK/AD encryption) — explicitly rejected with a clear error
+
+## `ewfinfo` CLI parity (this repository)
+
+This section tracks parity with libewf’s `ewfinfo` tool behavior (`external/libewf/ewftools/ewfinfo.c`,
+`external/libewf/ewftools/info_handle.c`, `external/libewf/manuals/ewfinfo.1`).
+
+Notes:
+- **Library support**: spec-oriented metadata extraction lives in `crates/ewf/src/metadata.rs` and
+  `EwfReader::image_metadata()`.
+- **Image-mode reporting/rendering** is binary-owned: `crates/ewf/src/bin/ewfinfo/ewfinfo/`.
+- **Logical evidence outputs** (`-F`/`-H`/`-B`) are implemented in the `ewfinfo` binary target only:
+  `crates/ewf/src/bin/ewfinfo/`.
+
+### Image mode (`.E01` / `.S01` / `.Ex01`) — metadata report
+
+- [x] Text output (default / `-f text`)
+- [x] DFXML output (`-f dfxml`) — **schema-aligned `<dfxml>`** (DFXML 2.0.0-beta.0) via `crates/dfxml`
+- [x] Section filtering: `-i` (acquiry only), `-m` (media+hashes+sessions+tracks), `-e` (errors only)
+- [x] Date formatting `-d ctime|dm|md|iso8601` for acquisition/system date header values
+- [x] `-A ascii` (EWF1 header decoding)
+- [ ] `-A windows-*` codepages for EWF1 header decoding (explicit `Unsupported` for now)
+- [ ] `-v` verbose output parity (flag is accepted, but we don’t emit libewf-style verbose traces yet)
+- [ ] libewf “DFXML” (`ewfobjects` root + `ewfinfo` sections) output compatibility — we intentionally emit schema-aligned DFXML instead
+
+### Logical evidence mode (`.L01` / `.Lx01`) — tree + bodyfile
+
+- [x] `-H` logical files hierarchy (text)
+- [x] `-F <path>` file entry info (text) — **subset** of libewf fields
+- [x] `-B <path>` bodyfile output (Sleuthkit 3.x+ columns) — **subset** of libewf behavior
+- [x] `-s /|\\` path separator for text/hierarchy/bodyfile name fields
+- [ ] `-f dfxml` for logical modes (`-H`/`-F`/`-B`) — not implemented (test asserts this)
+- [ ] Full file-entry metadata parity (ACLs, owners/groups, short name, etc.)
 

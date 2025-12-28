@@ -1,0 +1,12 @@
+File entry information:
+	Name				: dir/file.txt
+	Type				: file
+	File identifier			: 42
+	Size				: 5
+	Access time			: 100
+	Modification time		: 200
+	Entry modification time		: 300
+	Creation time			: 400
+
+Extents:
+	0				: offset=0 size=5

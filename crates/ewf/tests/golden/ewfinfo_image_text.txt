@@ -1,0 +1,36 @@
+Acquiry information
+───────────────────
+  Case number:           1
+  Description:           Floppy
+  Examiner name:         John D.
+  Evidence number:       1.1
+  Notes:                 Just a floppy in my system
+  Acquisition date:      Sat Dec  9 10:00:12 2006
+  System date:           Sat Dec  9 10:00:12 2006
+  Operating system used: Linux
+  Software used:         ewfacquire
+  Software version used: 20061209
+  Password:              N/A
+
+EWF information
+───────────────
+  File format:        EnCase 6
+  Sectors per chunk:  64
+  Error granularity:  1
+  Compression method: deflate
+  Compression level:  no compression
+  Set identifier:     fc109986-43e1-0849-9328-afedf4a7be1e
+
+Media information
+─────────────────
+  Media type:        fixed disk
+  Is physical:       no
+  Bytes per sector:  512
+  Number of sectors: 2880
+  Media size:        1.4 MiB (1474560 bytes)
+
+Digest hash information
+───────────────────────
+  MD5:  b37823c7a90d1917f719ba5927b23da8
+  SHA1: fe0786be0f9207ee934cc07917006ae7b8cb350a
+

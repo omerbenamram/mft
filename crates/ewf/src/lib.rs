@@ -10,14 +10,18 @@
 //! expand format coverage (EWF2, delta/shadow files, write resume, etc.).
 
 mod error;
+mod ewf1;
+mod ewf2;
 mod info;
+mod util;
 
 pub mod delta;
+pub mod metadata;
 pub mod reader;
 pub mod writer;
 
 pub use delta::EwfDelta;
 pub use error::{Error, Result};
-pub use info::{EwfCompression, EwfFormat, EwfInfo};
+pub use info::{EwfCompression, EwfFileFormat, EwfFormat, EwfInfo};
 pub use reader::{EwfReader, LefEntry, LefExtent, LefReader, VerifyOptions};
 pub use writer::{Ewf2CompressionMethod, Ewf2Writer, Ewf2WriterOptions, EwfWriter};

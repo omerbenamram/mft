@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dfxml xmlns="http://www.forensicswiki.org/wiki/Category:Digital_Forensics_XML" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0.0-beta.0">
+	<metadata>
+		<dc:type>Disk Image</dc:type>
+		<dc:title>Floppy</dc:title>
+		<dc:creator>John D.</dc:creator>
+		<dc:identifier>1</dc:identifier>
+		<dc:identifier>1.1</dc:identifier>
+		<dc:description>Just a floppy in my system</dc:description>
+		<dc:date>Sat Dec  9 10:00:12 2006</dc:date>
+	</metadata>
+	<creator>
+		<program>ewfinfo</program>
+		<version>0.1.0</version>
+		<build_environment>
+			<compiler>rustc</compiler>
+			<library name="ewf" version="0.1.0"/>
+		</build_environment>
+		<execution_environment>
+			<os_sysname>__OS__</os_sysname>
+			<arch>__ARCH__</arch>
+		</execution_environment>
+	</creator>
+	<source>
+		<image_filename>__IMAGE_FILENAME__</image_filename>
+	</source>
+	<diskimageobject>
+		<byte_runs>
+			<byte_run img_offset="0" len="1474560" type="image">
+				<hashdigest type="md5">b37823c7a90d1917f719ba5927b23da8</hashdigest>
+				<hashdigest type="sha1">fe0786be0f9207ee934cc07917006ae7b8cb350a</hashdigest>
+			</byte_run>
+		</byte_runs>
+		<sector_size>512</sector_size>
+	</diskimageobject>
+</dfxml>
