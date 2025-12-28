@@ -709,6 +709,13 @@ impl Ewf2Reader {
         let bytes_per_sector = parse_tag_u32(&device_tags, "bp")?;
         let number_of_sectors = parse_tag_u64(&device_tags, "ts")?;
         let sectors_per_chunk = parse_tag_u32(&case_tags, "sb")?;
+        let error_granularity = match case_tags.get("gr") {
+            Some(v) => v
+                .trim()
+                .parse::<u32>()
+                .map_err(|_| Error::Invalid(format!("invalid EWF2 `gr` value: `{v}`")))?,
+            None => 0,
+        };
 
         let media_size = number_of_sectors
             .checked_mul(bytes_per_sector as u64)
@@ -794,6 +801,7 @@ impl Ewf2Reader {
             segment_paths: self.segments.iter().map(|s| s.path.clone()).collect(),
             segment_file_version: Some((hdr.major as u16, hdr.minor as u16)),
             sectors_per_chunk,
+            error_granularity,
             bytes_per_sector,
             number_of_sectors,
             media_size,
@@ -1604,6 +1612,7 @@ impl Ewf1Reader {
             segment_paths: self.segments.iter().map(|s| s.path.clone()).collect(),
             segment_file_version: None,
             sectors_per_chunk: volume.sectors_per_chunk,
+            error_granularity: volume.error_granularity,
             bytes_per_sector: volume.bytes_per_sector,
             number_of_sectors: volume.number_of_sectors,
             media_size: volume.media_size,
@@ -4560,6 +4569,7 @@ mod tests {
         let mut opts = EwfWriterOptions::new(Ewf1Format::E01, 1_474_560);
         opts.bytes_per_sector = 512;
         opts.sectors_per_chunk = 64;
+        opts.error_granularity = Some(7);
         opts.compression_level = Ewf1CompressionLevel::None;
         let set_id = [
             0x86, 0x99, 0x10, 0xfc, 0xe1, 0x43, 0x49, 0x08, 0x93, 0x28, 0xaf, 0xed, 0xf4, 0xa7,
@@ -4588,6 +4598,7 @@ mod tests {
 
         assert_eq!(meta.bytes_per_sector, 512);
         assert_eq!(meta.sectors_per_chunk, 64);
+        assert_eq!(meta.error_granularity, 7);
         assert_eq!(meta.header_values.case_number.as_deref(), Some("1"));
 
         // Set identifier should be present.
@@ -4609,6 +4620,7 @@ mod tests {
         let mut opts = Ewf2WriterOptions::new(32 * 1024);
         opts.bytes_per_sector = 512;
         opts.sectors_per_chunk = 64;
+        opts.error_granularity = Some(5);
         opts.compression_method = Ewf2CompressionMethod::Zlib;
         let set_id = [
             0x11, 0x22, 0x33, 0x44, 0xaa, 0xbb, 0xcc, 0xdd, 0x00, 0x01, 0x02, 0x03, 0x10, 0x20,
@@ -4625,6 +4637,7 @@ mod tests {
 
         assert_eq!(meta.bytes_per_sector, 512);
         assert_eq!(meta.sectors_per_chunk, 64);
+        assert_eq!(meta.error_granularity, 5);
 
         // Set identifier should be present.
         assert_eq!(meta.set_identifier, Some(set_id));

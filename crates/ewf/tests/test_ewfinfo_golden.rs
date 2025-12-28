@@ -86,6 +86,9 @@ fn build_synthetic_e01(dir: &tempfile::TempDir) -> std::path::PathBuf {
     let mut opts = EwfWriterOptions::new(Ewf1Format::E01, 1_474_560);
     opts.bytes_per_sector = 512;
     opts.sectors_per_chunk = 64;
+    // Make error granularity intentionally differ from sectors_per_chunk to catch copy/paste bugs
+    // in `ewfinfo` rendering.
+    opts.error_granularity = Some(1);
     opts.compression_level = Ewf1CompressionLevel::None;
     opts.set_identifier = Some([
         0x86, 0x99, 0x10, 0xfc, 0xe1, 0x43, 0x49, 0x08, 0x93, 0x28, 0xaf, 0xed, 0xf4, 0xa7, 0xbe,

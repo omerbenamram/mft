@@ -78,6 +78,8 @@ pub struct ImageMetadata {
     pub segment_file_version: Option<(u16, u16)>,
 
     pub sectors_per_chunk: u32,
+    /// The number of sectors used as error granularity (0 if not recorded).
+    pub error_granularity: u32,
     pub bytes_per_sector: u32,
     pub number_of_sectors: u64,
     pub media_size: u64,

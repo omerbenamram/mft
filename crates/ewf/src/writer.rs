@@ -122,6 +122,10 @@ pub struct EwfWriterOptions {
     pub bytes_per_sector: u32,
     /// Sectors per chunk/block (typically 64, so chunk_size is 32768).
     pub sectors_per_chunk: u32,
+    /// The number of sectors to use as error granularity.
+    ///
+    /// If not set, this defaults to `sectors_per_chunk` (mirrors libewf’s acquisition tooling).
+    pub error_granularity: Option<u32>,
     /// Maximum size of a segment file in bytes (libewf default is 1500 MiB).
     pub segment_file_size: u64,
     /// Chunk compression level (E01 uses “compress if smaller”; S01 forces compression).
@@ -141,6 +145,7 @@ impl EwfWriterOptions {
             media_size,
             bytes_per_sector: 512,
             sectors_per_chunk: 64,
+            error_granularity: None,
             segment_file_size: 1500 * 1024 * 1024, // libewf default
             compression_level: Ewf1CompressionLevel::default(),
             empty_block_compression: true,
@@ -177,6 +182,10 @@ pub struct Ewf2WriterOptions {
     pub bytes_per_sector: u32,
     /// Sectors per chunk/block (typically 64, so chunk_size is 32768).
     pub sectors_per_chunk: u32,
+    /// The number of sectors to use as error granularity.
+    ///
+    /// If not set, this defaults to `sectors_per_chunk` (mirrors libewf’s acquisition tooling).
+    pub error_granularity: Option<u32>,
     /// Maximum size of a segment file in bytes.
     pub segment_file_size: u64,
     /// Segment-set compression method.
@@ -195,6 +204,7 @@ impl Ewf2WriterOptions {
             media_size,
             bytes_per_sector: 512,
             sectors_per_chunk: 64,
+            error_granularity: None,
             segment_file_size: 1500 * 1024 * 1024,
             compression_method: Ewf2CompressionMethod::Zlib,
             pattern_fill: true,
@@ -214,6 +224,7 @@ pub struct EwfWriter {
     // Media geometry (EWF1 volume/data sections).
     bytes_per_sector: u32,
     sectors_per_chunk: u32,
+    error_granularity: u32,
     number_of_sectors: u64,
     chunk_size: usize,
     chunk_count: u64,
@@ -454,6 +465,10 @@ impl EwfWriter {
         let chunk_size = checked_chunk_size(sectors_per_chunk, bytes_per_sector)?;
         let number_of_sectors = checked_number_of_sectors(opts.media_size, bytes_per_sector)?;
         let chunk_count = div_ceil_u64(number_of_sectors, sectors_per_chunk as u64);
+        let mut error_granularity = opts.error_granularity.unwrap_or(sectors_per_chunk);
+        if error_granularity == 0 || error_granularity > sectors_per_chunk {
+            error_granularity = sectors_per_chunk;
+        }
 
         let base_path = remove_extension(path);
         let naming = Ewf1Naming::from_path(path, opts.format)?;
@@ -472,6 +487,7 @@ impl EwfWriter {
             naming,
             bytes_per_sector,
             sectors_per_chunk,
+            error_granularity,
             number_of_sectors,
             chunk_size,
             chunk_count,
@@ -701,6 +717,7 @@ impl EwfWriter {
         let data = ewf1_volume::build_volume_section_e01_1052(
             self.chunk_count,
             self.sectors_per_chunk,
+            self.error_granularity,
             self.bytes_per_sector,
             self.number_of_sectors,
             self.opts.compression_level.as_volume_byte(),
@@ -714,6 +731,7 @@ impl EwfWriter {
         let data = ewf1_volume::build_volume_section_e01_1052(
             self.chunk_count,
             self.sectors_per_chunk,
+            self.error_granularity,
             self.bytes_per_sector,
             self.number_of_sectors,
             self.opts.compression_level.as_volume_byte(),
@@ -1780,6 +1798,7 @@ pub struct Ewf2Writer {
 
     bytes_per_sector: u32,
     sectors_per_chunk: u32,
+    error_granularity: u32,
     number_of_sectors: u64,
     chunk_size: usize,
     chunk_count: u64,
@@ -1833,6 +1852,10 @@ impl Ewf2Writer {
         let bytes_per_sector = opts.bytes_per_sector;
         let sectors_per_chunk = opts.sectors_per_chunk;
         let chunk_size = checked_chunk_size(sectors_per_chunk, bytes_per_sector)?;
+        let mut error_granularity = opts.error_granularity.unwrap_or(sectors_per_chunk);
+        if error_granularity == 0 || error_granularity > sectors_per_chunk {
+            error_granularity = sectors_per_chunk;
+        }
 
         if !opts.media_size.is_multiple_of(bytes_per_sector as u64) {
             return Err(Error::Invalid(
@@ -1861,6 +1884,7 @@ impl Ewf2Writer {
             naming,
             bytes_per_sector,
             sectors_per_chunk,
+            error_granularity,
             number_of_sectors,
             chunk_size,
             chunk_count,
@@ -2100,6 +2124,7 @@ impl Ewf2Writer {
         let case_string = build_ewf2_case_data_string(
             self.chunk_count,
             self.sectors_per_chunk,
+            self.error_granularity,
             self.opts.compression_method.to_u16(),
             &self.opts.header_values,
         );
@@ -2374,11 +2399,15 @@ fn build_ewf2_device_information_string(
 fn build_ewf2_case_data_string(
     chunk_count: u64,
     sectors_per_chunk: u32,
+    error_granularity: u32,
     compression_method: u16,
     _values: &EwfHeaderValues,
 ) -> String {
-    // Minimal EWF2 case data: chunk count and chunk geometry, plus compression method.
-    format!("1\nmain\ntb\tsb\tcp\n{chunk_count}\t{sectors_per_chunk}\t{compression_method}\n")
+    // Minimal EWF2 case data: chunk count and chunk geometry, plus error granularity and compression method.
+    //
+    // libewf’s case-data object string includes many more tags; we keep a small subset required for
+    // `ewfinfo` and media geometry.
+    format!("1\nmain\ntb\tcp\tsb\tgr\n{chunk_count}\t{compression_method}\t{sectors_per_chunk}\t{error_granularity}\n")
 }
 
 fn build_ewf2_sector_table_section_data(

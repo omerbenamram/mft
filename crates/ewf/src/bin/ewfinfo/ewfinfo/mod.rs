@@ -299,7 +299,7 @@ impl EwfInfoReport {
         ewf_information.push(InfoField {
             identifier: "error_granularity",
             description: "Error granularity",
-            value: InfoValue::U32(meta.sectors_per_chunk),
+            value: InfoValue::U32(meta.error_granularity),
         });
         ewf_information.push(InfoField {
             identifier: "compression_method",

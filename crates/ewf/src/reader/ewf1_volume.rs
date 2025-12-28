@@ -131,6 +131,7 @@ impl fmt::Display for Ewf1VolumeCompressionLevel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Ewf1VolumeInfo {
     pub(super) sectors_per_chunk: u32,
+    pub(super) error_granularity: u32,
     pub(super) bytes_per_sector: u32,
     pub(super) number_of_sectors: u64,
     pub(super) media_size: u64,
@@ -188,6 +189,13 @@ impl Ewf1VolumeInfo {
         };
         let is_physical = media_flags.map(|f| f.is_physical()).unwrap_or(false);
 
+        // Sector error granularity lives at offset 56 in the 1052-byte EnCase/FTK/linen volume variant.
+        let error_granularity = if is_1052_variant {
+            u32::from_le_bytes(data[56..60].try_into().expect("len=4"))
+        } else {
+            0
+        };
+
         // Compression level at offset 52 for the 1052-byte variant.
         let compression_level = if is_1052_variant {
             Ewf1VolumeCompressionLevel::from_optional_code(data.get(52).copied())
@@ -210,6 +218,7 @@ impl Ewf1VolumeInfo {
 
         Ok(Self {
             sectors_per_chunk,
+            error_granularity,
             bytes_per_sector,
             number_of_sectors,
             media_size,
@@ -224,6 +233,7 @@ impl Ewf1VolumeInfo {
 pub(super) fn build_volume_section_e01_1052(
     chunk_count: u64,
     sectors_per_chunk: u32,
+    error_granularity: u32,
     bytes_per_sector: u32,
     number_of_sectors: u64,
     compression_level: u8,
@@ -241,6 +251,7 @@ pub(super) fn build_volume_section_e01_1052(
     out[16..24].copy_from_slice(&number_of_sectors.to_le_bytes());
     out[36] = 0x01; // media flags: “is an image file”
     out[52] = compression_level;
+    out[56..60].copy_from_slice(&error_granularity.to_le_bytes());
     out[64..80].copy_from_slice(&set_identifier);
     // checksum over [0..1048]
     let checksum = adler32_rfc1950(&out[..1048]).to_le_bytes();
@@ -296,6 +307,7 @@ mod tests {
 
         let v = Ewf1VolumeInfo::parse_from_volume_like_section_body(&data).unwrap();
         assert_eq!(v.sectors_per_chunk, 64);
+        assert_eq!(v.error_granularity, 0);
         assert_eq!(v.bytes_per_sector, 512);
         assert_eq!(v.number_of_sectors, 2880);
         assert_eq!(v.media_size, 2880u64 * 512);
@@ -327,6 +339,7 @@ mod tests {
         data[16..24].copy_from_slice(&10u64.to_le_bytes());
         data[36] = 0x02; // physical flag
         data[52] = 0x02; // best compression
+        data[56..60].copy_from_slice(&7u32.to_le_bytes()); // error granularity
 
         let set_id: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
         data[64..80].copy_from_slice(&set_id);
@@ -335,6 +348,7 @@ mod tests {
         assert_eq!(v.media_type.to_string(), "optical disk (CD/DVD/BD)");
         assert!(v.is_physical);
         assert_eq!(v.compression_level.to_string(), "best compression");
+        assert_eq!(v.error_granularity, 7);
         assert_eq!(v.set_identifier, Some(set_id));
     }
 

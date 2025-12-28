@@ -16,7 +16,7 @@ EWF information
 ───────────────
   File format:        EnCase 6
   Sectors per chunk:  64
-  Error granularity:  64
+  Error granularity:  1
   Compression method: deflate
   Compression level:  no compression
   Set identifier:     fc109986-43e1-0849-9328-afedf4a7be1e
