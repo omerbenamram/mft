@@ -3,6 +3,8 @@ alwaysApply: true
 ---
 
 When writing code or debugging issues, YOU MUST compare with original libewf implementation AND SPEC.
+AVOID using web search/firecrawl to find sources from libewf! you must use local sources.
+If you are running in a worktree - you can clone the libewf as specified by the commit hash in the external/refs/repos/libyal__libewf.commit file.
 
 Reference:
 - libewf implementation: `external/libewf/`
