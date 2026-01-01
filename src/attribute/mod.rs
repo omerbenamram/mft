@@ -51,9 +51,16 @@ impl MftAttributeContent {
         resident: &ResidentHeader,
     ) -> Result<Self> {
         match header.type_code {
-            MftAttributeType::StandardInformation => Ok(MftAttributeContent::AttrX10(
-                StandardInfoAttr::from_reader(stream)?,
-            )),
+            MftAttributeType::StandardInformation => {
+                // `$STANDARD_INFORMATION` has multiple on-disk layouts. Its value size (48 vs 72)
+                // is the discriminator, so read exactly `data_size` and parse based on length.
+                let content_size = resident.data_size as usize;
+                let mut buf = vec![0_u8; content_size];
+                stream.read_exact(&mut buf)?;
+                Ok(MftAttributeContent::AttrX10(StandardInfoAttr::from_slice(
+                    &buf,
+                )?))
+            }
             MftAttributeType::AttributeList => {
                 // An attribute list is a buffer of attribute entries which are varying sizes if
                 // the attributes contain names. Thus, we must know when to stop reading. To
