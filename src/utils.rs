@@ -1,11 +1,8 @@
-use byteorder::ReadBytesExt;
 use jiff::Timestamp;
 use jiff::fmt::StdFmtWrite;
 use jiff::fmt::temporal::DateTimePrinter;
 use serde::Serializer;
-use std::char::decode_utf16;
 use std::fmt;
-use std::io::{self, Read, Seek};
 
 const TIMESTAMP_PRINTER_P0: DateTimePrinter = DateTimePrinter::new().precision(Some(0));
 const TIMESTAMP_PRINTER_P3: DateTimePrinter = DateTimePrinter::new().precision(Some(3));
@@ -34,7 +31,7 @@ impl fmt::Display for ChronoRfc3339Compat<'_> {
     }
 }
 
-pub(crate) fn serialize_timestamp_chrono_compat<S>(
+pub fn serialize_timestamp_chrono_compat<S>(
     ts: &Timestamp,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
@@ -44,7 +41,7 @@ where
     serializer.collect_str(&ChronoRfc3339Compat(ts))
 }
 
-pub(crate) fn serialize_option_timestamp_chrono_compat<S>(
+pub fn serialize_option_timestamp_chrono_compat<S>(
     ts: &Option<Timestamp>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
@@ -63,7 +60,7 @@ where
 ///
 /// Returns an error instead of panicking when the resulting timestamp is outside `jiff::Timestamp`'s
 /// supported range (roughly years -9999 to 9999).
-pub(crate) fn windows_filetime_to_timestamp(filetime_100ns: u64) -> crate::err::Result<Timestamp> {
+pub fn windows_filetime_to_timestamp(filetime_100ns: u64) -> crate::err::Result<Timestamp> {
     // Match historical behavior (`winstructs::timestamp::WinTimestamp::to_datetime`):
     // FILETIME is 100ns resolution, but the conversion truncates to microseconds.
     const WINDOWS_TO_UNIX_EPOCH_MICROS: i64 = 11_644_473_600_000_000;
@@ -89,39 +86,6 @@ pub fn to_hex_string(bytes: &[u8]) -> String {
         s.push(LUT[(b & 0x0F) as usize] as char);
     }
     s
-}
-
-/// Reads a utf16 string from the given stream.
-/// If `len` is given, exactly `len` u16 values are read from the stream.
-/// If `len` is None, the string is assumed to be null terminated and the stream will be read to the first null (0).
-pub fn read_utf16_string<T: Read + Seek>(stream: &mut T, len: Option<usize>) -> io::Result<String> {
-    let mut buffer = match len {
-        Some(len) => Vec::with_capacity(len),
-        None => Vec::new(),
-    };
-
-    match len {
-        Some(len) => {
-            for _ in 0..len {
-                let next_char = stream.read_u16::<byteorder::LittleEndian>()?;
-                buffer.push(next_char);
-            }
-        }
-        None => loop {
-            let next_char = stream.read_u16::<byteorder::LittleEndian>()?;
-
-            if next_char == 0 {
-                break;
-            }
-
-            buffer.push(next_char);
-        },
-    }
-
-    // We need to stop if we see a NUL byte, even if asked for more bytes.
-    decode_utf16(buffer.into_iter().take_while(|&byte| byte != 0x00))
-        .map(|r| r.map_err(|_e| io::Error::from(io::ErrorKind::InvalidData)))
-        .collect()
 }
 
 #[cfg(test)]

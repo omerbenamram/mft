@@ -138,26 +138,24 @@ impl<T: Read + Seek> MftParser<T> {
         match entry.find_best_name_attribute() {
             Some(filename_header) => {
                 let parent_entry_id = filename_header.parent.entry;
+                let name = filename_header.name.to_utf8_string();
 
                 // MFT entry 5 is the root path.
                 if parent_entry_id == 5 {
-                    return Ok(Some(PathBuf::from(filename_header.name)));
+                    return Ok(Some(PathBuf::from(name)));
                 }
 
                 if parent_entry_id == entry_id {
                     trace!("Found self-referential file path, for entry ID {entry_id}");
-                    return Ok(Some(PathBuf::from("[Orphaned]").join(filename_header.name)));
+                    return Ok(Some(PathBuf::from("[Orphaned]").join(&name)));
                 }
 
                 if parent_entry_id > 0 {
-                    Ok(Some(self.inner_get_entry(
-                        parent_entry_id,
-                        Some(&filename_header.name),
-                    )))
+                    Ok(Some(self.inner_get_entry(parent_entry_id, Some(&name))))
                 } else {
                     trace!("Found orphaned entry ID {entry_id}");
 
-                    let orphan = PathBuf::from("[Orphaned]").join(filename_header.name);
+                    let orphan = PathBuf::from("[Orphaned]").join(&name);
 
                     self.entries_cache
                         .put(entry.header.record_number, orphan.clone());

@@ -11,13 +11,11 @@ use bitflags::bitflags;
 use serde::Serialize;
 use serde::ser::{self, SerializeSeq, SerializeStruct, Serializer};
 
-use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
+use crate::attribute::header::MftAttributeHeader;
 use crate::attribute::x30::{FileNameAttr, FileNamespace};
 use crate::attribute::{MftAttribute, MftAttributeContent, MftAttributeType};
 
-use std::io::Read;
-use std::io::SeekFrom;
-use std::io::{Cursor, Seek};
+use std::io::{self, Cursor, Read};
 
 pub const ZERO_HEADER: &[u8; 4] = b"\x00\x00\x00\x00";
 pub const BAAD_HEADER: &[u8; 4] = b"BAAD";
@@ -232,25 +230,31 @@ impl MftEntry {
 
     /// Retrieves most human-readable representation of a file path entry.
     /// Will prefer `Win32` file name attributes, and fallback to `Dos` paths.
-    pub fn find_best_name_attribute(&self) -> Option<FileNameAttr> {
-        let file_name_attributes: Vec<FileNameAttr> = self
+    pub fn find_best_name_attribute(&self) -> Option<FileNameAttr<'_>> {
+        let mut first: Option<FileNameAttr<'_>> = None;
+        let mut best_win32: Option<FileNameAttr<'_>> = None;
+
+        for attr in self
             .iter_attributes_matching(Some(vec![MftAttributeType::FileName]))
             .filter_map(Result::ok)
-            .filter_map(|a| a.data.into_file_name())
-            .collect();
+        {
+            let Some(fname) = attr.data.as_file_name() else {
+                continue;
+            };
 
-        // Try to find a human-readable filename first
-        let win32_filename = file_name_attributes
-            .iter()
-            .find(|a| [FileNamespace::Win32, FileNamespace::Win32AndDos].contains(&a.namespace));
+            if first.is_none() {
+                first = Some(fname.clone());
+            }
 
-        match win32_filename {
-            Some(filename) => Some(filename.clone()),
-            None => {
-                // Try to take anything
-                file_name_attributes.first().cloned()
+            if matches!(
+                fname.namespace,
+                FileNamespace::Win32 | FileNamespace::Win32AndDos
+            ) {
+                best_win32 = Some(fname.clone());
             }
         }
+
+        best_win32.or(first)
     }
 
     /// Applies the update sequence array fixups.
@@ -289,7 +293,7 @@ impl MftEntry {
     }
 
     /// Returns an iterator over all the attributes of the entry.
-    pub fn iter_attributes(&self) -> impl Iterator<Item = Result<MftAttribute>> + '_ {
+    pub fn iter_attributes(&self) -> impl Iterator<Item = Result<MftAttribute<'_>>> + '_ {
         self.iter_attributes_matching(None)
     }
 
@@ -297,42 +301,57 @@ impl MftEntry {
     pub fn iter_attributes_matching(
         &self,
         types: Option<Vec<MftAttributeType>>,
-    ) -> impl Iterator<Item = Result<MftAttribute>> + '_ {
-        let mut cursor = Cursor::new(&self.data);
-        let mut offset = u64::from(self.header.first_attribute_record_offset);
+    ) -> impl Iterator<Item = Result<MftAttribute<'_>>> + '_ {
+        let data = self.data.as_slice();
+        let mut offset = self.header.first_attribute_record_offset as usize;
         let mut exhausted = false;
 
         std::iter::from_fn(move || {
-            // We use a loop here to allow skipping filtered attributes.
             loop {
                 if exhausted {
                     return None;
                 }
 
-                if let Err(e) = cursor.seek(SeekFrom::Start(offset)) {
+                // Need at least type_code + record_length.
+                if offset + 8 > data.len() {
                     exhausted = true;
-                    return Some(Err(e.into()));
-                };
+                    return Some(Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()));
+                }
 
-                let header = MftAttributeHeader::from_stream(&mut cursor);
+                let type_code_value = u32::from_le_bytes([
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                ]);
+                if type_code_value == 0xFFFF_FFFF {
+                    return None;
+                }
 
-                // Unexpected I/O error, return err and stop iterating
-                let header = match header {
-                    Ok(h) => h,
+                let record_length = u32::from_le_bytes([
+                    data[offset + 4],
+                    data[offset + 5],
+                    data[offset + 6],
+                    data[offset + 7],
+                ]) as usize;
+
+                if record_length == 0 || offset + record_length > data.len() {
+                    exhausted = true;
+                    return Some(Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()));
+                }
+
+                let record = &data[offset..offset + record_length];
+                let start_offset = offset as u64;
+                offset += record_length;
+
+                let header = match MftAttributeHeader::from_slice(record, start_offset) {
+                    Ok(Some(h)) => h,
+                    Ok(None) => return None,
                     Err(e) => {
                         exhausted = true;
                         return Some(Err(e));
                     }
                 };
-
-                let header = match header {
-                    Some(attribute_header) => attribute_header,
-                    // Header is 0xFFFF_FFFF, we are finished
-                    None => return None,
-                };
-
-                // Increment offset before moving header.
-                offset += u64::from(header.record_length);
 
                 // Skip attribute if filtered
                 if let Some(filter) = &types
@@ -341,33 +360,14 @@ impl MftEntry {
                     continue;
                 }
 
-                // Check if the header is resident, and if it is, read the attribute content.
-                let attribute_content = match header.residential_header {
-                    ResidentialHeader::Resident(ref resident) => {
-                        match MftAttributeContent::from_stream_resident(
-                            &mut cursor,
-                            &header,
-                            resident,
-                        ) {
-                            Ok(content) => content,
-                            Err(e) => return Some(Err(e)),
-                        }
-                    }
-                    ResidentialHeader::NonResident(ref resident) => {
-                        match MftAttributeContent::from_stream_non_resident(
-                            &mut cursor,
-                            &header,
-                            resident,
-                        ) {
-                            Ok(content) => content,
-                            Err(e) => return Some(Err(e)),
-                        }
-                    }
+                let content = match MftAttributeContent::from_record(record, &header) {
+                    Ok(c) => c,
+                    Err(e) => return Some(Err(e)),
                 };
 
                 return Some(Ok(MftAttribute {
                     header,
-                    data: attribute_content,
+                    data: content,
                 }));
             }
         })

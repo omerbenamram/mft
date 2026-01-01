@@ -12,7 +12,7 @@ pub mod x90;
 use crate::err::Result;
 use crate::impl_serialize_for_bitflags;
 
-use std::io::{Cursor, Read, Seek};
+use std::io::Cursor;
 
 use bitflags::bitflags;
 
@@ -21,7 +21,8 @@ use crate::attribute::x10::StandardInfoAttr;
 use crate::attribute::x20::AttributeListAttr;
 use crate::attribute::x30::FileNameAttr;
 
-use crate::attribute::header::{MftAttributeHeader, NonResidentHeader, ResidentHeader};
+use crate::attribute::data_run::decode_data_runs;
+use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
 use crate::attribute::non_resident_attr::NonResidentAttr;
 use crate::attribute::x40::ObjectIdAttr;
 use crate::attribute::x80::DataAttr;
@@ -29,130 +30,111 @@ use crate::attribute::x90::IndexRootAttr;
 use serde::Serialize;
 
 #[derive(Serialize, Clone, Debug)]
-pub struct MftAttribute {
-    pub header: MftAttributeHeader,
-    pub data: MftAttributeContent,
+pub struct MftAttribute<'a> {
+    pub header: MftAttributeHeader<'a>,
+    pub data: MftAttributeContent<'a>,
 }
 
-impl MftAttributeContent {
-    pub fn from_stream_non_resident<S: Read + Seek>(
-        stream: &mut S,
-        header: &MftAttributeHeader,
-        resident: &NonResidentHeader,
-    ) -> Result<Self> {
-        Ok(MftAttributeContent::DataRun(NonResidentAttr::from_stream(
-            stream, header, resident,
-        )?))
-    }
+impl<'a> MftAttributeContent<'a> {
+    pub fn from_record(record: &'a [u8], header: &MftAttributeHeader<'a>) -> Result<Self> {
+        match &header.residential_header {
+            ResidentialHeader::Resident(resident) => {
+                let data_offset = resident.data_offset as usize;
+                let data_size = resident.data_size as usize;
+                let end =
+                    data_offset
+                        .checked_add(data_size)
+                        .ok_or_else(|| crate::err::Error::Any {
+                            detail: "attribute resident data offset overflow".to_string(),
+                        })?;
+                let value = record
+                    .get(data_offset..end)
+                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
 
-    pub fn from_stream_resident<S: Read + Seek>(
-        stream: &mut S,
-        header: &MftAttributeHeader,
-        resident: &ResidentHeader,
-    ) -> Result<Self> {
-        match header.type_code {
-            MftAttributeType::StandardInformation => {
-                // `$STANDARD_INFORMATION` has multiple on-disk layouts. Its value size (48 vs 72)
-                // is the discriminator, so read exactly `data_size` and parse based on length.
-                let content_size = resident.data_size as usize;
-                let mut buf = vec![0_u8; content_size];
-                stream.read_exact(&mut buf)?;
-                Ok(MftAttributeContent::AttrX10(StandardInfoAttr::from_slice(
-                    &buf,
-                )?))
+                match header.type_code {
+                    MftAttributeType::StandardInformation => Ok(MftAttributeContent::AttrX10(
+                        StandardInfoAttr::from_slice(value)?,
+                    )),
+                    MftAttributeType::AttributeList => Ok(MftAttributeContent::AttrX20(
+                        AttributeListAttr::from_slice(value)?,
+                    )),
+                    MftAttributeType::FileName => Ok(MftAttributeContent::AttrX30(
+                        FileNameAttr::from_slice(value)?,
+                    )),
+                    MftAttributeType::DATA => {
+                        Ok(MftAttributeContent::AttrX80(DataAttr::from_slice(value)))
+                    }
+                    MftAttributeType::ObjectId => Ok(MftAttributeContent::AttrX40(
+                        ObjectIdAttr::from_stream(&mut Cursor::new(value), value.len())?,
+                    )),
+                    MftAttributeType::IndexRoot => Ok(MftAttributeContent::AttrX90(
+                        IndexRootAttr::from_slice(value)?,
+                    )),
+                    _ => Ok(MftAttributeContent::Raw(RawAttribute::from_slice(
+                        header.type_code.clone(),
+                        value,
+                    ))),
+                }
             }
-            MftAttributeType::AttributeList => {
-                // An attribute list is a buffer of attribute entries which are varying sizes if
-                // the attributes contain names. Thus, we must know when to stop reading. To
-                // do this, we will create a buffer of the attribute, and stop reading attribute
-                // entries when we reach the end of the buffer.
-                let content_size = resident.data_size;
+            ResidentialHeader::NonResident(nonresident) => {
+                let datarun_offset = nonresident.datarun_offset as usize;
+                let runs = record
+                    .get(datarun_offset..)
+                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
 
-                let mut attribute_buffer = vec![0; content_size as usize];
-                stream.read_exact(&mut attribute_buffer)?;
-
-                // Create a new stream that the attribute will read from.
-                let mut new_stream = Cursor::new(attribute_buffer);
-
-                let attr_list =
-                    AttributeListAttr::from_stream(&mut new_stream, Some(content_size as u64))?;
-
-                Ok(MftAttributeContent::AttrX20(attr_list))
+                let data_runs = decode_data_runs(runs).ok_or_else(|| {
+                    crate::err::Error::FailedToDecodeDataRuns {
+                        bad_data_runs: runs.to_vec(),
+                    }
+                })?;
+                Ok(MftAttributeContent::DataRun(NonResidentAttr { data_runs }))
             }
-            MftAttributeType::FileName => Ok(MftAttributeContent::AttrX30(
-                FileNameAttr::from_stream(stream)?,
-            )),
-            // Resident DATA
-            MftAttributeType::DATA => Ok(MftAttributeContent::AttrX80(DataAttr::from_stream(
-                stream,
-                resident.data_size as usize,
-            )?)),
-            // Always Resident
-            MftAttributeType::ObjectId => Ok(MftAttributeContent::AttrX40(
-                ObjectIdAttr::from_stream(stream, resident.data_size as usize)?,
-            )),
-            // Always Resident
-            MftAttributeType::IndexRoot => Ok(MftAttributeContent::AttrX90(
-                IndexRootAttr::from_stream(stream)?,
-            )),
-            // An unparsed resident attribute
-            _ => Ok(MftAttributeContent::Raw(RawAttribute::from_stream(
-                stream,
-                header.type_code.clone(),
-                resident.data_size as usize,
-            )?)),
         }
     }
 
-    /// Converts the given attributes into a 'AttributeListAttr', consuming the object attribute object.
-    pub fn into_attribute_list(self) -> Option<AttributeListAttr> {
+    pub fn as_attribute_list(&self) -> Option<&AttributeListAttr<'a>> {
         match self {
             MftAttributeContent::AttrX20(content) => Some(content),
             _ => None,
         }
     }
 
-    /// Converts the given attributes into a `IndexRootAttr`, consuming the object attribute object.
-    pub fn into_index_root(self) -> Option<IndexRootAttr> {
+    pub fn as_index_root(&self) -> Option<&IndexRootAttr<'a>> {
         match self {
             MftAttributeContent::AttrX90(content) => Some(content),
             _ => None,
         }
     }
 
-    /// Converts the given attributes into a `ObjectIdAttr`, consuming the object attribute object.
-    pub fn into_object_id(self) -> Option<ObjectIdAttr> {
+    pub fn as_object_id(&self) -> Option<&ObjectIdAttr> {
         match self {
             MftAttributeContent::AttrX40(content) => Some(content),
             _ => None,
         }
     }
-    /// Converts the given attributes into a `StandardInfoAttr`, consuming the object attribute object.
-    pub fn into_standard_info(self) -> Option<StandardInfoAttr> {
+
+    pub fn as_standard_info(&self) -> Option<&StandardInfoAttr> {
         match self {
             MftAttributeContent::AttrX10(content) => Some(content),
             _ => None,
         }
     }
 
-    /// Converts the given attributes into a `DataAttr`, consuming the object attribute object.
-    pub fn into_data(self) -> Option<DataAttr> {
+    pub fn as_data(&self) -> Option<&DataAttr<'a>> {
         match self {
             MftAttributeContent::AttrX80(content) => Some(content),
             _ => None,
         }
     }
 
-    /// Converts the given attributes into a `FileNameAttr`, consuming the object attribute object.
-    pub fn into_file_name(self) -> Option<FileNameAttr> {
+    pub fn as_file_name(&self) -> Option<&FileNameAttr<'a>> {
         match self {
             MftAttributeContent::AttrX30(content) => Some(content),
             _ => None,
         }
     }
 
-    /// Converts the given attributes into a `NonResidentAttr`, consuming the object attribute object.
-    pub fn into_data_runs(self) -> Option<NonResidentAttr> {
+    pub fn as_data_runs(&self) -> Option<&NonResidentAttr> {
         match self {
             MftAttributeContent::DataRun(content) => Some(content),
             _ => None,
@@ -162,17 +144,15 @@ impl MftAttributeContent {
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(untagged)]
-pub enum MftAttributeContent {
-    Raw(RawAttribute),
+pub enum MftAttributeContent<'a> {
+    Raw(RawAttribute<'a>),
     AttrX10(StandardInfoAttr),
-    AttrX20(AttributeListAttr),
-    AttrX30(FileNameAttr),
+    AttrX20(AttributeListAttr<'a>),
+    AttrX30(FileNameAttr<'a>),
     AttrX40(ObjectIdAttr),
-    AttrX80(DataAttr),
-    AttrX90(IndexRootAttr),
+    AttrX80(DataAttr<'a>),
+    AttrX90(IndexRootAttr<'a>),
     DataRun(NonResidentAttr),
-    /// Empty - used when data is non resident.
-    None,
 }
 
 /// MFT Possible attribute types, from <https://docs.microsoft.com/en-us/windows/desktop/devnotes/attribute-list-entry>

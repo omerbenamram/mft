@@ -20,9 +20,18 @@ pub mod entry;
 pub mod err;
 pub mod mft;
 pub mod ntfs;
+pub mod utf16;
 
 pub(crate) mod macros;
 pub(crate) mod utils;
+
+// Public utilities (used by `mft_dump` and helpful for library consumers).
+pub use utils::{
+    serialize_option_timestamp_chrono_compat, serialize_timestamp_chrono_compat,
+    windows_filetime_to_timestamp,
+};
+
+pub use utf16::Utf16LeStr;
 
 #[cfg(test)]
 pub(crate) mod tests;

@@ -1,32 +1,21 @@
-use std::io::{Read, Seek};
-
 use crate::attribute::MftAttributeType;
-use crate::err::Result;
 use crate::utils;
 use serde::{Serialize, ser};
 
 /// Placeholder attribute for currently unparsed attributes.
 #[derive(Serialize, Clone, Debug)]
-pub struct RawAttribute {
+pub struct RawAttribute<'a> {
     pub attribute_type: MftAttributeType,
     #[serde(serialize_with = "data_as_hex")]
-    pub data: Vec<u8>,
+    pub data: &'a [u8],
 }
 
-impl RawAttribute {
-    pub fn from_stream<S: Read + Seek>(
-        stream: &mut S,
-        attribute_type: MftAttributeType,
-        data_size: usize,
-    ) -> Result<Self> {
-        let mut data = vec![0_u8; data_size];
-
-        stream.read_exact(&mut data)?;
-
-        Ok(RawAttribute {
+impl<'a> RawAttribute<'a> {
+    pub fn from_slice(attribute_type: MftAttributeType, data: &'a [u8]) -> Self {
+        RawAttribute {
             attribute_type,
             data,
-        })
+        }
     }
 }
 
