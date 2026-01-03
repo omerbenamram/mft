@@ -1,20 +1,17 @@
-use std::io::{Read, Seek};
-
+use crate::Utf16LeStr;
 use crate::attribute::FileAttributeFlags;
 use crate::err::{Error, Result};
 use log::trace;
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use encoding::all::UTF_16LE;
-use encoding::{DecoderTrap, Encoding};
-
 use jiff::Timestamp;
 use num_traits::FromPrimitive;
 use serde::Serialize;
+use std::io::Cursor;
 
 use winstructs::ntfs::mft_reference::MftReference;
 
-#[derive(FromPrimitive, Serialize, Clone, Debug, PartialOrd, PartialEq)]
+#[derive(FromPrimitive, Serialize, Clone, Copy, Debug, PartialOrd, PartialEq)]
 #[repr(u8)]
 pub enum FileNamespace {
     POSIX = 0,
@@ -24,7 +21,7 @@ pub enum FileNamespace {
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
-pub struct FileNameAttr {
+pub struct FileNameAttr<'a> {
     pub parent: MftReference,
     #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
     pub created: Timestamp,
@@ -40,10 +37,10 @@ pub struct FileNameAttr {
     pub reparse_value: u32,
     pub name_length: u8,
     pub namespace: FileNamespace,
-    pub name: String,
+    pub name: Utf16LeStr<'a>,
 }
 
-impl FileNameAttr {
+impl<'a> FileNameAttr<'a> {
     /// Parse a Filename attrbiute buffer.
     ///
     /// # Example
@@ -62,7 +59,7 @@ impl FileNameAttr {
     ///     0x65,0x00,0x00,0x00,0x00,0x00,0x00,0x00
     /// ];
     ///
-    /// let attribute = FileNameAttr::from_stream(&mut Cursor::new(attribute_buffer)).unwrap();
+    /// let attribute = FileNameAttr::from_slice(attribute_buffer).unwrap();
     ///
     /// assert_eq!(attribute.parent.entry, 5);
     /// assert_eq!(attribute.created.as_second(), 1370144608);
@@ -75,12 +72,14 @@ impl FileNameAttr {
     /// assert_eq!(attribute.reparse_value, 0);
     /// assert_eq!(attribute.name_length, 8);
     /// assert_eq!(attribute.namespace, FileNamespace::Win32AndDos);
-    /// assert_eq!(attribute.name, "$LogFile");
+    /// assert_eq!(attribute.name.to_utf8_string(), "$LogFile");
     /// ```
-    pub fn from_stream<S: Read + Seek>(stream: &mut S) -> Result<FileNameAttr> {
-        trace!("Offset {}: FilenameAttr", stream.stream_position()?);
+    pub fn from_slice(value: &'a [u8]) -> Result<FileNameAttr<'a>> {
+        let mut stream = Cursor::new(value);
+        trace!("Offset {}: FilenameAttr", stream.position());
+
         let parent =
-            MftReference::from_reader(stream).map_err(Error::failed_to_read_mft_reference)?;
+            MftReference::from_reader(&mut stream).map_err(Error::failed_to_read_mft_reference)?;
         // Timestamps are stored as Windows FILETIME (100ns since 1601-01-01 UTC).
         let created =
             crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?)?;
@@ -100,13 +99,12 @@ impl FileNameAttr {
         let namespace =
             FileNamespace::from_u8(namespace).ok_or(Error::UnknownNamespace { namespace })?;
 
-        let mut name_buffer = vec![0; name_length as usize * 2];
-        stream.read_exact(&mut name_buffer)?;
-
-        let name = match UTF_16LE.decode(&name_buffer, DecoderTrap::Ignore) {
-            Ok(s) => s,
-            Err(_e) => return Err(Error::InvalidFilename {}),
-        };
+        let name_pos = stream.position() as usize;
+        let name_len_bytes = name_length as usize * 2;
+        let name_bytes = value
+            .get(name_pos..name_pos + name_len_bytes)
+            .ok_or(Error::InvalidFilename)?;
+        let name = Utf16LeStr::from_utf16le_bytes(name_bytes);
 
         Ok(FileNameAttr {
             parent,

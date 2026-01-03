@@ -54,6 +54,7 @@ impl NonResidentAttr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Utf16LeStr;
     use crate::attribute::data_run::RunType;
     use crate::attribute::header::ResidentialHeader;
     use crate::attribute::{AttributeDataFlags, MftAttributeType};
@@ -63,7 +64,7 @@ mod tests {
         resident: &NonResidentHeader,
         record_length: u32,
         start_offset: u64,
-    ) -> MftAttributeHeader {
+    ) -> MftAttributeHeader<'static> {
         MftAttributeHeader {
             type_code: MftAttributeType::DATA,
             record_length,
@@ -73,7 +74,7 @@ mod tests {
             name_offset: None,
             data_flags: AttributeDataFlags::empty(),
             instance: 0,
-            name: String::new(),
+            name: Utf16LeStr::empty(),
             start_offset,
         }
     }

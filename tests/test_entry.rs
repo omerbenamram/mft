@@ -2,14 +2,13 @@ mod fixtures;
 
 use fixtures::*;
 use mft::Timestamp;
+use mft::attribute::MftAttributeType;
 use mft::attribute::header::ResidentialHeader;
-use mft::attribute::x30::{FileNameAttr, FileNamespace};
-use mft::attribute::x90::{IndexCollationRules, IndexEntryFlags, IndexEntryHeader};
-use mft::attribute::{FileAttributeFlags, MftAttribute, MftAttributeType};
+use mft::attribute::x30::FileNamespace;
+use mft::attribute::x90::{IndexCollationRules, IndexEntryFlags};
 use mft::entry::MftEntry;
 use mft::err::Error as MftError;
 use mft::mft::MftParser;
-use winstructs::ntfs::mft_reference::MftReference;
 
 fn filetime_bytes_to_timestamp(bytes: [u8; 8]) -> Timestamp {
     // Windows FILETIME: 100ns intervals since 1601-01-01 UTC.
@@ -50,16 +49,15 @@ fn test_entry_index_root() {
     let mut parser = MftParser::from_path(sample).unwrap();
 
     for record in parser.iter_entries().take(1).filter_map(|a| a.ok()) {
-        let attributes: Vec<MftAttribute> =
-            record.iter_attributes().filter_map(Result::ok).collect();
+        let attributes: Vec<_> = record.iter_attributes().filter_map(Result::ok).collect();
         for attribute in attributes {
             if attribute.header.type_code == MftAttributeType::IndexRoot {
-                let index_root = attribute.data.into_index_root().unwrap();
+                let index_root = attribute.data.as_index_root().unwrap();
                 assert_eq!(
                     index_root.collation_rule,
                     IndexCollationRules::CollationFilename
                 );
-                let index_entries = index_root.index_entries.index_entries;
+                let index_entries = &index_root.index_entries.index_entries;
                 assert_eq!(index_entries.len(), 4);
 
                 let created =
@@ -67,34 +65,31 @@ fn test_entry_index_root() {
                 let mft_modified =
                     filetime_bytes_to_timestamp([0x76, 0x86, 0xF6, 0x8C, 0x04, 0x64, 0xCA, 0x01]);
 
-                let index_entry_comp = IndexEntryHeader {
-                    mft_reference: MftReference {
-                        entry: 26399,
-                        sequence: 1,
-                    },
-                    index_record_length: 136,
-                    attr_fname_length: 110,
-                    flags: IndexEntryFlags::INDEX_ENTRY_NODE,
-                    fname_info: FileNameAttr {
-                        parent: MftReference {
-                            entry: 26359,
-                            sequence: 1,
-                        },
-                        created,
-                        modified: created,
-                        mft_modified,
-                        accessed: mft_modified,
-                        logical_size: 4096,
-                        physical_size: 1484,
-                        flags: FileAttributeFlags::FILE_ATTRIBUTE_ARCHIVE,
-                        reparse_value: 0,
-                        name_length: 22,
-                        namespace: FileNamespace::Win32,
-                        name: "test_returnfuncptrs.py".to_string(),
-                    },
-                };
                 let last_index_entry = &index_entries[3];
-                assert_eq!(last_index_entry, &index_entry_comp);
+                assert_eq!(last_index_entry.mft_reference.entry, 26399);
+                assert_eq!(last_index_entry.mft_reference.sequence, 1);
+                assert_eq!(last_index_entry.index_record_length, 136);
+                assert_eq!(last_index_entry.attr_fname_length, 110);
+                assert_eq!(last_index_entry.flags, IndexEntryFlags::INDEX_ENTRY_NODE);
+                assert_eq!(last_index_entry.fname_info.parent.entry, 26359);
+                assert_eq!(last_index_entry.fname_info.parent.sequence, 1);
+                assert_eq!(last_index_entry.fname_info.created, created);
+                assert_eq!(last_index_entry.fname_info.modified, created);
+                assert_eq!(last_index_entry.fname_info.mft_modified, mft_modified);
+                assert_eq!(last_index_entry.fname_info.accessed, mft_modified);
+                assert_eq!(last_index_entry.fname_info.logical_size, 4096);
+                assert_eq!(last_index_entry.fname_info.physical_size, 1484);
+                assert_eq!(
+                    last_index_entry.fname_info.flags,
+                    mft::attribute::FileAttributeFlags::FILE_ATTRIBUTE_ARCHIVE
+                );
+                assert_eq!(last_index_entry.fname_info.reparse_value, 0);
+                assert_eq!(last_index_entry.fname_info.name_length, 22);
+                assert_eq!(last_index_entry.fname_info.namespace, FileNamespace::Win32);
+                assert_eq!(
+                    last_index_entry.fname_info.name.to_utf8_string(),
+                    "test_returnfuncptrs.py"
+                );
             }
         }
     }

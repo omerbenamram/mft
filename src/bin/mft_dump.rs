@@ -269,8 +269,8 @@ impl MftDump {
                     .filter_map(|a| {
                         if a.header.type_code == MftAttributeType::DATA {
                             // resident
-                            let name = a.header.name.clone();
-                            a.data.into_data().map(|data| (name, data))
+                            let name = a.header.name;
+                            a.data.as_data().copied().map(|data| (name, data))
                         } else {
                             None
                         }
@@ -338,10 +338,10 @@ impl MftDump {
 
         self.json_buf.clear();
         if self.output_format == OutputFormat::JSON {
-            serde_json::to_writer_pretty(&mut self.json_buf, &entry)?;
+            serde_json::to_writer_pretty(&mut self.json_buf, entry)?;
         } else {
             // JSONL is the performance-critical mode; use a faster serializer.
-            sonic_json::to_writer(&mut self.json_buf, &entry)?;
+            sonic_json::to_writer(&mut self.json_buf, entry)?;
         }
         self.json_buf.push(b'\n');
         out.write_all(&self.json_buf)?;

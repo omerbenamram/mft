@@ -177,7 +177,7 @@ mod tests {
         // layout is 72 bytes. When a value is 48 bytes, the additional fields are not present
         // and must not be read from subsequent bytes in the file record.
         //
-        // See: https://flatcap.github.io/linux-ntfs/ntfs/attributes/standard_information.html
+        // See: external/refs/specs/NTFS-standard-information.md
         let buf48 = &STDINFO_72[..48];
         let attr = StandardInfoAttr::from_slice(buf48).unwrap();
 

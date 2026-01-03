@@ -34,7 +34,7 @@ fn standard_information_len_48_does_not_leak_next_attribute_header_bytes() {
 
     let si = attr
         .data
-        .into_standard_info()
+        .as_standard_info()
         .expect("expected parsed standard info");
 
     // Extended fields are absent in the 48-byte layout => should be zero.

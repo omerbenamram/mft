@@ -11,13 +11,11 @@ use bitflags::bitflags;
 use serde::Serialize;
 use serde::ser::{self, SerializeSeq, SerializeStruct, Serializer};
 
-use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
+use crate::attribute::header::MftAttributeHeader;
 use crate::attribute::x30::{FileNameAttr, FileNamespace};
 use crate::attribute::{MftAttribute, MftAttributeContent, MftAttributeType};
 
-use std::io::Read;
-use std::io::SeekFrom;
-use std::io::{Cursor, Seek};
+use std::io::{self, Cursor, Read};
 
 pub const ZERO_HEADER: &[u8; 4] = b"\x00\x00\x00\x00";
 pub const BAAD_HEADER: &[u8; 4] = b"BAAD";
@@ -232,25 +230,36 @@ impl MftEntry {
 
     /// Retrieves most human-readable representation of a file path entry.
     /// Will prefer `Win32` file name attributes, and fallback to `Dos` paths.
-    pub fn find_best_name_attribute(&self) -> Option<FileNameAttr> {
-        let file_name_attributes: Vec<FileNameAttr> = self
+    pub fn find_best_name_attribute(&self) -> Option<FileNameAttr<'_>> {
+        let mut first: Option<FileNameAttr<'_>> = None;
+        let mut best_win32: Option<FileNameAttr<'_>> = None;
+
+        for attr in self
             .iter_attributes_matching(Some(vec![MftAttributeType::FileName]))
             .filter_map(Result::ok)
-            .filter_map(|a| a.data.into_file_name())
-            .collect();
+        {
+            let Some(fname) = attr.data.as_file_name() else {
+                continue;
+            };
 
-        // Try to find a human-readable filename first
-        let win32_filename = file_name_attributes
-            .iter()
-            .find(|a| [FileNamespace::Win32, FileNamespace::Win32AndDos].contains(&a.namespace));
+            if first.is_none() {
+                first = Some(fname.clone());
+            }
 
-        match win32_filename {
-            Some(filename) => Some(filename.clone()),
-            None => {
-                // Try to take anything
-                file_name_attributes.first().cloned()
+            if matches!(
+                fname.namespace,
+                FileNamespace::Win32 | FileNamespace::Win32AndDos
+            ) {
+                // Preserve the first Win32/Win32AndDos name for stability.
+                // MFT entries can contain multiple Win32 names (e.g. hard links), and there
+                // isn't a canonical choice without directory context.
+                if best_win32.is_none() {
+                    best_win32 = Some(fname.clone());
+                }
             }
         }
+
+        best_win32.or(first)
     }
 
     /// Applies the update sequence array fixups.
@@ -289,7 +298,7 @@ impl MftEntry {
     }
 
     /// Returns an iterator over all the attributes of the entry.
-    pub fn iter_attributes(&self) -> impl Iterator<Item = Result<MftAttribute>> + '_ {
+    pub fn iter_attributes(&self) -> impl Iterator<Item = Result<MftAttribute<'_>>> + '_ {
         self.iter_attributes_matching(None)
     }
 
@@ -297,42 +306,86 @@ impl MftEntry {
     pub fn iter_attributes_matching(
         &self,
         types: Option<Vec<MftAttributeType>>,
-    ) -> impl Iterator<Item = Result<MftAttribute>> + '_ {
-        let mut cursor = Cursor::new(&self.data);
-        let mut offset = u64::from(self.header.first_attribute_record_offset);
+    ) -> impl Iterator<Item = Result<MftAttribute<'_>>> + '_ {
+        let data = self.data.as_slice();
+        let mut offset = self.header.first_attribute_record_offset as usize;
         let mut exhausted = false;
 
         std::iter::from_fn(move || {
-            // We use a loop here to allow skipping filtered attributes.
             loop {
                 if exhausted {
                     return None;
                 }
 
-                if let Err(e) = cursor.seek(SeekFrom::Start(offset)) {
+                // Need at least type_code (u32). The $END marker is just a type_code
+                // (0xFFFF_FFFF) and has no record_length.
+                let type_code_end = match offset.checked_add(4) {
+                    Some(end) => end,
+                    None => {
+                        exhausted = true;
+                        return Some(Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()));
+                    }
+                };
+                if type_code_end > data.len() {
                     exhausted = true;
-                    return Some(Err(e.into()));
+                    return Some(Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()));
+                }
+
+                let type_code_value = u32::from_le_bytes([
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                ]);
+                if type_code_value == 0xFFFF_FFFF {
+                    return None;
+                }
+
+                // Need at least type_code + record_length for real attributes.
+                let header_end = match offset.checked_add(8) {
+                    Some(end) => end,
+                    None => {
+                        exhausted = true;
+                        return Some(Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()));
+                    }
+                };
+                if header_end > data.len() {
+                    exhausted = true;
+                    return Some(Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()));
+                }
+
+                let record_length = u32::from_le_bytes([
+                    data[offset + 4],
+                    data[offset + 5],
+                    data[offset + 6],
+                    data[offset + 7],
+                ]) as usize;
+
+                let record_end = match offset.checked_add(record_length) {
+                    Some(end) => end,
+                    None => {
+                        exhausted = true;
+                        return Some(Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()));
+                    }
                 };
 
-                let header = MftAttributeHeader::from_stream(&mut cursor);
+                if record_length == 0 || record_end > data.len() {
+                    exhausted = true;
+                    return Some(Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()));
+                }
 
-                // Unexpected I/O error, return err and stop iterating
-                let header = match header {
-                    Ok(h) => h,
+                let record = &data[offset..record_end];
+                let start_offset = offset as u64;
+                offset = record_end;
+
+                let header = match MftAttributeHeader::from_slice(record, start_offset) {
+                    Ok(Some(h)) => h,
+                    Ok(None) => return None,
                     Err(e) => {
                         exhausted = true;
                         return Some(Err(e));
                     }
                 };
-
-                let header = match header {
-                    Some(attribute_header) => attribute_header,
-                    // Header is 0xFFFF_FFFF, we are finished
-                    None => return None,
-                };
-
-                // Increment offset before moving header.
-                offset += u64::from(header.record_length);
 
                 // Skip attribute if filtered
                 if let Some(filter) = &types
@@ -341,33 +394,14 @@ impl MftEntry {
                     continue;
                 }
 
-                // Check if the header is resident, and if it is, read the attribute content.
-                let attribute_content = match header.residential_header {
-                    ResidentialHeader::Resident(ref resident) => {
-                        match MftAttributeContent::from_stream_resident(
-                            &mut cursor,
-                            &header,
-                            resident,
-                        ) {
-                            Ok(content) => content,
-                            Err(e) => return Some(Err(e)),
-                        }
-                    }
-                    ResidentialHeader::NonResident(ref resident) => {
-                        match MftAttributeContent::from_stream_non_resident(
-                            &mut cursor,
-                            &header,
-                            resident,
-                        ) {
-                            Ok(content) => content,
-                            Err(e) => return Some(Err(e)),
-                        }
-                    }
+                let content = match MftAttributeContent::from_record(record, &header) {
+                    Ok(c) => c,
+                    Err(e) => return Some(Err(e)),
                 };
 
                 return Some(Ok(MftAttribute {
                     header,
-                    data: attribute_content,
+                    data: content,
                 }));
             }
         })
@@ -376,7 +410,8 @@ impl MftEntry {
 
 #[cfg(test)]
 mod tests {
-    use super::EntryHeader;
+    use super::{EntryHeader, MftEntry};
+    use crate::attribute::x30::FileNamespace;
     use std::io::Cursor;
 
     #[test]
@@ -404,5 +439,150 @@ mod tests {
         assert_eq!(entry_header.base_reference.entry, 0);
         assert_eq!(entry_header.first_attribute_id, 6);
         assert_eq!(entry_header.record_number, 38357);
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn iter_attributes_rejects_overflowing_record_length_without_panicking() {
+        // Regression test for 32-bit overflow:
+        // prior code used `offset + record_length` without checked arithmetic, which can wrap and
+        // allow an invalid slice like `data[100..50]` to panic.
+        let offset: usize = 100;
+        let record_length = u32::MAX - 50; // `offset + record_length` wraps on 32-bit.
+
+        let mut data = vec![0u8; 256];
+        data[offset..offset + 4].copy_from_slice(&0x30u32.to_le_bytes()); // FILE_NAME (arbitrary)
+        data[offset + 4..offset + 8].copy_from_slice(&record_length.to_le_bytes());
+
+        let mut header = EntryHeader::zero();
+        header.first_attribute_record_offset = offset as u16;
+
+        let entry = MftEntry {
+            header,
+            data,
+            valid_fixup: None,
+        };
+
+        let first = entry
+            .iter_attributes()
+            .next()
+            .expect("expected an iterator item");
+        assert!(first.is_err());
+    }
+
+    fn filename_value_bytes(name: &str, namespace: FileNamespace) -> Vec<u8> {
+        // Based on the example in `attribute::x30` docs; timestamps/flags are arbitrary
+        // but valid. Only `namespace` + `name` matter for this test.
+        let mut v = Vec::new();
+
+        // Parent directory reference (8 bytes): entry=5, sequence=5.
+        v.extend_from_slice(&[0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00]);
+
+        // 4x FILETIME timestamps.
+        const FT: [u8; 8] = [0xD5, 0x2D, 0x48, 0x58, 0x43, 0x5F, 0xCE, 0x01];
+        v.extend_from_slice(&FT);
+        v.extend_from_slice(&FT);
+        v.extend_from_slice(&FT);
+        v.extend_from_slice(&FT);
+
+        // Sizes.
+        v.extend_from_slice(&[0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00]); // 64MiB
+        v.extend_from_slice(&[0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00]); // 64MiB
+
+        // Flags (6) + reparse value (0).
+        v.extend_from_slice(&[0x06, 0x00, 0x00, 0x00]);
+        v.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+
+        // Name length + namespace.
+        let name_len: u8 = name.len().try_into().expect("name too long for test");
+        v.push(name_len);
+        v.push(namespace as u8);
+
+        // UTF-16LE bytes (ASCII-only for this test).
+        for b in name.as_bytes() {
+            v.push(*b);
+            v.push(0);
+        }
+
+        v
+    }
+
+    fn resident_attribute_record(type_code: u32, value: &[u8]) -> Vec<u8> {
+        // Attribute header is 24 bytes for resident attributes with no name.
+        const HEADER_LEN: usize = 24;
+        let mut record_length = HEADER_LEN + value.len();
+        // Attributes are quadword-aligned on disk; keep it aligned to match real layout.
+        record_length = (record_length + 7) & !7;
+
+        let mut r = vec![0u8; record_length];
+        r[0..4].copy_from_slice(&type_code.to_le_bytes());
+        r[4..8].copy_from_slice(&(record_length as u32).to_le_bytes());
+        r[8] = 0; // resident
+        r[9] = 0; // name length
+        r[10..12].copy_from_slice(&0u16.to_le_bytes()); // name offset (unused)
+        r[12..14].copy_from_slice(&0u16.to_le_bytes()); // flags
+        r[14..16].copy_from_slice(&0u16.to_le_bytes()); // instance
+        r[16..20].copy_from_slice(&(value.len() as u32).to_le_bytes()); // value length
+        r[20..22].copy_from_slice(&(HEADER_LEN as u16).to_le_bytes()); // value offset
+        r[22] = 0; // index flag
+        r[23] = 0; // padding
+
+        r[HEADER_LEN..HEADER_LEN + value.len()].copy_from_slice(value);
+        r
+    }
+
+    #[test]
+    fn find_best_name_attribute_prefers_first_win32_over_later_win32() {
+        // Regression test: avoid returning the *last* Win32 FILE_NAME attribute.
+        let v1 = filename_value_bytes("first.txt", FileNamespace::Win32);
+        let v2 = filename_value_bytes("second.txt", FileNamespace::Win32);
+
+        let a1 = resident_attribute_record(0x30, &v1);
+        let a2 = resident_attribute_record(0x30, &v2);
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&a1);
+        data.extend_from_slice(&a2);
+        data.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // $END
+
+        let mut header = EntryHeader::zero();
+        header.first_attribute_record_offset = 0;
+
+        let entry = MftEntry {
+            header,
+            data,
+            valid_fixup: None,
+        };
+
+        let best = entry
+            .find_best_name_attribute()
+            .expect("expected FILE_NAME attribute");
+        assert_eq!(best.name.to_utf8_string(), "first.txt");
+    }
+
+    #[test]
+    fn iter_attributes_stops_on_end_marker_without_record_length() {
+        // If the attribute list is tightly packed and ends with only the 4-byte $END marker
+        // (0xFFFF_FFFF), the iterator must stop cleanly (return None) without trying to read
+        // a non-existent record length.
+        let v1 = filename_value_bytes("one.txt", FileNamespace::Win32);
+        let a1 = resident_attribute_record(0x30, &v1);
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&a1);
+        data.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // $END (exactly 4 bytes)
+
+        let mut header = EntryHeader::zero();
+        header.first_attribute_record_offset = 0;
+
+        let entry = MftEntry {
+            header,
+            data,
+            valid_fixup: None,
+        };
+
+        let mut it = entry.iter_attributes();
+        assert!(it.next().expect("expected first attribute").is_ok());
+        assert!(it.next().is_none());
     }
 }

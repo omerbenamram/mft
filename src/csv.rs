@@ -78,12 +78,14 @@ impl FlatMftEntryWithName {
         let file_name = entry_attributes
             .iter()
             .find(|a| a.header.type_code == MftAttributeType::FileName)
-            .and_then(|a| a.data.clone().into_file_name());
+            .and_then(|a| a.data.as_file_name())
+            .cloned();
 
         let standard_info = entry_attributes
             .iter()
             .find(|a| a.header.type_code == MftAttributeType::StandardInformation)
-            .and_then(|a| a.data.clone().into_standard_info());
+            .and_then(|a| a.data.as_standard_info())
+            .cloned();
 
         let data_attr = entry_attributes
             .iter()

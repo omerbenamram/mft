@@ -1,16 +1,42 @@
+use crate::Utf16LeStr;
 use crate::attribute::{AttributeDataFlags, MftAttributeType};
 use crate::err::{Error, Result};
-use crate::utils::read_utf16_string;
 
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::{ByteOrder, LittleEndian};
 use num_traits::FromPrimitive;
 use serde::Serialize;
-use std::io::{Read, Seek, SeekFrom};
+use std::io;
+
+fn get_slice(buf: &[u8], offset: usize, len: usize) -> io::Result<&[u8]> {
+    let end = offset
+        .checked_add(len)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "offset overflow"))?;
+    buf.get(offset..end)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))
+}
+
+fn read_u8(buf: &[u8], offset: usize) -> io::Result<u8> {
+    buf.get(offset)
+        .copied()
+        .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))
+}
+
+fn read_u16_le(buf: &[u8], offset: usize) -> io::Result<u16> {
+    Ok(LittleEndian::read_u16(get_slice(buf, offset, 2)?))
+}
+
+fn read_u32_le(buf: &[u8], offset: usize) -> io::Result<u32> {
+    Ok(LittleEndian::read_u32(get_slice(buf, offset, 4)?))
+}
+
+fn read_u64_le(buf: &[u8], offset: usize) -> io::Result<u64> {
+    Ok(LittleEndian::read_u64(get_slice(buf, offset, 8)?))
+}
 
 /// Represents the union defined in
 /// <https://docs.microsoft.com/en-us/windows/desktop/devnotes/attribute-record-header>
 #[derive(Serialize, Clone, Debug)]
-pub struct MftAttributeHeader {
+pub struct MftAttributeHeader<'a> {
     pub type_code: MftAttributeType,
     /// The size of the attribute record, in bytes.
     /// This value reflects the required size for the record variant and is always rounded to the nearest quadword boundary.
@@ -28,7 +54,7 @@ pub struct MftAttributeHeader {
     pub data_flags: AttributeDataFlags,
     /// The unique instance for this attribute in the file record.
     pub instance: u16,
-    pub name: String,
+    pub name: Utf16LeStr<'a>,
     /// start of the attribute; used for calculating relative offsets
     pub start_offset: u64,
 }
@@ -40,72 +66,104 @@ pub enum ResidentialHeader {
     NonResident(NonResidentHeader),
 }
 
-impl MftAttributeHeader {
-    /// Tries to read an AttributeHeader from the stream.
-    /// Will return `None` if the type code is $END.
-    pub fn from_stream<S: Read + Seek>(stream: &mut S) -> Result<Option<MftAttributeHeader>> {
-        let attribute_header_start_offset = stream.stream_position()?;
-
-        let type_code_value = stream.read_u32::<LittleEndian>()?;
-
+impl<'a> MftAttributeHeader<'a> {
+    /// Parse an attribute header from an attribute record slice.
+    ///
+    /// Returns `Ok(None)` if the type code is `$END` (`0xFFFF_FFFF`).
+    pub fn from_slice(
+        record: &'a [u8],
+        attribute_start_offset: u64,
+    ) -> Result<Option<MftAttributeHeader<'a>>> {
+        let type_code_value = read_u32_le(record, 0)?;
         if type_code_value == 0xFFFF_FFFF {
             return Ok(None);
         }
 
-        let type_code = match MftAttributeType::from_u32(type_code_value) {
-            Some(attribute_type) => attribute_type,
-            None => {
-                return Err(Error::UnknownAttributeType {
-                    attribute_type: type_code_value,
-                });
+        let type_code =
+            MftAttributeType::from_u32(type_code_value).ok_or(Error::UnknownAttributeType {
+                attribute_type: type_code_value,
+            })?;
+
+        let record_length = read_u32_le(record, 4)?;
+        let form_code = read_u8(record, 8)?;
+        let name_size = read_u8(record, 9)?;
+        let name_offset_raw = read_u16_le(record, 10)?;
+        let name_offset = (name_size > 0).then_some(name_offset_raw);
+
+        let data_flags = AttributeDataFlags::from_bits_truncate(read_u16_le(record, 12)?);
+        let instance = read_u16_le(record, 14)?;
+
+        let residential_header = match form_code {
+            0 => {
+                let data_size = read_u32_le(record, 16)?;
+                let data_offset = read_u16_le(record, 20)?;
+                let index_flag = read_u8(record, 22)?;
+                let padding = read_u8(record, 23)?;
+                ResidentialHeader::Resident(ResidentHeader {
+                    data_size,
+                    data_offset,
+                    index_flag,
+                    padding,
+                })
             }
-        };
+            1 => {
+                let vnc_first = read_u64_le(record, 16)?;
+                let vnc_last = read_u64_le(record, 24)?;
+                let datarun_offset = read_u16_le(record, 32)?;
+                let unit_compression_size = read_u16_le(record, 34)?;
+                let padding = read_u32_le(record, 36)?;
+                let allocated_length = read_u64_le(record, 40)?;
+                let file_size = read_u64_le(record, 48)?;
+                let valid_data_length = read_u64_le(record, 56)?;
 
-        let attribute_size = stream.read_u32::<LittleEndian>()?;
-        let resident_flag = stream.read_u8()?;
-        let name_size = stream.read_u8()?;
-        let name_offset = {
-            // We always read the two bytes to advance the stream.
-            let value = stream.read_u16::<LittleEndian>()?;
-            if name_size > 0 { Some(value) } else { None }
-        };
+                let total_allocated = if unit_compression_size > 0 {
+                    Some(read_u64_le(record, 64)?)
+                } else {
+                    None
+                };
 
-        let data_flags = AttributeDataFlags::from_bits_truncate(stream.read_u16::<LittleEndian>()?);
-        let id = stream.read_u16::<LittleEndian>()?;
-
-        let residential_header = match resident_flag {
-            0 => ResidentialHeader::Resident(ResidentHeader::from_stream(stream)?),
-            1 => ResidentialHeader::NonResident(NonResidentHeader::from_stream(stream)?),
+                ResidentialHeader::NonResident(NonResidentHeader {
+                    vnc_first,
+                    vnc_last,
+                    datarun_offset,
+                    unit_compression_size,
+                    padding,
+                    allocated_length,
+                    file_size,
+                    valid_data_length,
+                    total_allocated,
+                })
+            }
             _ => {
                 return Err(Error::UnhandledResidentFlag {
-                    flag: resident_flag,
-                    offset: stream.stream_position()?,
+                    flag: form_code,
+                    offset: attribute_start_offset,
                 });
             }
         };
 
-        // Name is optional, and will not be present if size == 0.
         let name = if name_size > 0 {
-            stream.seek(SeekFrom::Start(
-                attribute_header_start_offset
-                    + u64::from(name_offset.expect("name_size > 0 is invariant")),
-            ))?;
-            read_utf16_string(stream, Some(name_size as usize))?
+            let off = name_offset_raw as usize;
+            let len_bytes = name_size as usize * 2;
+            let name_bytes = record
+                .get(off..off + len_bytes)
+                .ok_or(Error::InvalidFilename)?;
+            Utf16LeStr::from_utf16le_bytes_until_nul(name_bytes)
         } else {
-            String::new()
+            Utf16LeStr::empty()
         };
 
         Ok(Some(MftAttributeHeader {
             type_code,
-            record_length: attribute_size,
-            form_code: resident_flag,
+            record_length,
+            form_code,
+            residential_header,
             name_size,
             name_offset,
             data_flags,
-            instance: id,
+            instance,
             name,
-            residential_header,
-            start_offset: attribute_header_start_offset,
+            start_offset: attribute_start_offset,
         }))
     }
 }
@@ -123,10 +181,11 @@ pub struct ResidentHeader {
 }
 
 impl ResidentHeader {
-    pub fn from_stream<R: Read>(reader: &mut R) -> Result<ResidentHeader> {
+    pub fn from_stream<R: std::io::Read>(reader: &mut R) -> Result<ResidentHeader> {
+        use byteorder::ReadBytesExt;
         Ok(ResidentHeader {
-            data_size: reader.read_u32::<LittleEndian>()?,
-            data_offset: reader.read_u16::<LittleEndian>()?,
+            data_size: reader.read_u32::<byteorder::LittleEndian>()?,
+            data_offset: reader.read_u16::<byteorder::LittleEndian>()?,
             index_flag: reader.read_u8()?,
             padding: reader.read_u8()?,
         })
@@ -159,18 +218,19 @@ pub struct NonResidentHeader {
 }
 
 impl NonResidentHeader {
-    pub fn from_stream<R: Read>(reader: &mut R) -> Result<NonResidentHeader> {
-        let vnc_first = reader.read_u64::<LittleEndian>()?;
-        let vnc_last = reader.read_u64::<LittleEndian>()?;
-        let datarun_offset = reader.read_u16::<LittleEndian>()?;
-        let unit_compression_size = reader.read_u16::<LittleEndian>()?;
-        let padding = reader.read_u32::<LittleEndian>()?;
-        let allocated_length = reader.read_u64::<LittleEndian>()?;
-        let file_size = reader.read_u64::<LittleEndian>()?;
-        let valid_data_length = reader.read_u64::<LittleEndian>()?;
+    pub fn from_stream<R: std::io::Read>(reader: &mut R) -> Result<NonResidentHeader> {
+        use byteorder::ReadBytesExt;
+        let vnc_first = reader.read_u64::<byteorder::LittleEndian>()?;
+        let vnc_last = reader.read_u64::<byteorder::LittleEndian>()?;
+        let datarun_offset = reader.read_u16::<byteorder::LittleEndian>()?;
+        let unit_compression_size = reader.read_u16::<byteorder::LittleEndian>()?;
+        let padding = reader.read_u32::<byteorder::LittleEndian>()?;
+        let allocated_length = reader.read_u64::<byteorder::LittleEndian>()?;
+        let file_size = reader.read_u64::<byteorder::LittleEndian>()?;
+        let valid_data_length = reader.read_u64::<byteorder::LittleEndian>()?;
 
         let total_allocated = if unit_compression_size > 0 {
-            Some(reader.read_u64::<LittleEndian>()?)
+            Some(reader.read_u64::<byteorder::LittleEndian>()?)
         } else {
             None
         };
@@ -193,7 +253,6 @@ impl NonResidentHeader {
 mod tests {
     use super::MftAttributeHeader;
     use crate::attribute::MftAttributeType;
-    use std::io::Cursor;
 
     #[test]
     fn attribute_test_01_resident() {
@@ -202,11 +261,9 @@ mod tests {
             0x00, 0x00, 0x48, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00,
         ];
 
-        let mut cursor = Cursor::new(raw);
-
-        let attribute_header = MftAttributeHeader::from_stream(&mut cursor)
-            .expect("Should not be $End")
-            .expect("Shold parse correctly");
+        let attribute_header = MftAttributeHeader::from_slice(raw, 0)
+            .expect("Shold parse correctly")
+            .expect("Should not be $End");
 
         assert_eq!(
             attribute_header.type_code,
@@ -229,11 +286,9 @@ mod tests {
             0x0C, 0x32, 0xA0, 0x56, 0xE3, 0xE6, 0x24, 0x00, 0xFF, 0xFF,
         ];
 
-        let mut cursor = Cursor::new(raw);
-
-        let attribute_header = MftAttributeHeader::from_stream(&mut cursor)
-            .expect("Should not be $End")
-            .expect("Shold parse correctly");
+        let attribute_header = MftAttributeHeader::from_slice(raw, 0)
+            .expect("Shold parse correctly")
+            .expect("Should not be $End");
 
         assert_eq!(attribute_header.type_code, MftAttributeType::DATA);
         assert_eq!(attribute_header.record_length, 80);

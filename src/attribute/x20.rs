@@ -1,26 +1,22 @@
+use crate::Utf16LeStr;
 use crate::err::{Error, Result};
-
-use byteorder::{LittleEndian, ReadBytesExt};
-use encoding::all::UTF_16LE;
-use encoding::{DecoderTrap, Encoding};
 
 use serde::Serialize;
 
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Cursor;
 use winstructs::ntfs::mft_reference::MftReference;
 
 /// The AttributeListAttr represents the $20 attribute, which contains a list
 /// of attribute entries in child entries.
 ///
 #[derive(Serialize, Clone, Debug)]
-pub struct AttributeListAttr {
+pub struct AttributeListAttr<'a> {
     /// A list of AttributeListEntry that make up this AttributeListAttr
-    pub entries: Vec<AttributeListEntry>,
+    pub entries: Vec<AttributeListEntry<'a>>,
 }
 
-impl AttributeListAttr {
-    /// Read AttributeListAttr from stream. Stream should be the size of the attribute's data itself
-    /// if no stream_size is passed in.
+impl<'a> AttributeListAttr<'a> {
+    /// Read AttributeListAttr from a resident attribute value slice.
     ///
     ///  # Example
     ///
@@ -49,49 +45,33 @@ impl AttributeListAttr {
     ///     0x54,0x00,0x41,0x00,0x00,0x00,0x00,0x00
     /// ];
     ///
-    /// let attribute_list = AttributeListAttr::from_stream(
-    ///     &mut Cursor::new(attribute_content_buffer),
-    ///     None
-    /// ).unwrap();
+    /// let attribute_list = AttributeListAttr::from_slice(attribute_content_buffer).unwrap();
     ///
     /// assert_eq!(attribute_list.entries.len(), 7);
     /// ```
-    pub fn from_stream<S: Read + Seek>(
-        mut stream: &mut S,
-        stream_size: Option<u64>,
-    ) -> Result<AttributeListAttr> {
-        let mut start_offset = stream.stream_position()?;
-        let end_offset = match stream_size {
-            Some(s) => s,
-            None => {
-                // If no stream size was passed in we seek to the end of the stream,
-                // then tell to get the ending offset, then seek back to the start,
-                // thus, its better to just pass the stream size.
-                stream.seek(SeekFrom::End(0))?;
+    pub fn from_slice(value: &'a [u8]) -> Result<AttributeListAttr<'a>> {
+        let mut entries: Vec<AttributeListEntry<'a>> = Vec::new();
 
-                let offset = stream.stream_position()?;
-
-                stream.rewind()?;
-
-                offset
+        let mut offset = 0usize;
+        while offset < value.len() {
+            if value.len().saturating_sub(offset) < AttributeListEntry::MIN_LEN {
+                break;
             }
-        };
 
-        let mut entries: Vec<AttributeListEntry> = Vec::new();
+            let entry = AttributeListEntry::from_slice_at(value, offset)?;
+            let record_length = entry.record_length as usize;
+            if record_length == 0 {
+                return Err(Error::Any {
+                    detail: "attribute list entry record_length is 0".to_string(),
+                });
+            }
 
-        // iterate attribute content parsing attribute list entries
-        while start_offset < end_offset {
-            // parse the entry from the stream
-            let attr_entry = AttributeListEntry::from_stream(&mut stream)?;
-
-            // update the starting offset
-            start_offset += attr_entry.record_length as u64;
-
-            // add attribute entry to entries vec
-            entries.push(attr_entry);
-
-            // seek the stream to next start offset to avoid padding
-            stream.seek(SeekFrom::Start(start_offset))?;
+            entries.push(entry);
+            offset = offset
+                .checked_add(record_length)
+                .ok_or_else(|| Error::Any {
+                    detail: "attribute list offset overflow".to_string(),
+                })?;
         }
 
         Ok(Self { entries })
@@ -102,7 +82,7 @@ impl AttributeListAttr {
 /// <https://docs.microsoft.com/en-us/windows/win32/devnotes/attribute-list-entry>
 ///
 #[derive(Serialize, Clone, Debug)]
-pub struct AttributeListEntry {
+pub struct AttributeListEntry<'a> {
     /// The attribute code
     pub attribute_type: u32,
     /// This entry length
@@ -120,10 +100,12 @@ pub struct AttributeListEntry {
     /// The attribute's id
     pub reserved: u16,
     /// The attribute's name
-    pub name: String,
+    pub name: Utf16LeStr<'a>,
 }
-impl AttributeListEntry {
-    /// Create AttributeListEntry from a stream.
+impl<'a> AttributeListEntry<'a> {
+    const MIN_LEN: usize = 26;
+
+    /// Create AttributeListEntry from a resident attribute value slice at `offset`.
     ///
     ///  # Example
     ///
@@ -139,9 +121,7 @@ impl AttributeListEntry {
     ///     0x00,0x00,0x12,0x07,0x80,0xF8,0xFF,0xFF
     /// ];
     ///
-    /// let attribute_entry = AttributeListEntry::from_stream(
-    ///     &mut Cursor::new(attribute_buffer)
-    /// ).unwrap();
+    /// let attribute_entry = AttributeListEntry::from_slice_at(attribute_buffer, 0).unwrap();
     ///
     /// assert_eq!(attribute_entry.attribute_type, 16);
     /// assert_eq!(attribute_entry.record_length, 32);
@@ -151,32 +131,48 @@ impl AttributeListEntry {
     /// assert_eq!(attribute_entry.segment_reference.entry, 10019);
     /// assert_eq!(attribute_entry.segment_reference.sequence, 1);
     /// assert_eq!(attribute_entry.reserved, 0);
-    /// assert_eq!(attribute_entry.name, "".to_string());
+    /// assert!(attribute_entry.name.is_empty());
     /// ```
-    pub fn from_stream<S: Read + Seek>(stream: &mut S) -> Result<AttributeListEntry> {
-        let start_offset = stream.stream_position()?;
+    pub fn from_slice_at(value: &'a [u8], offset: usize) -> Result<AttributeListEntry<'a>> {
+        if value.len().saturating_sub(offset) < Self::MIN_LEN {
+            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+        }
 
-        let attribute_type = stream.read_u32::<LittleEndian>()?;
-        let record_length = stream.read_u16::<LittleEndian>()?;
-        let name_length = stream.read_u8()?;
-        let name_offset = stream.read_u8()?;
-        let lowest_vcn = stream.read_u64::<LittleEndian>()?;
-        let segment_reference =
-            MftReference::from_reader(stream).map_err(Error::failed_to_read_mft_reference)?;
-        let reserved = stream.read_u16::<LittleEndian>()?;
+        let attribute_type = u32::from_le_bytes([
+            value[offset],
+            value[offset + 1],
+            value[offset + 2],
+            value[offset + 3],
+        ]);
+        let record_length = u16::from_le_bytes([value[offset + 4], value[offset + 5]]);
+        let name_length = value[offset + 6];
+        let name_offset = value[offset + 7];
+        let lowest_vcn = u64::from_le_bytes([
+            value[offset + 8],
+            value[offset + 9],
+            value[offset + 10],
+            value[offset + 11],
+            value[offset + 12],
+            value[offset + 13],
+            value[offset + 14],
+            value[offset + 15],
+        ]);
+
+        let segment_reference = {
+            let mut cursor = Cursor::new(&value[offset + 16..offset + 24]);
+            MftReference::from_reader(&mut cursor).map_err(Error::failed_to_read_mft_reference)?
+        };
+        let reserved = u16::from_le_bytes([value[offset + 24], value[offset + 25]]);
 
         let name = if name_length > 0 {
-            stream.seek(SeekFrom::Start(start_offset + u64::from(name_offset)))?;
-
-            let mut name_buffer = vec![0; name_length as usize * 2];
-            stream.read_exact(&mut name_buffer)?;
-
-            match UTF_16LE.decode(&name_buffer, DecoderTrap::Ignore) {
-                Ok(s) => s,
-                Err(_e) => return Err(Error::InvalidFilename {}),
-            }
+            let name_off = offset + name_offset as usize;
+            let name_len_bytes = name_length as usize * 2;
+            let name_bytes = value
+                .get(name_off..name_off + name_len_bytes)
+                .ok_or(Error::InvalidFilename)?;
+            Utf16LeStr::from_utf16le_bytes(name_bytes)
         } else {
-            String::new()
+            Utf16LeStr::empty()
         };
 
         Ok(AttributeListEntry {

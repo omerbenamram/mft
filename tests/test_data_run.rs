@@ -1,8 +1,8 @@
 mod fixtures;
 
 use fixtures::*;
+use mft::attribute::MftAttributeType;
 use mft::attribute::data_run::{DataRun, RunType, decode_data_runs};
-use mft::attribute::{MftAttribute, MftAttributeType};
 use mft::mft::MftParser;
 
 #[test]
@@ -364,11 +364,10 @@ fn test_data_runs_at_offset() {
     let mut parser = MftParser::from_path(sample).unwrap();
 
     for record in parser.iter_entries().take(1).filter_map(|a| a.ok()) {
-        let attributes: Vec<MftAttribute> =
-            record.iter_attributes().filter_map(Result::ok).collect();
+        let attributes: Vec<_> = record.iter_attributes().filter_map(Result::ok).collect();
         for attribute in attributes {
             if attribute.header.type_code == MftAttributeType::DATA {
-                let data_runs = attribute.data.into_data_runs().unwrap();
+                let data_runs = attribute.data.as_data_runs().unwrap();
                 assert_eq!(data_runs.data_runs.len(), 53);
                 assert_eq!(data_runs.data_runs[0].lcn_offset, 0);
                 assert_eq!(data_runs.data_runs[0].lcn_length, 517248);
