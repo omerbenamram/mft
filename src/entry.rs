@@ -317,8 +317,16 @@ impl MftEntry {
                     return None;
                 }
 
-                // Need at least type_code + record_length.
-                if offset + 8 > data.len() {
+                // Need at least type_code (u32). The $END marker is just a type_code
+                // (0xFFFF_FFFF) and has no record_length.
+                let type_code_end = match offset.checked_add(4) {
+                    Some(end) => end,
+                    None => {
+                        exhausted = true;
+                        return Some(Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()));
+                    }
+                };
+                if type_code_end > data.len() {
                     exhausted = true;
                     return Some(Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()));
                 }
@@ -333,6 +341,19 @@ impl MftEntry {
                     return None;
                 }
 
+                // Need at least type_code + record_length for real attributes.
+                let header_end = match offset.checked_add(8) {
+                    Some(end) => end,
+                    None => {
+                        exhausted = true;
+                        return Some(Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()));
+                    }
+                };
+                if header_end > data.len() {
+                    exhausted = true;
+                    return Some(Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()));
+                }
+
                 let record_length = u32::from_le_bytes([
                     data[offset + 4],
                     data[offset + 5],
@@ -340,14 +361,22 @@ impl MftEntry {
                     data[offset + 7],
                 ]) as usize;
 
-                if record_length == 0 || offset + record_length > data.len() {
+                let record_end = match offset.checked_add(record_length) {
+                    Some(end) => end,
+                    None => {
+                        exhausted = true;
+                        return Some(Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()));
+                    }
+                };
+
+                if record_length == 0 || record_end > data.len() {
                     exhausted = true;
                     return Some(Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()));
                 }
 
-                let record = &data[offset..offset + record_length];
+                let record = &data[offset..record_end];
                 let start_offset = offset as u64;
-                offset += record_length;
+                offset = record_end;
 
                 let header = match MftAttributeHeader::from_slice(record, start_offset) {
                     Ok(Some(h)) => h,
@@ -410,6 +439,35 @@ mod tests {
         assert_eq!(entry_header.base_reference.entry, 0);
         assert_eq!(entry_header.first_attribute_id, 6);
         assert_eq!(entry_header.record_number, 38357);
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn iter_attributes_rejects_overflowing_record_length_without_panicking() {
+        // Regression test for 32-bit overflow:
+        // prior code used `offset + record_length` without checked arithmetic, which can wrap and
+        // allow an invalid slice like `data[100..50]` to panic.
+        let offset: usize = 100;
+        let record_length = u32::MAX - 50; // `offset + record_length` wraps on 32-bit.
+
+        let mut data = vec![0u8; 256];
+        data[offset..offset + 4].copy_from_slice(&0x30u32.to_le_bytes()); // FILE_NAME (arbitrary)
+        data[offset + 4..offset + 8].copy_from_slice(&record_length.to_le_bytes());
+
+        let mut header = EntryHeader::zero();
+        header.first_attribute_record_offset = offset as u16;
+
+        let entry = MftEntry {
+            header,
+            data,
+            valid_fixup: None,
+        };
+
+        let first = entry
+            .iter_attributes()
+            .next()
+            .expect("expected an iterator item");
+        assert!(first.is_err());
     }
 
     fn filename_value_bytes(name: &str, namespace: FileNamespace) -> Vec<u8> {
@@ -500,5 +558,31 @@ mod tests {
             .find_best_name_attribute()
             .expect("expected FILE_NAME attribute");
         assert_eq!(best.name.to_utf8_string(), "first.txt");
+    }
+
+    #[test]
+    fn iter_attributes_stops_on_end_marker_without_record_length() {
+        // If the attribute list is tightly packed and ends with only the 4-byte $END marker
+        // (0xFFFF_FFFF), the iterator must stop cleanly (return None) without trying to read
+        // a non-existent record length.
+        let v1 = filename_value_bytes("one.txt", FileNamespace::Win32);
+        let a1 = resident_attribute_record(0x30, &v1);
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&a1);
+        data.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // $END (exactly 4 bytes)
+
+        let mut header = EntryHeader::zero();
+        header.first_attribute_record_offset = 0;
+
+        let entry = MftEntry {
+            header,
+            data,
+            valid_fixup: None,
+        };
+
+        let mut it = entry.iter_attributes();
+        assert!(it.next().expect("expected first attribute").is_ok());
+        assert!(it.next().is_none());
     }
 }
