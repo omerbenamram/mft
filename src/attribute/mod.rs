@@ -82,11 +82,19 @@ impl<'a> MftAttributeContent<'a> {
                     .get(datarun_offset..)
                     .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
 
-                let data_runs = decode_data_runs(runs).ok_or_else(|| {
-                    crate::err::Error::FailedToDecodeDataRuns {
-                        bad_data_runs: runs.to_vec(),
-                    }
-                })?;
+                // The mapping pairs array is normally terminated by a 0 byte. However, older
+                // versions of this crate accepted the edge-case where the mapping pairs section
+                // is empty (`datarun_offset == record_length`), treating it as an empty runlist.
+                // Preserve that behavior for compatibility with such records.
+                let data_runs = if runs.is_empty() {
+                    Vec::new()
+                } else {
+                    decode_data_runs(runs).ok_or_else(|| {
+                        crate::err::Error::FailedToDecodeDataRuns {
+                            bad_data_runs: runs.to_vec(),
+                        }
+                    })?
+                };
                 Ok(MftAttributeContent::DataRun(NonResidentAttr { data_runs }))
             }
         }
@@ -243,3 +251,51 @@ bitflags! {
 }
 
 impl_serialize_for_bitflags! {AttributeDataFlags}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::attribute::header::MftAttributeHeader;
+
+    #[test]
+    fn nonresident_attribute_allows_empty_mapping_pairs_section() {
+        // Regression test:
+        // `NonResidentAttr::from_stream` historically treated `data_run_bytes_count == 0`
+        // (i.e. `datarun_offset == record_length`) as a valid empty runlist.
+        // The slice-based parser must preserve that behavior to avoid rejecting such records.
+        let record_length: u32 = 64;
+        let mut record = vec![0u8; record_length as usize];
+
+        // Common attribute record header.
+        record[0..4].copy_from_slice(&(MftAttributeType::DATA as u32).to_le_bytes());
+        record[4..8].copy_from_slice(&record_length.to_le_bytes());
+        record[8] = 1; // non-resident
+        record[9] = 0; // name length
+        record[10..12].copy_from_slice(&0u16.to_le_bytes()); // name offset (unused)
+        record[12..14].copy_from_slice(&0u16.to_le_bytes()); // flags
+        record[14..16].copy_from_slice(&0u16.to_le_bytes()); // instance
+
+        // Non-resident header.
+        // vnc_first (16..24) and vnc_last (24..32) are 0.
+        record[32..34].copy_from_slice(&(record_length as u16).to_le_bytes()); // datarun_offset
+        record[34..36].copy_from_slice(&0u16.to_le_bytes()); // compression unit size
+        // padding (36..40) = 0
+        // allocated_length (40..48) = 0
+        // file_size (48..56) = 0
+        // valid_data_length (56..64) = 0
+
+        let header = MftAttributeHeader::from_slice(&record, 0)
+            .expect("expected header parse to succeed")
+            .expect("expected attribute type != $END");
+
+        let content = MftAttributeContent::from_record(&record, &header)
+            .expect("expected non-resident attribute to parse successfully");
+
+        match content {
+            MftAttributeContent::DataRun(nonresident) => {
+                assert!(nonresident.data_runs.is_empty());
+            }
+            other => panic!("expected DataRun content, got {other:?}"),
+        }
+    }
+}
