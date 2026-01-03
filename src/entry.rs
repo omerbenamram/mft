@@ -250,7 +250,12 @@ impl MftEntry {
                 fname.namespace,
                 FileNamespace::Win32 | FileNamespace::Win32AndDos
             ) {
-                best_win32 = Some(fname.clone());
+                // Preserve the first Win32/Win32AndDos name for stability.
+                // MFT entries can contain multiple Win32 names (e.g. hard links), and there
+                // isn't a canonical choice without directory context.
+                if best_win32.is_none() {
+                    best_win32 = Some(fname.clone());
+                }
             }
         }
 
@@ -376,7 +381,8 @@ impl MftEntry {
 
 #[cfg(test)]
 mod tests {
-    use super::EntryHeader;
+    use super::{EntryHeader, MftEntry};
+    use crate::attribute::x30::FileNamespace;
     use std::io::Cursor;
 
     #[test]
@@ -404,5 +410,95 @@ mod tests {
         assert_eq!(entry_header.base_reference.entry, 0);
         assert_eq!(entry_header.first_attribute_id, 6);
         assert_eq!(entry_header.record_number, 38357);
+    }
+
+    fn filename_value_bytes(name: &str, namespace: FileNamespace) -> Vec<u8> {
+        // Based on the example in `attribute::x30` docs; timestamps/flags are arbitrary
+        // but valid. Only `namespace` + `name` matter for this test.
+        let mut v = Vec::new();
+
+        // Parent directory reference (8 bytes): entry=5, sequence=5.
+        v.extend_from_slice(&[0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00]);
+
+        // 4x FILETIME timestamps.
+        const FT: [u8; 8] = [0xD5, 0x2D, 0x48, 0x58, 0x43, 0x5F, 0xCE, 0x01];
+        v.extend_from_slice(&FT);
+        v.extend_from_slice(&FT);
+        v.extend_from_slice(&FT);
+        v.extend_from_slice(&FT);
+
+        // Sizes.
+        v.extend_from_slice(&[0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00]); // 64MiB
+        v.extend_from_slice(&[0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00]); // 64MiB
+
+        // Flags (6) + reparse value (0).
+        v.extend_from_slice(&[0x06, 0x00, 0x00, 0x00]);
+        v.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+
+        // Name length + namespace.
+        let name_len: u8 = name.len().try_into().expect("name too long for test");
+        v.push(name_len);
+        v.push(namespace as u8);
+
+        // UTF-16LE bytes (ASCII-only for this test).
+        for b in name.as_bytes() {
+            v.push(*b);
+            v.push(0);
+        }
+
+        v
+    }
+
+    fn resident_attribute_record(type_code: u32, value: &[u8]) -> Vec<u8> {
+        // Attribute header is 24 bytes for resident attributes with no name.
+        const HEADER_LEN: usize = 24;
+        let mut record_length = HEADER_LEN + value.len();
+        // Attributes are quadword-aligned on disk; keep it aligned to match real layout.
+        record_length = (record_length + 7) & !7;
+
+        let mut r = vec![0u8; record_length];
+        r[0..4].copy_from_slice(&type_code.to_le_bytes());
+        r[4..8].copy_from_slice(&(record_length as u32).to_le_bytes());
+        r[8] = 0; // resident
+        r[9] = 0; // name length
+        r[10..12].copy_from_slice(&0u16.to_le_bytes()); // name offset (unused)
+        r[12..14].copy_from_slice(&0u16.to_le_bytes()); // flags
+        r[14..16].copy_from_slice(&0u16.to_le_bytes()); // instance
+        r[16..20].copy_from_slice(&(value.len() as u32).to_le_bytes()); // value length
+        r[20..22].copy_from_slice(&(HEADER_LEN as u16).to_le_bytes()); // value offset
+        r[22] = 0; // index flag
+        r[23] = 0; // padding
+
+        r[HEADER_LEN..HEADER_LEN + value.len()].copy_from_slice(value);
+        r
+    }
+
+    #[test]
+    fn find_best_name_attribute_prefers_first_win32_over_later_win32() {
+        // Regression test: avoid returning the *last* Win32 FILE_NAME attribute.
+        let v1 = filename_value_bytes("first.txt", FileNamespace::Win32);
+        let v2 = filename_value_bytes("second.txt", FileNamespace::Win32);
+
+        let a1 = resident_attribute_record(0x30, &v1);
+        let a2 = resident_attribute_record(0x30, &v2);
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&a1);
+        data.extend_from_slice(&a2);
+        data.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // $END
+
+        let mut header = EntryHeader::zero();
+        header.first_attribute_record_offset = 0;
+
+        let entry = MftEntry {
+            header,
+            data,
+            valid_fixup: None,
+        };
+
+        let best = entry
+            .find_best_name_attribute()
+            .expect("expected FILE_NAME attribute");
+        assert_eq!(best.name.to_utf8_string(), "first.txt");
     }
 }
