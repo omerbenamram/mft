@@ -16,7 +16,7 @@ pub struct MftParser<T: Read + Seek> {
     /// Instead this will be guessed by the entry size of the first entry.
     entry_size: u32,
     size: u64,
-    entries_cache: LruCache<u64, PathBuf>,
+    entries_cache: LruCache<(u64, u16), PathBuf>,
     // Next expected read offset in the underlying stream. Used to avoid a seek syscall when
     // reading entries sequentially.
     next_read_offset: u64,
@@ -100,8 +100,8 @@ impl<T: Read + Seek> MftParser<T> {
         (0..total_entries).map(move |i| self.get_entry(i))
     }
 
-    fn inner_get_entry(&mut self, parent_entry_id: u64, entry_name: Option<&str>) -> PathBuf {
-        let cached_entry = self.entries_cache.get(&parent_entry_id);
+    fn inner_get_entry(&mut self, parent_reference: (u64, u16), entry_name: Option<&str>) -> PathBuf {
+        let cached_entry = self.entries_cache.get(&parent_reference);
 
         // If my parent path is known, then my path is parent's full path + my name.
         // Else, retrieve and cache my parent's path.
@@ -111,19 +111,31 @@ impl<T: Read + Seek> MftParser<T> {
                 None => cached_parent_path.clone(),
             }
         } else {
+            let (parent_entry_id, parent_sequence) = parent_reference;
             let path = match self.get_entry(parent_entry_id).ok() {
-                Some(parent) => match self.get_full_path_for_entry(&parent) {
-                    Ok(Some(path)) if parent.is_dir() => path,
-                    Ok(Some(_)) => PathBuf::from("[Unknown]"),
-                    // I have a parent, which doesn't have a filename attribute.
-                    // Default to root.
-                    _ => PathBuf::new(),
+                Some(parent) => {
+                    if parent.header.sequence != parent_sequence {
+                        trace!(
+                            "Found stale MFT reference: entry ID {parent_entry_id}, \
+                             expected sequence {parent_sequence}, actual sequence {}",
+                            parent.header.sequence
+                        );
+                        PathBuf::from("[Orphaned]")
+                    } else {
+                        match self.get_full_path_for_entry(&parent) {
+                            Ok(Some(path)) if parent.is_dir() => path,
+                            Ok(Some(_)) => PathBuf::from("[Unknown]"),
+                            // I have a parent, which doesn't have a filename attribute.
+                            // Default to root.
+                            _ => PathBuf::new(),
+                        }
+                    }
                 },
                 // Parent is maybe corrupted or incomplete, use a sentinel instead.
                 None => PathBuf::from("[Unknown]"),
             };
 
-            self.entries_cache.put(parent_entry_id, path.clone());
+            self.entries_cache.put(parent_reference, path.clone());
             match entry_name {
                 Some(name) => path.join(name),
                 None => path,
@@ -137,7 +149,8 @@ impl<T: Read + Seek> MftParser<T> {
         let entry_id = entry.header.record_number;
         match entry.find_best_name_attribute() {
             Some(filename_header) => {
-                let parent_entry_id = filename_header.parent.entry;
+                let parent_reference = (filename_header.parent.entry, filename_header.parent.sequence);
+                let parent_entry_id = parent_reference.0;
                 let name = filename_header.name.to_utf8_string();
 
                 // MFT entry 5 is the root path.
@@ -151,22 +164,22 @@ impl<T: Read + Seek> MftParser<T> {
                 }
 
                 if parent_entry_id > 0 {
-                    Ok(Some(self.inner_get_entry(parent_entry_id, Some(&name))))
+                    Ok(Some(self.inner_get_entry(parent_reference, Some(&name))))
                 } else {
                     trace!("Found orphaned entry ID {entry_id}");
 
                     let orphan = PathBuf::from("[Orphaned]").join(&name);
 
                     self.entries_cache
-                        .put(entry.header.record_number, orphan.clone());
+                        .put((entry.header.record_number, entry.header.sequence), orphan.clone());
 
                     Ok(Some(orphan))
                 }
             }
-            None => match entry.header.base_reference.entry {
+            None => match (entry.header.base_reference.entry, entry.header.base_reference.sequence) {
                 // I don't have a parent reference, and no X30 attribute. Though luck.
-                0 => Ok(None),
-                parent_entry_id => Ok(Some(self.inner_get_entry(parent_entry_id, None))),
+                (0, _) => Ok(None),
+                parent_reference => Ok(Some(self.inner_get_entry(parent_reference, None))),
             },
         }
     }
@@ -222,5 +235,25 @@ mod tests {
 
         let e = parser.get_entry(5).unwrap();
         parser.get_full_path_for_entry(&e).unwrap();
+    }
+
+    #[test]
+    fn test_parent_sequence_mismatch_is_orphaned() {
+        let sample = mft_sample();
+        let mut parser = MftParser::from_path(sample).unwrap();
+
+        // Entry 5 is the root and should have a valid sequence number.
+        let root = parser.get_entry(5).unwrap();
+        let root_sequence = root.header.sequence;
+
+        // Reference entry 5 with an invalid/stale sequence number.
+        let stale_sequence = root_sequence.wrapping_add(1);
+
+        let path = parser.inner_get_entry((5, stale_sequence), Some("test.txt"));
+
+        assert_eq!(
+            path,
+            std::path::PathBuf::from("[Orphaned]").join("test.txt")
+        );
     }
 }
