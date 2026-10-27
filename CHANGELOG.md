@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep formatting and lint configuration aligned with Rust 2024 expectations.
 
 ### Fixed
+- `$FILE_NAME` `logical_size` and `physical_size` were swapped: the allocated size (offset 0x28) was reported as the logical size and the real size (0x30) as the physical size. JSON output and index entries change accordingly.
 - Correct decoding of sparse non-resident data runs when reading MFT entries.
 - Address the `clippy::collapsible_if` warning emitted for the `mft_dump` CLI.
 

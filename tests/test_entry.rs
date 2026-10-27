@@ -77,8 +77,8 @@ fn test_entry_index_root() {
                 assert_eq!(last_index_entry.fname_info.modified, created);
                 assert_eq!(last_index_entry.fname_info.mft_modified, mft_modified);
                 assert_eq!(last_index_entry.fname_info.accessed, mft_modified);
-                assert_eq!(last_index_entry.fname_info.logical_size, 4096);
-                assert_eq!(last_index_entry.fname_info.physical_size, 1484);
+                assert_eq!(last_index_entry.fname_info.logical_size, 1484);
+                assert_eq!(last_index_entry.fname_info.physical_size, 4096);
                 assert_eq!(
                     last_index_entry.fname_info.flags,
                     mft::attribute::FileAttributeFlags::FILE_ATTRIBUTE_ARCHIVE

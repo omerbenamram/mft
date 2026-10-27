@@ -31,7 +31,9 @@ pub struct FileNameAttr<'a> {
     pub mft_modified: Timestamp,
     #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
     pub accessed: Timestamp,
+    /// The file's real (logical) size, as of the last time this name was updated.
     pub logical_size: u64,
+    /// The size allocated on disk, as of the last time this name was updated.
     pub physical_size: u64,
     pub flags: FileAttributeFlags,
     pub reparse_value: u32,
@@ -90,8 +92,9 @@ impl<'a> FileNameAttr<'a> {
         let accessed =
             crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?)?;
 
-        let logical_size = stream.read_u64::<LittleEndian>()?;
+        // The allocated size comes first (0x28), then the real size (0x30).
         let physical_size = stream.read_u64::<LittleEndian>()?;
+        let logical_size = stream.read_u64::<LittleEndian>()?;
         let flags = FileAttributeFlags::from_bits_truncate(stream.read_u32::<LittleEndian>()?);
         let reparse_value = stream.read_u32::<LittleEndian>()?;
         let name_length = stream.read_u8()?;
