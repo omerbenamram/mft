@@ -1,47 +1,18 @@
 use jiff::Timestamp;
-use jiff::fmt::StdFmtWrite;
-use jiff::fmt::temporal::DateTimePrinter;
 use serde::Serializer;
-use std::fmt;
 
-const TIMESTAMP_PRINTER_P0: DateTimePrinter = DateTimePrinter::new().precision(Some(0));
-const TIMESTAMP_PRINTER_P3: DateTimePrinter = DateTimePrinter::new().precision(Some(3));
-const TIMESTAMP_PRINTER_P6: DateTimePrinter = DateTimePrinter::new().precision(Some(6));
-const TIMESTAMP_PRINTER_P9: DateTimePrinter = DateTimePrinter::new().precision(Some(9));
-
-struct ChronoRfc3339Compat<'a>(&'a Timestamp);
-
-impl fmt::Display for ChronoRfc3339Compat<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Match chrono's `SecondsFormat::AutoSi` behavior.
-        let nanos = self.0.subsec_nanosecond();
-        let printer = if nanos == 0 {
-            &TIMESTAMP_PRINTER_P0
-        } else if nanos % 1_000_000 == 0 {
-            &TIMESTAMP_PRINTER_P3
-        } else if nanos % 1_000 == 0 {
-            &TIMESTAMP_PRINTER_P6
-        } else {
-            &TIMESTAMP_PRINTER_P9
-        };
-
-        printer
-            .print_timestamp(self.0, StdFmtWrite(f))
-            .map_err(|_| fmt::Error)
-    }
-}
-
-pub fn serialize_timestamp_chrono_compat<S>(
-    ts: &Timestamp,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
+/// Serializes a timestamp as RFC 3339 in UTC with 100ns precision, e.g.
+/// `2007-06-30T12:50:52.2523952Z`.
+pub fn serialize_timestamp<S>(ts: &Timestamp, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    serializer.collect_str(&ChronoRfc3339Compat(ts))
+    // NTFS timestamps have 100ns resolution, so always print all 7 fractional digits.
+    // jiff's `Display` uses the formatter precision as the fractional-second precision.
+    serializer.collect_str(&format_args!("{ts:.7}"))
 }
 
-pub fn serialize_option_timestamp_chrono_compat<S>(
+pub fn serialize_option_timestamp<S>(
     ts: &Option<Timestamp>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
@@ -49,28 +20,21 @@ where
     S: Serializer,
 {
     match ts {
-        Some(ts) => serialize_timestamp_chrono_compat(ts, serializer),
+        Some(ts) => serialize_timestamp(ts, serializer),
         None => serializer.serialize_none(),
     }
 }
 
-/// Converts a Windows FILETIME (100ns intervals since 1601-01-01 UTC) to a Unix-epoch timestamp.
-///
-/// This is a hot path: we avoid chrono entirely and only allocate on error.
+/// Converts a Windows FILETIME (100ns intervals since 1601-01-01 UTC) to a timestamp, keeping the
+/// full 100ns resolution.
 ///
 /// Returns an error instead of panicking when the resulting timestamp is outside `jiff::Timestamp`'s
 /// supported range (roughly years -9999 to 9999).
 pub fn windows_filetime_to_timestamp(filetime_100ns: u64) -> crate::err::Result<Timestamp> {
-    // Match historical behavior (`winstructs::timestamp::WinTimestamp::to_datetime`):
-    // FILETIME is 100ns resolution, but the conversion truncates to microseconds.
-    const WINDOWS_TO_UNIX_EPOCH_MICROS: i64 = 11_644_473_600_000_000;
+    const WINDOWS_TO_UNIX_SECS: i64 = 11_644_473_600;
 
-    let micros_since_windows_epoch = (filetime_100ns / 10) as i64;
-    let micros_since_unix_epoch = micros_since_windows_epoch - WINDOWS_TO_UNIX_EPOCH_MICROS;
-
-    let seconds = micros_since_unix_epoch.div_euclid(1_000_000);
-    let subsec_micros = micros_since_unix_epoch.rem_euclid(1_000_000);
-    let subsec_nanos = (subsec_micros * 1_000) as i32;
+    let seconds = (filetime_100ns / 10_000_000) as i64 - WINDOWS_TO_UNIX_SECS;
+    let subsec_nanos = ((filetime_100ns % 10_000_000) * 100) as i32;
 
     Timestamp::new(seconds, subsec_nanos)
         .map_err(|_| crate::err::Error::FiletimeTimestampOutOfRange { filetime_100ns })
@@ -101,6 +65,33 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn timestamps_keep_100ns_precision() {
+        let print = |filetime| {
+            let ts = windows_filetime_to_timestamp(filetime).unwrap();
+            serialize_timestamp(&ts, serde_json::value::Serializer)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(
+            print(128_276_814_522_523_952),
+            "2007-06-30T12:50:52.2523952Z"
+        );
+        assert_eq!(print(0), "1601-01-01T00:00:00.0000000Z");
+        // Pre-1970 values have negative seconds with a nonnegative subsecond part.
+        assert_eq!(print(1), "1601-01-01T00:00:00.0000001Z");
+        assert_eq!(
+            print(116_444_735_999_999_999),
+            "1969-12-31T23:59:59.9999999Z"
+        );
+        assert_eq!(
+            print(116_444_736_000_000_001),
+            "1970-01-01T00:00:00.0000001Z"
+        );
     }
 
     #[test]

@@ -11,20 +11,8 @@ use mft::err::Error as MftError;
 use mft::mft::MftParser;
 
 fn filetime_bytes_to_timestamp(bytes: [u8; 8]) -> Timestamp {
-    // Windows FILETIME: 100ns intervals since 1601-01-01 UTC.
-    // Match historical behavior (`winstructs::timestamp::WinTimestamp::to_datetime`):
-    // truncate to microseconds.
-    const WINDOWS_TO_UNIX_EPOCH_MICROS: i64 = 11_644_473_600_000_000;
-    let filetime_100ns = u64::from_le_bytes(bytes);
-
-    let micros_since_windows_epoch = (filetime_100ns / 10) as i64;
-    let micros_since_unix_epoch = micros_since_windows_epoch - WINDOWS_TO_UNIX_EPOCH_MICROS;
-
-    let seconds = micros_since_unix_epoch.div_euclid(1_000_000);
-    let subsec_micros = micros_since_unix_epoch.rem_euclid(1_000_000);
-    let subsec_nanos = (subsec_micros * 1_000) as i32;
-
-    Timestamp::new(seconds, subsec_nanos).expect("valid FILETIME conversion")
+    mft::windows_filetime_to_timestamp(u64::from_le_bytes(bytes))
+        .expect("valid FILETIME conversion")
 }
 
 #[test]

@@ -23,13 +23,13 @@ pub enum FileNamespace {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct FileNameAttr<'a> {
     pub parent: MftReference,
-    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_timestamp")]
     pub created: Timestamp,
-    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_timestamp")]
     pub modified: Timestamp,
-    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_timestamp")]
     pub mft_modified: Timestamp,
-    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_timestamp")]
     pub accessed: Timestamp,
     /// The file's real (logical) size, as of the last time this name was updated.
     pub logical_size: u64,
