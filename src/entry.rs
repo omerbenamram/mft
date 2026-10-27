@@ -15,6 +15,7 @@ use crate::attribute::header::MftAttributeHeader;
 use crate::attribute::x30::{FileNameAttr, FileNamespace};
 use crate::attribute::{MftAttribute, MftAttributeContent, MftAttributeType};
 
+use std::cell::RefCell;
 use std::io::{self, Cursor, Read};
 
 pub const ZERO_HEADER: &[u8; 4] = b"\x00\x00\x00\x00";
@@ -36,8 +37,11 @@ impl ser::Serialize for MftEntry {
     where
         S: Serializer,
     {
+        /// Streams the attributes that parsed, and collects the errors from the ones that
+        /// didn't so they can be emitted after the list in the same pass.
         struct Attributes<'a> {
             entry: &'a MftEntry,
+            errors: RefCell<Vec<String>>,
         }
 
         impl ser::Serialize for Attributes<'_> {
@@ -46,19 +50,47 @@ impl ser::Serialize for MftEntry {
                 S: Serializer,
             {
                 let mut seq = serializer.serialize_seq(None)?;
-                for attr in self.entry.iter_attributes().filter_map(Result::ok) {
-                    seq.serialize_element(&attr)?;
+                for attr in self.entry.iter_attributes() {
+                    match attr {
+                        Ok(attr) => seq.serialize_element(&attr)?,
+                        Err(e) => self.errors.borrow_mut().push(error_chain_message(&e)),
+                    }
                 }
                 seq.end()
             }
         }
 
-        let mut state = serializer.serialize_struct("MftEntry", 3)?;
+        let attributes = Attributes {
+            entry: self,
+            errors: RefCell::new(Vec::new()),
+        };
+
+        let mut state = serializer.serialize_struct("MftEntry", 4)?;
         state.serialize_field("header", &self.header)?;
-        state.serialize_field("attributes", &Attributes { entry: self })?;
+        state.serialize_field("attributes", &attributes)?;
         state.serialize_field("valid_fixup", &self.valid_fixup)?;
+        // Only present when an attribute failed to parse, so clean entries are unchanged.
+        let errors = attributes.errors.into_inner();
+        if errors.is_empty() {
+            state.skip_field("errors")?;
+        } else {
+            state.serialize_field("errors", &errors)?;
+        }
         state.end()
     }
+}
+
+/// Formats an error with its chain of sources, e.g. "An I/O error has occurred: failed to fill
+/// whole buffer", since the top-level message alone often doesn't say what went wrong.
+fn error_chain_message(error: &Error) -> String {
+    let mut message = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    message
 }
 
 /// <https://docs.microsoft.com/en-us/windows/desktop/devnotes/file-record-segment-header>
