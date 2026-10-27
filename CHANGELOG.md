@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Parse `$REPARSE_POINT` (0xC0) into `ReparsePointAttr`: the tag, its documented name, the GUID for third-party tags, and decoded symlink, junction/mount point, AppExecLink and WSL symlink targets. Other tags keep their data as hex.
 - Expand `FileAttributeFlags` with the latest Windows-defined bits for NTFS parsing.
 
 ### Changed
+- `MftAttributeContent` has a new `AttrXC0` variant, and `$REPARSE_POINT` JSON output changes from raw hex to the parsed structure.
 - Upgrade the crate to the Rust 2024 edition and require Rust 1.90 for builds.
 - Forbid usage of `unsafe` code across the workspace and satisfy new Clippy lints.
 - Keep formatting and lint configuration aligned with Rust 2024 expectations.

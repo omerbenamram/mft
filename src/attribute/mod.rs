@@ -8,6 +8,7 @@ pub mod x30;
 pub mod x40;
 pub mod x80;
 pub mod x90;
+pub mod xc0;
 
 use crate::err::Result;
 use crate::impl_serialize_for_bitflags;
@@ -27,6 +28,7 @@ use crate::attribute::non_resident_attr::NonResidentAttr;
 use crate::attribute::x40::ObjectIdAttr;
 use crate::attribute::x80::DataAttr;
 use crate::attribute::x90::IndexRootAttr;
+use crate::attribute::xc0::ReparsePointAttr;
 use serde::Serialize;
 
 #[derive(Serialize, Clone, Debug)]
@@ -66,6 +68,9 @@ impl<'a> MftAttributeContent<'a> {
                     }
                     MftAttributeType::ObjectId => Ok(MftAttributeContent::AttrX40(
                         ObjectIdAttr::from_stream(&mut Cursor::new(value), value.len())?,
+                    )),
+                    MftAttributeType::ReparsePoint => Ok(MftAttributeContent::AttrXC0(
+                        ReparsePointAttr::from_slice(value)?,
                     )),
                     MftAttributeType::IndexRoot => Ok(MftAttributeContent::AttrX90(
                         IndexRootAttr::from_slice(value)?,
@@ -121,6 +126,13 @@ impl<'a> MftAttributeContent<'a> {
         }
     }
 
+    pub fn as_reparse_point(&self) -> Option<&ReparsePointAttr<'a>> {
+        match self {
+            MftAttributeContent::AttrXC0(content) => Some(content),
+            _ => None,
+        }
+    }
+
     pub fn as_standard_info(&self) -> Option<&StandardInfoAttr> {
         match self {
             MftAttributeContent::AttrX10(content) => Some(content),
@@ -160,6 +172,7 @@ pub enum MftAttributeContent<'a> {
     AttrX40(ObjectIdAttr),
     AttrX80(DataAttr<'a>),
     AttrX90(IndexRootAttr<'a>),
+    AttrXC0(ReparsePointAttr<'a>),
     DataRun(NonResidentAttr),
 }
 
