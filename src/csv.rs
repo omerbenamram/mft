@@ -1,5 +1,3 @@
-use crate::attribute::header::ResidentialHeader;
-
 use crate::attribute::{FileAttributeFlags, MftAttributeType};
 use crate::entry::EntryFlags;
 use crate::{MftAttribute, MftEntry, MftParser};
@@ -43,19 +41,19 @@ pub struct FlatMftEntryWithName {
 
     /// All of these fields are present for entries that have an 0x10 attribute.
     pub standard_info_flags: Option<FileAttributeFlags>,
-    #[serde(serialize_with = "crate::utils::serialize_option_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
     pub standard_info_last_modified: Option<Timestamp>,
-    #[serde(serialize_with = "crate::utils::serialize_option_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
     pub standard_info_last_access: Option<Timestamp>,
-    #[serde(serialize_with = "crate::utils::serialize_option_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
     pub standard_info_created: Option<Timestamp>,
     /// All of these fields are present for entries that have an 0x30 attribute.
     pub file_name_flags: Option<FileAttributeFlags>,
-    #[serde(serialize_with = "crate::utils::serialize_option_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
     pub file_name_last_modified: Option<Timestamp>,
-    #[serde(serialize_with = "crate::utils::serialize_option_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
     pub file_name_last_access: Option<Timestamp>,
-    #[serde(serialize_with = "crate::utils::serialize_option_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
     pub file_name_created: Option<Timestamp>,
 
     pub full_path: PathBuf,
@@ -66,12 +64,31 @@ impl FlatMftEntryWithName {
         entry: &MftEntry,
         parser: &mut MftParser<impl Read + Seek>,
     ) -> FlatMftEntryWithName {
-        let entry_attributes: Vec<MftAttribute> = entry
-            .iter_attributes_matching(Some(vec![
-                MftAttributeType::FileName,
-                MftAttributeType::StandardInformation,
-                MftAttributeType::DATA,
-            ]))
+        let full_path = parser
+            .get_full_path_for_entry(entry)
+            .expect("I/O Err")
+            .unwrap_or_default();
+        let extensions = parser.get_extension_entries(entry);
+        Self::from_entry_with_path(entry, &extensions, full_path)
+    }
+
+    /// Same as [`FlatMftEntryWithName::from_entry`], for callers that already resolved the
+    /// entry's full path and read its extension records (see
+    /// [`MftParser::get_extension_entries`]).
+    pub fn from_entry_with_path(
+        entry: &MftEntry,
+        extensions: &[MftEntry],
+        full_path: PathBuf,
+    ) -> FlatMftEntryWithName {
+        let entry_attributes: Vec<MftAttribute> = std::iter::once(entry)
+            .chain(extensions)
+            .flat_map(|record| {
+                record.iter_attributes_matching(Some(vec![
+                    MftAttributeType::FileName,
+                    MftAttributeType::StandardInformation,
+                    MftAttributeType::DATA,
+                ]))
+            })
             .filter_map(Result::ok)
             .collect();
 
@@ -87,17 +104,13 @@ impl FlatMftEntryWithName {
             .and_then(|a| a.data.as_standard_info())
             .cloned();
 
-        let data_attr = entry_attributes
+        // The unnamed stream, or a named one if there is none. Records that continue a stream
+        // started elsewhere don't hold its size.
+        let file_size = entry_attributes
             .iter()
-            .find(|a| a.header.type_code == MftAttributeType::DATA);
-
-        let file_size = match data_attr {
-            Some(attr) => match &attr.header.residential_header {
-                ResidentialHeader::Resident(r) => u64::from(r.data_size),
-                ResidentialHeader::NonResident(nr) => nr.file_size,
-            },
-            _ => 0,
-        };
+            .filter(|a| a.header.type_code == MftAttributeType::DATA && !a.header.is_continuation())
+            .min_by_key(|a| !a.header.name.is_empty())
+            .map_or(0, |a| a.header.value_size());
 
         let has_ads = entry_attributes
             .iter()
@@ -126,10 +139,7 @@ impl FlatMftEntryWithName {
             file_name_last_access: file_name.as_ref().map(|i| i.accessed),
             file_name_created: file_name.as_ref().map(|i| i.created),
             file_size,
-            full_path: parser
-                .get_full_path_for_entry(entry)
-                .expect("I/O Err")
-                .unwrap_or_default(),
+            full_path,
         }
     }
 }

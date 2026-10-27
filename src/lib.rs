@@ -15,6 +15,7 @@ pub use crate::mft::MftParser;
 pub use entry::{EntryHeader, MftEntry};
 
 pub mod attribute;
+pub mod bodyfile;
 pub mod csv;
 pub mod entry;
 pub mod err;
@@ -26,10 +27,7 @@ pub(crate) mod macros;
 pub(crate) mod utils;
 
 // Public utilities (used by `mft_dump` and helpful for library consumers).
-pub use utils::{
-    serialize_option_timestamp_chrono_compat, serialize_timestamp_chrono_compat,
-    windows_filetime_to_timestamp,
-};
+pub use utils::{serialize_option_timestamp, serialize_timestamp, windows_filetime_to_timestamp};
 
 pub use utf16::Utf16LeStr;
 

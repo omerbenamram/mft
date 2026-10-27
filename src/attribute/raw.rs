@@ -19,7 +19,7 @@ impl<'a> RawAttribute<'a> {
     }
 }
 
-fn data_as_hex<S>(x: &[u8], s: S) -> std::result::Result<S::Ok, S::Error>
+pub(crate) fn data_as_hex<S>(x: &[u8], s: S) -> std::result::Result<S::Ok, S::Error>
 where
     S: ser::Serializer,
 {
