@@ -1,48 +1,101 @@
-#[macro_use]
-extern crate criterion;
-extern crate mft;
-
-use criterion::Criterion;
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use mft::csv::FlatMftEntryWithName;
 use mft::{MftEntry, MftParser};
-use std::io::{Read, Seek};
+use std::hint::black_box;
+use std::io::Cursor;
 
-fn process_1000_mft_records(sample: &[u8]) {
-    let mut parser = MftParser::from_buffer(sample.to_vec()).unwrap();
+const SAMPLE: &[u8] = include_bytes!("../../samples/MFT");
 
-    let mut _count = 0;
-    for entry in parser.iter_entries().take(1000).filter_map(|a| a.ok()) {
-        for _attr in entry.iter_attributes() {
-            _count += 1;
-        }
-    }
+/// A parser over the in-memory sample, without copying it.
+fn parser() -> MftParser<Cursor<&'static [u8]>> {
+    MftParser::from_read_seek(Cursor::new(SAMPLE), Some(SAMPLE.len() as u64)).unwrap()
 }
 
-fn get_full_path(parser: &mut MftParser<impl Read + Seek>, entries: &[MftEntry]) {
-    for entry in entries {
-        parser.get_full_path_for_entry(entry).unwrap();
-    }
+fn all_entries() -> Vec<MftEntry> {
+    parser().iter_entries().filter_map(Result::ok).collect()
 }
 
-fn criterion_benchmark(c: &mut Criterion) {
-    let sample = include_bytes!("../../samples/MFT");
+fn bench_parse(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parse");
+    group.throughput(Throughput::Bytes(SAMPLE.len() as u64));
 
-    // baseline ~4.14 ms.
-    c.bench_function("read 1000 records", move |b| {
-        b.iter(|| process_1000_mft_records(sample))
+    group.bench_function("entries", |b| {
+        b.iter(|| {
+            let mut parser = parser();
+            for entry in parser.iter_entries() {
+                let _ = black_box(entry);
+            }
+        })
     });
 
-    c.bench_function("get_full_path", move |b| {
-        let mut parser = MftParser::from_buffer(sample.to_vec()).unwrap();
-
-        let entries: Vec<MftEntry> = parser
-            .iter_entries()
-            .take(10000)
-            .filter_map(Result::ok)
-            .collect();
-
-        b.iter(|| get_full_path(&mut parser, &entries))
+    group.bench_function("entries_and_attributes", |b| {
+        b.iter(|| {
+            let mut parser = parser();
+            let mut count = 0usize;
+            for entry in parser.iter_entries().filter_map(Result::ok) {
+                for attr in entry.iter_attributes() {
+                    count += black_box(attr).is_ok() as usize;
+                }
+            }
+            count
+        })
     });
+
+    group.finish();
 }
 
-criterion_group!(benches, criterion_benchmark);
+fn bench_serialize(c: &mut Criterion) {
+    let entries = all_entries();
+
+    let mut group = c.benchmark_group("serialize");
+    group.throughput(Throughput::Elements(entries.len() as u64));
+
+    group.bench_function("json", |b| {
+        let mut buf = Vec::with_capacity(64 * 1024 * 1024);
+        b.iter(|| {
+            buf.clear();
+            for entry in &entries {
+                serde_json::to_writer(&mut buf, entry).unwrap();
+                buf.push(b'\n');
+            }
+            buf.len()
+        })
+    });
+
+    group.bench_function("csv", |b| {
+        let mut parser = parser();
+        b.iter(|| {
+            let mut writer = csv::Writer::from_writer(Vec::with_capacity(8 * 1024 * 1024));
+            for entry in &entries {
+                writer
+                    .serialize(FlatMftEntryWithName::from_entry(entry, &mut parser))
+                    .unwrap();
+            }
+            writer.into_inner().unwrap().len()
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_full_path(c: &mut Criterion) {
+    let entries = all_entries();
+
+    let mut group = c.benchmark_group("full_path");
+    group.throughput(Throughput::Elements(entries.len() as u64));
+
+    // Fresh parser per iteration: measures resolution including cache misses.
+    group.bench_function("cold_cache", |b| {
+        b.iter(|| {
+            let mut parser = parser();
+            for entry in &entries {
+                black_box(parser.get_full_path_for_entry(entry).unwrap());
+            }
+        })
+    });
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_parse, bench_serialize, bench_full_path);
 criterion_main!(benches);

@@ -6,19 +6,7 @@ macro_rules! impl_serialize_for_bitflags {
             /// Empty flags are formatted as the name of a zero-valued flag if there is one,
             /// otherwise as `(empty)`.
             fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                use bitflags::Flags;
-
-                if self.is_empty() {
-                    let zero_flag = <Self as Flags>::FLAGS
-                        .iter()
-                        .find(|flag| flag.value().is_empty());
-                    return match zero_flag {
-                        Some(flag) => f.write_str(flag.name()),
-                        None => f.write_str("(empty)"),
-                    };
-                }
-
-                bitflags::parser::to_writer(self, f)
+                $crate::utils::write_bitflags(self, f)
             }
         }
 
@@ -27,9 +15,9 @@ macro_rules! impl_serialize_for_bitflags {
             where
                 S: serde::ser::Serializer,
             {
-                // Stream the Display output directly to the serializer without allocating
-                // an intermediate String. This is faster than `serialize_str(&format!(...))`.
-                serializer.collect_str(self)
+                // Same text as `Display`, but built in a stack buffer without going through
+                // `core::fmt` (which dominated serialization time).
+                $crate::utils::serialize_bitflags(self, serializer)
             }
         }
     };
