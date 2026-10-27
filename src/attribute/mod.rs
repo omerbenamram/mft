@@ -45,17 +45,15 @@ impl<'a> MftAttributeContent<'a> {
     pub fn from_record(record: &'a [u8], header: &MftAttributeHeader<'a>) -> Result<Self> {
         match &header.residential_header {
             ResidentialHeader::Resident(resident) => {
-                let data_offset = resident.data_offset as usize;
-                let data_size = resident.data_size as usize;
-                let end =
-                    data_offset
-                        .checked_add(data_size)
-                        .ok_or_else(|| crate::err::Error::Any {
-                            detail: "attribute resident data offset overflow".to_string(),
-                        })?;
-                let value = record
-                    .get(data_offset..end)
-                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
+                let value = resident.value(record)?;
+                // A value too short for its fixed fields stays raw instead of erroring, so the
+                // attribute isn't dropped from output.
+                let raw = || {
+                    MftAttributeContent::Raw(RawAttribute::from_slice(
+                        header.type_code.clone(),
+                        value,
+                    ))
+                };
 
                 match header.type_code {
                     MftAttributeType::StandardInformation => Ok(MftAttributeContent::AttrX10(
@@ -76,27 +74,16 @@ impl<'a> MftAttributeContent<'a> {
                     MftAttributeType::VolumeName => Ok(MftAttributeContent::AttrX60(
                         VolumeNameAttr::from_slice(value),
                     )),
-                    MftAttributeType::VolumeInformation => Ok(MftAttributeContent::AttrX70(
-                        VolumeInformationAttr::from_slice(value)?,
-                    )),
-                    // A value too short for the reparse header stays raw instead of erroring,
-                    // so the attribute isn't dropped from output.
-                    MftAttributeType::ReparsePoint => {
-                        Ok(match ReparsePointAttr::from_slice(value) {
-                            Some(reparse_point) => MftAttributeContent::AttrXC0(reparse_point),
-                            None => MftAttributeContent::Raw(RawAttribute::from_slice(
-                                header.type_code.clone(),
-                                value,
-                            )),
-                        })
+                    MftAttributeType::VolumeInformation => {
+                        Ok(VolumeInformationAttr::from_slice(value)
+                            .map_or_else(|_| raw(), MftAttributeContent::AttrX70))
                     }
+                    MftAttributeType::ReparsePoint => Ok(ReparsePointAttr::from_slice(value)
+                        .map_or_else(raw, MftAttributeContent::AttrXC0)),
                     MftAttributeType::IndexRoot => Ok(MftAttributeContent::AttrX90(
                         IndexRootAttr::from_slice(value)?,
                     )),
-                    _ => Ok(MftAttributeContent::Raw(RawAttribute::from_slice(
-                        header.type_code.clone(),
-                        value,
-                    ))),
+                    _ => Ok(raw()),
                 }
             }
             ResidentialHeader::NonResident(nonresident) => {
@@ -305,6 +292,7 @@ impl_serialize_for_bitflags! {AttributeDataFlags}
 mod tests {
     use super::*;
     use crate::attribute::header::MftAttributeHeader;
+    use crate::entry::tests::resident_attribute_record;
 
     #[test]
     fn nonresident_attribute_allows_empty_mapping_pairs_section() {
@@ -349,19 +337,20 @@ mod tests {
     }
 
     #[test]
-    fn truncated_reparse_point_stays_raw() {
-        // A resident $REPARSE_POINT whose 4-byte value can't hold the 8-byte reparse header.
-        let mut record = vec![0u8; 32];
-        record[0..4].copy_from_slice(&(MftAttributeType::ReparsePoint as u32).to_le_bytes());
-        record[4..8].copy_from_slice(&32u32.to_le_bytes());
-        record[16..20].copy_from_slice(&4u32.to_le_bytes()); // data size
-        record[20..22].copy_from_slice(&24u16.to_le_bytes()); // data offset
-        record[24..28].copy_from_slice(&[0x03, 0x00, 0x00, 0xA0]);
+    fn truncated_values_stay_raw() {
+        // Values too short for $REPARSE_POINT's 8-byte header and $VOLUME_INFORMATION's 12 bytes.
+        for type_code in [
+            MftAttributeType::ReparsePoint,
+            MftAttributeType::VolumeInformation,
+        ] {
+            let value = [0x03, 0x00, 0x00, 0xA0];
+            let record = resident_attribute_record(type_code as u32, &value);
 
-        let header = MftAttributeHeader::from_slice(&record, 0).unwrap().unwrap();
-        match MftAttributeContent::from_record(&record, &header).unwrap() {
-            MftAttributeContent::Raw(raw) => assert_eq!(raw.data, [0x03, 0x00, 0x00, 0xA0]),
-            other => panic!("expected Raw content, got {other:?}"),
+            let header = MftAttributeHeader::from_slice(&record, 0).unwrap().unwrap();
+            match MftAttributeContent::from_record(&record, &header).unwrap() {
+                MftAttributeContent::Raw(raw) => assert_eq!(raw.data, value),
+                other => panic!("expected Raw content, got {other:?}"),
+            }
         }
     }
 }

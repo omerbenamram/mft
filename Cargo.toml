@@ -6,10 +6,13 @@ repository = "https://github.com/omerbenamram/mft"
 license = "MIT/Apache-2.0"
 readme = "README.md"
 
-version = "0.7.0"
+version = "0.8.0"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2024"
 rust-version = "1.90"
+# Keep the published crate under crates.io's 10MB limit: the disk images under testdata/ are only
+# needed by the repo's integration tests. samples/ stays, since unit tests and the benchmark read it.
+include = ["/src/", "/samples/", "/README.md", "/CHANGELOG.md", "/LICENSE-*"]
 
 [workspace]
 members = [

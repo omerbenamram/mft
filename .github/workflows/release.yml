@@ -6,8 +6,29 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
 
 jobs:
+  # Fails a bad tag or a missing crates.io token before anything is built or published.
+  preflight:
+    name: Check tag and secrets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Check tag matches Cargo.toml
+        run: |
+          CRATE="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          [ "$CRATE" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != Cargo.toml $CRATE"; exit 1; }
+
+      - name: Check CRATES_IO_TOKEN is set
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: '[ -n "$CARGO_REGISTRY_TOKEN" ] || { echo "CRATES_IO_TOKEN secret is not set"; exit 1; }'
+
   build-release:
     name: Build release binaries
+    needs: preflight
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -42,7 +63,9 @@ jobs:
       - name: Add llvm-tools to PATH (for PGO)
         if: runner.os != 'Windows'
         shell: bash
-        run: echo "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin" >> "$GITHUB_PATH"
+        # A block scalar: a plain `run:` value can't contain `host: ` (YAML reads it as a mapping).
+        run: |
+          echo "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin" >> "$GITHUB_PATH"
 
       - name: Install musl tooling
         if: matrix.target == 'x86_64-unknown-linux-musl'
@@ -120,3 +143,22 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-crate:
+    name: Publish to crates.io
+    # Last: crates.io is irreversible, so only publish once every binary built and the release exists.
+    needs: publish-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish mft
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish -p mft
