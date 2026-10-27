@@ -378,21 +378,22 @@ impl MftEntry {
                 let start_offset = offset as u64;
                 offset = record_end;
 
-                let header = match MftAttributeHeader::from_slice(record, start_offset) {
-                    Ok(Some(h)) => h,
-                    Ok(None) => return None,
-                    Err(e) => {
-                        exhausted = true;
-                        return Some(Err(e));
-                    }
-                };
-
-                // Skip attribute if filtered
+                // Skip filtered-out attributes before parsing their header, so an attribute the
+                // caller did not ask for (including one with an unknown type code) never errors.
                 if let Some(filter) = &types
-                    && !filter.contains(&header.type_code)
+                    && !filter.iter().any(|t| t.clone() as u32 == type_code_value)
                 {
                     continue;
                 }
+
+                // The record bounds were validated above, so a malformed header (for example an
+                // unknown type code) only affects this attribute. Report it and move on to the
+                // next record instead of dropping the rest of the entry.
+                let header = match MftAttributeHeader::from_slice(record, start_offset) {
+                    Ok(Some(h)) => h,
+                    Ok(None) => return None,
+                    Err(e) => return Some(Err(e)),
+                };
 
                 let content = match MftAttributeContent::from_record(record, &header) {
                     Ok(c) => c,
@@ -411,6 +412,7 @@ impl MftEntry {
 #[cfg(test)]
 mod tests {
     use super::{EntryHeader, MftEntry};
+    use crate::attribute::MftAttributeType;
     use crate::attribute::x30::FileNamespace;
     use std::io::Cursor;
 
@@ -584,5 +586,85 @@ mod tests {
         let mut it = entry.iter_attributes();
         assert!(it.next().expect("expected first attribute").is_ok());
         assert!(it.next().is_none());
+    }
+
+    fn entry_with_attributes(records: &[Vec<u8>]) -> MftEntry {
+        let mut data = Vec::new();
+        for r in records {
+            data.extend_from_slice(r);
+        }
+        data.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // $END
+
+        let mut header = EntryHeader::zero();
+        header.first_attribute_record_offset = 0;
+
+        MftEntry {
+            header,
+            data,
+            valid_fixup: None,
+        }
+    }
+
+    #[test]
+    fn iter_attributes_continues_past_unknown_attribute_type() {
+        // An unknown type code only invalidates that attribute; its record length is still
+        // usable, so the attributes after it must still be returned.
+        let fname = filename_value_bytes("after.txt", FileNamespace::Win32);
+        let entry = entry_with_attributes(&[
+            resident_attribute_record(0x1234, &[0xAA; 8]),
+            resident_attribute_record(0x30, &fname),
+        ]);
+
+        let results: Vec<_> = entry.iter_attributes().collect();
+        assert_eq!(results.len(), 2);
+        assert!(matches!(
+            results[0],
+            Err(crate::err::Error::UnknownAttributeType {
+                attribute_type: 0x1234
+            })
+        ));
+        let attr = results[1].as_ref().expect("FILE_NAME after unknown type");
+        assert_eq!(
+            attr.data.as_file_name().unwrap().name.to_utf8_string(),
+            "after.txt"
+        );
+    }
+
+    #[test]
+    fn iter_attributes_matching_skips_unknown_attribute_type() {
+        // Filtering happens on the raw type code, so an unknown attribute the caller did not
+        // ask for is skipped instead of surfacing as an error.
+        let fname = filename_value_bytes("only.txt", FileNamespace::Win32);
+        let entry = entry_with_attributes(&[
+            resident_attribute_record(0x1234, &[0xAA; 8]),
+            resident_attribute_record(0x30, &fname),
+        ]);
+
+        let results: Vec<_> = entry
+            .iter_attributes_matching(Some(vec![MftAttributeType::FileName]))
+            .collect();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_ok());
+        assert_eq!(
+            entry
+                .find_best_name_attribute()
+                .unwrap()
+                .name
+                .to_utf8_string(),
+            "only.txt"
+        );
+    }
+
+    #[test]
+    fn property_set_attribute_is_known() {
+        // 0xF0 $PROPERTY_SET exists on NT4-era volumes; it should parse as a raw attribute.
+        let entry = entry_with_attributes(&[resident_attribute_record(0xF0, &[0x01; 8])]);
+
+        let attr = entry
+            .iter_attributes()
+            .next()
+            .expect("expected an attribute")
+            .expect("expected $PROPERTY_SET to parse");
+        assert_eq!(attr.header.type_code, MftAttributeType::PropertySet);
     }
 }
