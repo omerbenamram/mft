@@ -1,11 +1,13 @@
-use crate::entry::MftEntry;
+use crate::FileNameAttr;
+use crate::attribute::MftAttributeType;
+use crate::entry::{MftEntry, find_best_name_attribute_in, is_long_name};
 use crate::err::{Error, Result};
 
 use crate::EntryHeader;
-use log::{debug, trace};
+use log::{debug, trace, warn};
 
 use lru::LruCache;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::num::NonZeroUsize;
@@ -34,6 +36,10 @@ pub struct MftParser<T: Read + Seek> {
     entry_size: u32,
     size: u64,
     entries_cache: LruCache<u64, PathBuf>,
+    /// Extension record IDs by base record ID, built on first use by scanning the whole MFT.
+    /// Only needed for entries whose `$ATTRIBUTE_LIST` is non-resident, since the clusters
+    /// holding it aren't in the MFT.
+    extensions_index: Option<HashMap<u64, Vec<u64>>>,
     // Next expected read offset in the underlying stream. Used to avoid a seek syscall when
     // reading entries sequentially.
     next_read_offset: u64,
@@ -79,6 +85,7 @@ impl<T: Read + Seek> MftParser<T> {
             entry_size,
             size,
             entries_cache: LruCache::new(NonZeroUsize::new(1000).expect("1000 > 0")),
+            extensions_index: None,
             next_read_offset: 0,
         })
     }
@@ -165,14 +172,102 @@ impl<T: Read + Seek> MftParser<T> {
         (0..total_entries).map(move |i| self.get_entry(i))
     }
 
+    /// Reads the extension records of a base entry: the records that hold the attributes its
+    /// `$ATTRIBUTE_LIST` moved out of it. Returns no records for an entry without one.
+    ///
+    /// A resident `$ATTRIBUTE_LIST` names the records directly. A non-resident one lives outside
+    /// the MFT, so the first such entry triggers a scan of the whole MFT for records whose base
+    /// reference points back at it. Either way, only records whose base reference matches the
+    /// entry (number and sequence) are returned, so reused records of a deleted file are left
+    /// out. Records that can't be read are skipped.
+    pub fn get_extension_entries(&mut self, entry: &MftEntry) -> Vec<MftEntry> {
+        let record_number = entry.header.record_number;
+        let mut attribute_lists = entry
+            .iter_attributes_matching(Some(vec![MftAttributeType::AttributeList]))
+            .filter_map(Result::ok)
+            .peekable();
+        if attribute_lists.peek().is_none() {
+            return Vec::new();
+        }
+
+        let mut ids: Vec<u64> = Vec::new();
+        let mut needs_scan = false;
+        for list in attribute_lists {
+            match list.data.as_attribute_list() {
+                Some(list) => ids.extend(
+                    list.entries
+                        .iter()
+                        .map(|e| e.segment_reference.entry)
+                        .filter(|&id| id != record_number),
+                ),
+                None => needs_scan = true,
+            }
+        }
+        if needs_scan {
+            let index = self.extensions_index();
+            ids.extend(index.get(&record_number).into_iter().flatten());
+        }
+        ids.sort_unstable();
+        ids.dedup();
+
+        let mut extensions = Vec::with_capacity(ids.len());
+        for id in ids {
+            match self.get_entry(id) {
+                Ok(extension)
+                    if extension.header.base_reference.entry == record_number
+                        && extension.header.base_reference.sequence == entry.header.sequence =>
+                {
+                    extensions.push(extension)
+                }
+                Ok(_) => trace!("Entry {id} is not an extension of entry {record_number}"),
+                Err(e) => {
+                    warn!("Failed to read extension record {id} of entry {record_number}: {e}")
+                }
+            }
+        }
+        extensions
+    }
+
+    fn extensions_index(&mut self) -> &HashMap<u64, Vec<u64>> {
+        if self.extensions_index.is_none() {
+            let mut index: HashMap<u64, Vec<u64>> = HashMap::new();
+            for id in 0..self.get_entry_count() {
+                if let Ok(entry) = self.get_entry(id)
+                    && entry.header.base_reference.entry != 0
+                {
+                    index
+                        .entry(entry.header.base_reference.entry)
+                        .or_default()
+                        .push(id);
+                }
+            }
+            self.extensions_index = Some(index);
+        }
+        self.extensions_index.get_or_insert_default()
+    }
+
+    /// The name and parent ID of an entry for path resolution, from
+    /// [`find_best_name_attribute_in`]. Extension records are only read when the base record has
+    /// no long name.
+    fn best_name(&mut self, entry: &MftEntry) -> Option<(String, u64)> {
+        let to_owned = |fname: FileNameAttr<'_>| (fname.name.to_utf8_string(), fname.parent.entry);
+
+        let base_name = entry.find_best_name_attribute();
+        if base_name.as_ref().is_some_and(is_long_name) || !entry.has_attribute_list() {
+            return base_name.map(to_owned);
+        }
+
+        let extensions = self.get_extension_entries(entry);
+        find_best_name_attribute_in(entry, &extensions).map(to_owned)
+    }
+
     /// Classifies an entry for path resolution, as the parent of another entry.
-    fn path_step(entry: &MftEntry) -> PathStep {
-        match entry.find_best_name_attribute() {
+    fn path_step(&mut self, entry: &MftEntry) -> PathStep {
+        match self.best_name(entry) {
             // A parent that isn't a directory can't be trusted.
             Some(_) if !entry.is_dir() => PathStep::Final(PathBuf::from("[Unknown]")),
-            Some(filename_header) => {
-                let name = filename_header.name.to_utf8_string();
-                let parent = match filename_header.parent.entry {
+            Some((name, parent)) => {
+                let parent = match parent {
                     // MFT entry 5 is the root path.
                     5 => PathParent::Root,
                     0 => PathParent::Orphan,
@@ -243,7 +338,7 @@ impl<T: Read + Seek> MftParser<T> {
 
             current_id = next_id;
             step = match self.get_entry(current_id) {
-                Ok(parent) => Self::path_step(&parent),
+                Ok(parent) => self.path_step(&parent),
                 // Parent is maybe corrupted or incomplete, use a sentinel instead.
                 Err(_) => PathStep::Final(PathBuf::from("[Unknown]")),
             };
@@ -288,7 +383,7 @@ impl<T: Read + Seek> MftParser<T> {
         }
 
         let step = match self.get_entry(entry_id) {
-            Ok(entry) => Self::path_step(&entry),
+            Ok(entry) => self.path_step(&entry),
             // Parent is maybe corrupted or incomplete, use a sentinel instead.
             Err(_) => PathStep::Final(PathBuf::from("[Unknown]")),
         };
@@ -299,7 +394,7 @@ impl<T: Read + Seek> MftParser<T> {
     /// Caches computations.
     pub fn get_full_path_for_entry(&mut self, entry: &MftEntry) -> Result<Option<PathBuf>> {
         let entry_id = entry.header.record_number;
-        let filename_header = entry.find_best_name_attribute();
+        let filename_header = self.best_name(entry);
 
         // Directories go through the same walk as parents, so a directory's path always
         // matches the prefix of its children's paths.
@@ -307,15 +402,12 @@ impl<T: Read + Seek> MftParser<T> {
             if let Some(cached) = self.entries_cache.get(&entry_id) {
                 return Ok(Some(cached.clone()));
             }
-            let step = Self::path_step(entry);
+            let step = self.path_step(entry);
             return Ok(Some(self.resolve_directory_path(entry_id, step)));
         }
 
         match filename_header {
-            Some(filename_header) => {
-                let parent_entry_id = filename_header.parent.entry;
-                let name = filename_header.name.to_utf8_string();
-
+            Some((name, parent_entry_id)) => {
                 match parent_entry_id {
                     // MFT entry 5 is the root path.
                     5 => Ok(Some(PathBuf::from(name))),

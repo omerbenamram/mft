@@ -155,3 +155,32 @@ fn test_json_output_includes_full_path() {
         );
     }
 }
+
+#[test]
+fn test_bodyfile_follows_extension_records() {
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.arg("-o")
+        .arg("bodyfile")
+        .arg("-r")
+        .arg("47,48")
+        .arg(mft_sample_name("ntfs1-gen2.MFT"));
+    let output = cmd.output().unwrap();
+    assert!(output.status.success());
+
+    // `$DATA` of both files lives in extension records (48's `$ATTRIBUTE_LIST` is non-resident).
+    // Sizes match `fls -m` on `testdata/ntfs/ntfs1-gen2.E01`. `fls` renumbers the attribute ids
+    // of merged attributes; these are the ids on disk.
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let data_lines: Vec<&str> = stdout
+        .lines()
+        .filter(|l| l.contains("-128-"))
+        .map(|l| l.rsplitn(5, '|').last().unwrap())
+        .collect();
+    assert_eq!(
+        data_lines,
+        [
+            "0|/RAW/logfile1.txt|47-128-0|r/rrwxrwxrwx|0|0|21888890",
+            "0|/Compressed/logfile1.txt|48-128-0|r/rrwxrwxrwx|0|0|21888890",
+        ]
+    );
+}

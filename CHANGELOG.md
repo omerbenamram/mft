@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `mft_dump -o bodyfile` writes Sleuth Kit bodyfile lines in the `fls -m` layout, for timelining with `mactime`: one line per `$DATA` stream and `$INDEX_ROOT` with the `$STANDARD_INFORMATION` times, and a `($FILE_NAME)` line with the `$FILE_NAME` times.
 - Parse `$REPARSE_POINT` (0xC0) into `ReparsePointAttr`: the tag, its documented name, the GUID for third-party tags, and decoded symlink, junction/mount point, AppExecLink and WSL symlink targets. Other tags keep their data as hex.
 - `mft_dump` JSON and JSONL output include each entry's `full_path` (previously only CSV had it).
-- `FlatMftEntryWithName::from_entry_with_path` builds a CSV row from an already-resolved path.
+- `FlatMftEntryWithName::from_entry_with_path` builds a CSV row from an already-resolved path and the entry's extension records.
+- `MftParser::get_extension_entries` reads the extension records that hold attributes an `$ATTRIBUTE_LIST` moved out of a base record, `MftEntry::has_attribute_list` says whether there are any, and `entry::find_best_name_attribute_in` picks a file's name across its base and extension records (#148).
 - JSON output lists attributes that failed to parse in a per-entry `errors` array (only present when non-empty). Previously they were dropped silently.
 - Expand `FileAttributeFlags` with the latest Windows-defined bits for NTFS parsing.
 - Add `MftAttributeType::PropertySet` (`0xF0`, NT4-era `$PROPERTY_SET`).
@@ -26,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep formatting and lint configuration aligned with Rust 2024 expectations.
 
 ### Fixed
+- Full paths use the long name of a file or directory whose base record only has room for its 8.3 short name, by looking in its extension records (#148). Paths like `Windows/servicing/LCU/PACKAG~1.7/...` become `Windows/servicing/LCU/Package_for_RollupFix~.../...`; on a Windows 11 sample, about a third of all paths change this way.
+- CSV `FileSize`, `HasAlternateDataStreams` and the bodyfile's stream lines include `$DATA` attributes stored in extension records, instead of reporting such files as empty.
 - `$FILE_NAME` `logical_size` and `physical_size` were swapped: the allocated size (offset 0x28) was reported as the logical size and the real size (0x30) as the physical size. JSON output and index entries change accordingly.
 - `iter_attributes` keeps returning later attributes after one with an unknown type code, and
   `iter_attributes_matching` skips unrequested attributes without parsing their headers.

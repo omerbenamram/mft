@@ -17,7 +17,7 @@ use sonic_rs as sonic_json;
 use std::backtrace::Backtrace;
 use std::fmt::{self, Write as FmtWrite};
 use std::fs::File;
-use std::io::{BufWriter, Read, Seek, Write};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use mft::entry::ZERO_HEADER;
@@ -324,9 +324,15 @@ impl MftDump {
                 OutputFormat::JSON | OutputFormat::JSONL => {
                     self.print_json_entry(&entry, full_path)?
                 }
-                OutputFormat::Bodyfile => self.print_bodyfile_entry(&entry, &mut parser)?,
+                // These describe a file rather than one record, so they include the attributes
+                // stored in its extension records.
+                OutputFormat::Bodyfile => {
+                    let extensions = parser.get_extension_entries(&entry);
+                    self.print_bodyfile_entry(&entry, &extensions, full_path)?
+                }
                 OutputFormat::CSV => self.print_csv_entry(
                     &entry,
+                    &parser.get_extension_entries(&entry),
                     full_path,
                     csv_writer
                         .as_mut()
@@ -375,15 +381,15 @@ impl MftDump {
     pub fn print_bodyfile_entry(
         &mut self,
         entry: &MftEntry,
-        parser: &mut MftParser<impl Read + Seek>,
+        extensions: &[MftEntry],
+        full_path: Option<PathBuf>,
     ) -> Result<()> {
         let out = self
             .output
             .as_mut()
             .expect("Bodyfile flow keeps `output`, it is only taken by the CSV writer");
-        let full_path = parser.get_full_path_for_entry(entry)?.unwrap_or_default();
 
-        mft::bodyfile::write_entry(out, entry, &full_path)?;
+        mft::bodyfile::write_entry(out, entry, extensions, &full_path.unwrap_or_default())?;
 
         Ok(())
     }
@@ -391,11 +397,15 @@ impl MftDump {
     pub fn print_csv_entry<W: Write>(
         &self,
         entry: &MftEntry,
+        extensions: &[MftEntry],
         full_path: Option<PathBuf>,
         writer: &mut csv::Writer<W>,
     ) -> Result<()> {
-        let flat_entry =
-            FlatMftEntryWithName::from_entry_with_path(entry, full_path.unwrap_or_default());
+        let flat_entry = FlatMftEntryWithName::from_entry_with_path(
+            entry,
+            extensions,
+            full_path.unwrap_or_default(),
+        );
 
         writer.serialize(flat_entry)?;
 

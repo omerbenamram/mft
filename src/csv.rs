@@ -70,18 +70,27 @@ impl FlatMftEntryWithName {
             .get_full_path_for_entry(entry)
             .expect("I/O Err")
             .unwrap_or_default();
-        Self::from_entry_with_path(entry, full_path)
+        let extensions = parser.get_extension_entries(entry);
+        Self::from_entry_with_path(entry, &extensions, full_path)
     }
 
     /// Same as [`FlatMftEntryWithName::from_entry`], for callers that already resolved the
-    /// entry's full path.
-    pub fn from_entry_with_path(entry: &MftEntry, full_path: PathBuf) -> FlatMftEntryWithName {
-        let entry_attributes: Vec<MftAttribute> = entry
-            .iter_attributes_matching(Some(vec![
-                MftAttributeType::FileName,
-                MftAttributeType::StandardInformation,
-                MftAttributeType::DATA,
-            ]))
+    /// entry's full path and read its extension records (see
+    /// [`MftParser::get_extension_entries`]).
+    pub fn from_entry_with_path(
+        entry: &MftEntry,
+        extensions: &[MftEntry],
+        full_path: PathBuf,
+    ) -> FlatMftEntryWithName {
+        let entry_attributes: Vec<MftAttribute> = std::iter::once(entry)
+            .chain(extensions)
+            .flat_map(|record| {
+                record.iter_attributes_matching(Some(vec![
+                    MftAttributeType::FileName,
+                    MftAttributeType::StandardInformation,
+                    MftAttributeType::DATA,
+                ]))
+            })
             .filter_map(Result::ok)
             .collect();
 

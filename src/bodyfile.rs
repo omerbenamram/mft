@@ -7,7 +7,7 @@ use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
 use crate::attribute::x10::StandardInfoAttr;
 use crate::attribute::x30::FileNameAttr;
 use crate::attribute::{FileAttributeFlags, MftAttributeContent, MftAttributeType};
-use crate::entry::MftEntry;
+use crate::entry::{MftEntry, find_best_name_attribute_in};
 
 use jiff::Timestamp;
 use std::io::{self, Write};
@@ -55,29 +55,40 @@ impl From<&FileNameAttr<'_>> for Times {
 /// The inode column is `<entry>-<attribute type>-<attribute id>` and the size column is that
 /// attribute's size. Unallocated entries get ` (deleted)` after their name. Extension records,
 /// and entries without a `$FILE_NAME` attribute, are skipped, since `fls` can't reach them
-/// either. Attributes stored in extension records (through an `$ATTRIBUTE_LIST`) are not
-/// followed, so a file whose `$DATA` lives there gets a single line without an attribute.
-pub fn write_entry<W: Write>(out: &mut W, entry: &MftEntry, full_path: &Path) -> io::Result<()> {
+/// either.
+///
+/// `extensions` are the entry's extension records (from
+/// [`crate::MftParser::get_extension_entries`]): attributes stored there through an
+/// `$ATTRIBUTE_LIST` get their lines too, numbered with the base entry like `fls` does.
+pub fn write_entry<W: Write>(
+    out: &mut W,
+    entry: &MftEntry,
+    extensions: &[MftEntry],
+    full_path: &Path,
+) -> io::Result<()> {
     // An extension record can hold `$FILE_NAME` attributes moved out of its base record (e.g. a
     // file with many hard links), but it has no `$STANDARD_INFORMATION` and isn't a file itself.
     if entry.header.base_reference.entry != 0 {
         return Ok(());
     }
 
-    let best_name = entry.find_best_name_attribute();
+    let best_name = find_best_name_attribute_in(entry, extensions);
     if best_name.is_none() {
         return Ok(());
     }
 
     // A stream line only needs the attribute header, so only the timestamp attributes' content is
     // parsed: a `$DATA` or `$INDEX_ROOT` whose content is corrupt still gets its line.
-    let attributes: Vec<(MftAttributeHeader, Option<MftAttributeContent>)> = entry
-        .iter_attribute_records_matching(Some(vec![
-            MftAttributeType::StandardInformation,
-            MftAttributeType::FileName,
-            MftAttributeType::DATA,
-            MftAttributeType::IndexRoot,
-        ]))
+    let attributes: Vec<(MftAttributeHeader, Option<MftAttributeContent>)> = std::iter::once(entry)
+        .chain(extensions)
+        .flat_map(|record| {
+            record.iter_attribute_records_matching(Some(vec![
+                MftAttributeType::StandardInformation,
+                MftAttributeType::FileName,
+                MftAttributeType::DATA,
+                MftAttributeType::IndexRoot,
+            ]))
+        })
         .filter_map(Result::ok)
         .map(|(header, record)| {
             let content = matches!(
@@ -277,7 +288,7 @@ mod tests {
 
     fn lines(entry: &MftEntry) -> Vec<String> {
         let mut out = Vec::new();
-        write_entry(&mut out, entry, Path::new("$MFT")).unwrap();
+        write_entry(&mut out, entry, &[], Path::new("$MFT")).unwrap();
         String::from_utf8(out)
             .unwrap()
             .lines()
