@@ -1,0 +1,160 @@
+---
+source: tests/test_snapshots.rs
+expression: json
+---
+{
+  "header": {
+    "signature": [
+      70,
+      73,
+      76,
+      69
+    ],
+    "usa_offset": 48,
+    "usa_size": 3,
+    "metadata_transaction_journal": 214387737,
+    "sequence": 1,
+    "hard_link_count": 1,
+    "first_attribute_record_offset": 56,
+    "flags": "ALLOCATED",
+    "used_entry_size": 392,
+    "total_entry_size": 1024,
+    "base_reference": {
+      "entry": 0,
+      "sequence": 0
+    },
+    "first_attribute_id": 5,
+    "record_number": 3498
+  },
+  "attributes": [
+    {
+      "header": {
+        "type_code": "StandardInformation",
+        "record_length": 96,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 72,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 0,
+        "name": "",
+        "start_offset": 56
+      },
+      "data": {
+        "created": "2007-06-30T12:57:47.9801824Z",
+        "modified": "2009-01-19T16:53:29.5895424Z",
+        "mft_modified": "2009-01-19T16:53:29.5895424Z",
+        "accessed": "2009-01-19T16:53:29.4393264Z",
+        "file_flags": "FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_ARCHIVE",
+        "max_version": 0,
+        "version": 0,
+        "class_id": 0,
+        "owner_id": 0,
+        "security_id": 291,
+        "quota": 0,
+        "usn": 0
+      }
+    },
+    {
+      "header": {
+        "type_code": "AttributeList",
+        "record_length": 120,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 96,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 4,
+        "name": "",
+        "start_offset": 152
+      },
+      "data": {
+        "entries": [
+          {
+            "attribute_type": 16,
+            "record_length": 32,
+            "name_length": 0,
+            "name_offset": 26,
+            "lowest_vcn": 0,
+            "segment_reference": {
+              "entry": 3498,
+              "sequence": 1
+            },
+            "reserved": 0,
+            "name": ""
+          },
+          {
+            "attribute_type": 48,
+            "record_length": 32,
+            "name_length": 0,
+            "name_offset": 26,
+            "lowest_vcn": 0,
+            "segment_reference": {
+              "entry": 3498,
+              "sequence": 1
+            },
+            "reserved": 2,
+            "name": ""
+          },
+          {
+            "attribute_type": 128,
+            "record_length": 32,
+            "name_length": 0,
+            "name_offset": 26,
+            "lowest_vcn": 0,
+            "segment_reference": {
+              "entry": 4711,
+              "sequence": 2
+            },
+            "reserved": 0,
+            "name": ""
+          }
+        ]
+      }
+    },
+    {
+      "header": {
+        "type_code": "FileName",
+        "record_length": 112,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 86,
+          "index_flag": 1,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 2,
+        "name": "",
+        "start_offset": 272
+      },
+      "data": {
+        "parent": {
+          "entry": 30,
+          "sequence": 1
+        },
+        "created": "2007-06-30T12:57:47.9801824Z",
+        "modified": "2007-06-30T12:57:47.9801824Z",
+        "mft_modified": "2007-06-30T12:57:47.9801824Z",
+        "accessed": "2007-06-30T12:57:47.9801824Z",
+        "logical_size": 0,
+        "physical_size": 0,
+        "flags": "FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_ARCHIVE",
+        "reparse_value": 0,
+        "name_length": 10,
+        "namespace": "Win32AndDos",
+        "name": "system.LOG"
+      }
+    }
+  ],
+  "valid_fixup": true
+}

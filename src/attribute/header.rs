@@ -170,7 +170,6 @@ impl<'a> MftAttributeHeader<'a> {
 
 #[derive(Serialize, Clone, Debug)]
 pub struct ResidentHeader {
-    #[serde(skip_serializing)]
     /// The size of the attribute value, in bytes.
     pub data_size: u32,
     #[serde(skip_serializing)]
