@@ -2,6 +2,7 @@
 use clap::{Arg, ArgAction, ArgMatches};
 use indoc::indoc;
 use log::Level;
+use serde::Serialize;
 
 use mft::MftEntry;
 use mft::attribute::MftAttributeType;
@@ -75,6 +76,14 @@ impl FromStr for Ranges {
 
         Ok(Ranges(ranges))
     }
+}
+
+/// A JSON output record: the entry plus its full path, which only the parser can resolve.
+#[derive(Serialize)]
+struct JsonEntry<'a> {
+    full_path: Option<String>,
+    #[serde(flatten)]
+    entry: &'a MftEntry,
 }
 
 struct MftDump {
@@ -303,7 +312,9 @@ impl MftDump {
             }
 
             match self.output_format {
-                OutputFormat::JSON | OutputFormat::JSONL => self.print_json_entry(&entry)?,
+                OutputFormat::JSON | OutputFormat::JSONL => {
+                    self.print_json_entry(&entry, &mut parser)?
+                }
                 OutputFormat::CSV => self.print_csv_entry(
                     &entry,
                     &mut parser,
@@ -330,18 +341,31 @@ impl MftDump {
         }
     }
 
-    pub fn print_json_entry(&mut self, entry: &MftEntry) -> Result<()> {
+    pub fn print_json_entry(
+        &mut self,
+        entry: &MftEntry,
+        parser: &mut MftParser<impl Read + Seek>,
+    ) -> Result<()> {
         let out = self
             .output
             .as_mut()
             .expect("CSV Flow cannot occur, so `Mftdump` should still Own `output`");
 
+        let json_entry = JsonEntry {
+            full_path: parser
+                .get_full_path_for_entry(entry)
+                .ok()
+                .flatten()
+                .map(|path| path.to_string_lossy().into_owned()),
+            entry,
+        };
+
         self.json_buf.clear();
         if self.output_format == OutputFormat::JSON {
-            serde_json::to_writer_pretty(&mut self.json_buf, entry)?;
+            serde_json::to_writer_pretty(&mut self.json_buf, &json_entry)?;
         } else {
             // JSONL is the performance-critical mode; use a faster serializer.
-            sonic_json::to_writer(&mut self.json_buf, entry)?;
+            sonic_json::to_writer(&mut self.json_buf, &json_entry)?;
         }
         self.json_buf.push(b'\n');
         out.write_all(&self.json_buf)?;
