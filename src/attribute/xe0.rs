@@ -62,7 +62,7 @@ const ENTRY_HEADER_LEN: usize = 8;
 impl<'a> EaAttr<'a> {
     /// Parses an `$EA` value. Each entry gives the offset of the next one, and the list ends
     /// at an offset of 0 or at the end of the value. Returns `None` when an entry runs past the
-    /// value or overlaps the next one.
+    /// value, overlaps the next one or has no NUL after its name.
     ///
     /// # Example
     ///
@@ -91,6 +91,9 @@ impl<'a> EaAttr<'a> {
 
             // The name is followed by a NUL, then the value.
             let name = entry.get(ENTRY_HEADER_LEN..ENTRY_HEADER_LEN + name_len)?;
+            if *entry.get(ENTRY_HEADER_LEN + name_len)? != 0 {
+                return None;
+            }
             let value_start = ENTRY_HEADER_LEN + name_len + 1;
             let entry_len = value_start + value_len;
             let data = entry.get(value_start..entry_len)?;
@@ -102,7 +105,7 @@ impl<'a> EaAttr<'a> {
             match next_entry_offset {
                 0 => break,
                 next if next < entry_len => return None,
-                next => offset += next,
+                next => offset = offset.checked_add(next)?,
             }
         }
         Some(EaAttr { entries })
@@ -209,6 +212,11 @@ mod tests {
     fn rejects_entries_that_run_past_the_value_or_overlap() {
         let value = entry(0, 0, "$LXUID", &1000u32.to_le_bytes());
         assert!(EaAttr::from_slice(&value[..value.len() - 1]).is_none());
+
+        // A name length one short leaves the name's last byte where the NUL should be.
+        let mut misaligned = value.clone();
+        misaligned[5] -= 1;
+        assert!(EaAttr::from_slice(&misaligned).is_none());
 
         let mut overlapping = value.clone();
         overlapping[0..4].copy_from_slice(&4u32.to_le_bytes());

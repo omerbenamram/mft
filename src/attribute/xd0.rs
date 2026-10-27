@@ -5,12 +5,13 @@ use serde::Serialize;
 /// <https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_full_ea_information>
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct EaInformationAttr {
-    /// The size of the extended attributes in the packed form that `FILE_FULL_EA_INFORMATION`
-    /// lists use.
+    /// The size of the extended attributes in packed form: each one's flags, lengths, name
+    /// and value, without the next entry offsets and padding that `$EA` stores.
     pub packed_ea_size: u16,
     /// How many extended attributes have the `NEED_EA` flag.
     pub need_ea_count: u16,
-    /// The size of the `$EA` attribute's value.
+    /// The size of the extended attributes as `$EA` stores them (`FILE_FULL_EA_INFORMATION`
+    /// entries), which is the size of its value.
     pub unpacked_ea_size: u32,
 }
 
