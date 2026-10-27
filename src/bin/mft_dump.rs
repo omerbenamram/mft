@@ -270,13 +270,12 @@ impl MftDump {
             };
 
             let full_path = parser.get_full_path_for_entry(&entry).ok().flatten();
-            // Exported streams, CSV and bodyfile describe a file rather than one record, so they
-            // include the attributes stored in its extension records.
-            let extensions = if self.data_streams_output.is_some()
-                || matches!(
-                    self.output_format,
-                    OutputFormat::CSV | OutputFormat::Bodyfile
-                ) {
+            // CSV and bodyfile describe a file rather than one record, so they include the
+            // attributes stored in its extension records.
+            let extensions = if matches!(
+                self.output_format,
+                OutputFormat::CSV | OutputFormat::Bodyfile
+            ) {
                 parser.get_extension_entries(&entry)
             } else {
                 Vec::new()
@@ -287,9 +286,10 @@ impl MftDump {
             {
                 let sanitized_path = sanitized(&path.to_string_lossy());
 
-                for (i, (name, stream)) in std::iter::once(&entry)
-                    .chain(&extensions)
-                    .flat_map(|record| record.iter_attributes())
+                // Streams in extension records are exported when the loop reaches those records,
+                // under the base entry's path.
+                for (i, (name, stream)) in entry
+                    .iter_attributes()
                     .filter_map(|a| a.ok())
                     .filter_map(|a| {
                         if a.header.type_code == MftAttributeType::DATA {

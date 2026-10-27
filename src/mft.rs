@@ -1,5 +1,5 @@
 use crate::FileNameAttr;
-use crate::attribute::MftAttributeType;
+use crate::attribute::{MftAttributeContent, MftAttributeType};
 use crate::entry::{MftEntry, find_best_name_attribute_in, is_long_name};
 use crate::err::{Error, Result};
 
@@ -181,14 +181,16 @@ impl<T: Read + Seek> MftParser<T> {
     /// `$ATTRIBUTE_LIST` moved out of it. Returns no records for an entry without one.
     ///
     /// A resident `$ATTRIBUTE_LIST` names the records directly. A non-resident one lives outside
-    /// the MFT, so the first such entry triggers a scan of the whole MFT for records whose base
-    /// reference points back at it. Either way, only records whose base reference matches the
+    /// the MFT (and one that fails to parse can't be trusted), so the first such entry triggers a
+    /// scan of the whole MFT for records whose base reference points back at it. Either way, only records whose base reference matches the
     /// entry (number and sequence) are returned, so reused records of a deleted file are left
     /// out. Records that can't be read are skipped.
     pub fn get_extension_entries(&mut self, entry: &MftEntry) -> Vec<MftEntry> {
         let record_number = entry.header.record_number;
+        // Only the header is needed to know that there is a list: content that fails to parse
+        // still leaves the scan to find the extensions.
         let mut attribute_lists = entry
-            .iter_attributes_matching(Some(vec![MftAttributeType::AttributeList]))
+            .iter_attribute_records_matching(Some(vec![MftAttributeType::AttributeList]))
             .filter_map(Result::ok)
             .peekable();
         if attribute_lists.peek().is_none() {
@@ -197,8 +199,12 @@ impl<T: Read + Seek> MftParser<T> {
 
         let mut ids: Vec<u64> = Vec::new();
         let mut needs_scan = false;
-        for list in attribute_lists {
-            match list.data.as_attribute_list() {
+        for (header, record) in attribute_lists {
+            let content = MftAttributeContent::from_record(record, &header).ok();
+            match content
+                .as_ref()
+                .and_then(MftAttributeContent::as_attribute_list)
+            {
                 Some(list) => ids.extend(
                     list.entries
                         .iter()

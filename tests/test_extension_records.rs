@@ -1,6 +1,7 @@
 mod fixtures;
 
 use fixtures::*;
+use mft::attribute::MftAttributeType;
 use mft::attribute::x30::FileNamespace;
 use mft::entry::{MftEntry, find_best_name_attribute_in};
 use mft::mft::MftParser;
@@ -31,6 +32,51 @@ fn test_non_resident_attribute_list_extension_records() {
         extensions
             .iter()
             .all(|e| e.header.base_reference.entry == 48)
+    );
+}
+
+/// The record offset of an entry's `$ATTRIBUTE_LIST` attribute.
+fn attribute_list_offset(entry: &MftEntry) -> usize {
+    entry
+        .iter_attributes_matching(Some(vec![MftAttributeType::AttributeList]))
+        .next()
+        .unwrap()
+        .unwrap()
+        .header
+        .start_offset as usize
+}
+
+#[test]
+fn test_unparseable_attribute_list_falls_back_to_a_scan() {
+    let mut parser = MftParser::from_path(mft_sample_name("ntfs1-gen2.MFT")).unwrap();
+
+    // A resident list whose first entry claims a length of 0.
+    let mut entry = parser.get_entry(47).unwrap();
+    let offset = attribute_list_offset(&entry);
+    let value_offset =
+        u16::from_le_bytes([entry.data[offset + 0x14], entry.data[offset + 0x15]]) as usize;
+    entry.data[offset + value_offset + 4..offset + value_offset + 6].fill(0);
+    assert_eq!(
+        record_numbers(&parser.get_extension_entries(&entry)),
+        [52, 55, 59, 67, 73, 81]
+    );
+
+    // A non-resident list whose data runs can't be decoded.
+    let mut entry = parser.get_entry(48).unwrap();
+    let expected = record_numbers(&parser.get_extension_entries(&entry));
+    let offset = attribute_list_offset(&entry);
+    let runs_offset =
+        u16::from_le_bytes([entry.data[offset + 0x20], entry.data[offset + 0x21]]) as usize;
+    // A run header claiming 15-byte length and offset fields runs past the record.
+    entry.data[offset + runs_offset] = 0xFF;
+    assert!(
+        entry
+            .iter_attributes_matching(Some(vec![MftAttributeType::AttributeList]))
+            .all(|a| a.is_err())
+    );
+    assert_eq!(
+        record_numbers(&parser.get_extension_entries(&entry)),
+        expected
     );
 }
 
