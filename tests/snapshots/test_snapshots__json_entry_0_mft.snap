@@ -1,0 +1,174 @@
+---
+source: tests/test_snapshots.rs
+expression: json
+---
+{
+  "header": {
+    "signature": [
+      70,
+      73,
+      76,
+      69
+    ],
+    "usa_offset": 48,
+    "usa_size": 3,
+    "metadata_transaction_journal": 77648146,
+    "sequence": 1,
+    "hard_link_count": 1,
+    "first_attribute_record_offset": 56,
+    "flags": "EntryFlags(ALLOCATED)",
+    "used_entry_size": 424,
+    "total_entry_size": 1024,
+    "base_reference": {
+      "entry": 0,
+      "sequence": 0
+    },
+    "first_attribute_id": 6,
+    "record_number": 0
+  },
+  "attributes": [
+    {
+      "header": {
+        "type_code": "StandardInformation",
+        "record_length": 96,
+        "form_code": 0,
+        "residential_header": {
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "AttributeDataFlags(0x0)",
+        "instance": 0,
+        "name": "",
+        "start_offset": 56
+      },
+      "data": {
+        "created": "2007-06-30T12:50:52.252395Z",
+        "modified": "2007-06-30T12:50:52.252395Z",
+        "mft_modified": "2007-06-30T12:50:52.252395Z",
+        "accessed": "2007-06-30T12:50:52.252395Z",
+        "file_flags": "FileAttributeFlags(FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)",
+        "max_version": 0,
+        "version": 0,
+        "class_id": 0,
+        "owner_id": 0,
+        "security_id": 256,
+        "quota": 0,
+        "usn": 0
+      }
+    },
+    {
+      "header": {
+        "type_code": "FileName",
+        "record_length": 104,
+        "form_code": 0,
+        "residential_header": {
+          "index_flag": 1,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "AttributeDataFlags(0x0)",
+        "instance": 3,
+        "name": "",
+        "start_offset": 152
+      },
+      "data": {
+        "parent": {
+          "entry": 5,
+          "sequence": 5
+        },
+        "created": "2007-06-30T12:50:52.252395Z",
+        "modified": "2007-06-30T12:50:52.252395Z",
+        "mft_modified": "2007-06-30T12:50:52.252395Z",
+        "accessed": "2007-06-30T12:50:52.252395Z",
+        "logical_size": 16384,
+        "physical_size": 16384,
+        "flags": "FileAttributeFlags(FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)",
+        "reparse_value": 0,
+        "name_length": 4,
+        "namespace": "Win32AndDos",
+        "name": "$MFT"
+      }
+    },
+    {
+      "header": {
+        "type_code": "DATA",
+        "record_length": 88,
+        "form_code": 1,
+        "residential_header": {
+          "vnc_first": 0,
+          "vnc_last": 6543,
+          "unit_compression_size": 0,
+          "allocated_length": 13402112,
+          "file_size": 13402112,
+          "valid_data_length": 13402112,
+          "total_allocated": null
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "AttributeDataFlags(0x0)",
+        "instance": 1,
+        "name": "",
+        "start_offset": 256
+      },
+      "data": {
+        "data_runs": [
+          {
+            "lcn_offset": 205374,
+            "lcn_length": 4536,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 261023,
+            "lcn_length": 1288,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 230736,
+            "lcn_length": 336,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 399772,
+            "lcn_length": 384,
+            "run_type": "Standard"
+          }
+        ]
+      }
+    },
+    {
+      "header": {
+        "type_code": "BITMAP",
+        "record_length": 72,
+        "form_code": 1,
+        "residential_header": {
+          "vnc_first": 0,
+          "vnc_last": 0,
+          "unit_compression_size": 0,
+          "allocated_length": 2048,
+          "file_size": 1640,
+          "valid_data_length": 1640,
+          "total_allocated": null
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "AttributeDataFlags(0x0)",
+        "instance": 5,
+        "name": "",
+        "start_offset": 344
+      },
+      "data": {
+        "data_runs": [
+          {
+            "lcn_offset": 205373,
+            "lcn_length": 1,
+            "run_type": "Standard"
+          }
+        ]
+      }
+    }
+  ],
+  "valid_fixup": true
+}
