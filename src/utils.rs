@@ -1,6 +1,7 @@
 use jiff::Timestamp;
 use serde::Serializer;
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 /// Length of the string produced by [`format_timestamp`]: `YYYY-MM-DDTHH:MM:SS.fffffffZ`.
 const TIMESTAMP_LEN: usize = 28;
@@ -179,6 +180,48 @@ where
     }
 }
 
+/// Formats a path resolved by [`crate::MftParser::get_full_path_for_entry`] with `\`
+/// separators, the way Windows writes NTFS paths, whatever the host platform.
+pub fn windows_path(path: &Path) -> String {
+    WindowsPath(path).to_string()
+}
+
+struct WindowsPath<'a>(&'a Path);
+
+impl fmt::Display for WindowsPath<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, component) in self.0.components().enumerate() {
+            if i > 0 {
+                f.write_str("\\")?;
+            }
+            f.write_str(&component.as_os_str().to_string_lossy())?;
+        }
+        Ok(())
+    }
+}
+
+/// Serializes a path with `\` separators, see [`windows_path`].
+pub fn serialize_windows_path<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.collect_str(&WindowsPath(path))
+}
+
+/// Same as [`serialize_windows_path`], for an optional path.
+pub fn serialize_option_windows_path<S>(
+    path: &Option<PathBuf>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match path {
+        Some(path) => serialize_windows_path(path, serializer),
+        None => serializer.serialize_none(),
+    }
+}
+
 /// Converts a Windows FILETIME (100ns intervals since 1601-01-01 UTC) to a timestamp, keeping the
 /// full 100ns resolution.
 ///
@@ -209,6 +252,17 @@ pub fn to_hex_string(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_path_uses_backslashes() {
+        let path = PathBuf::from("[Orphaned]")
+            .join("WINDOWS")
+            .join("notepad.exe");
+        assert_eq!(windows_path(&path), r"[Orphaned]\WINDOWS\notepad.exe");
+        assert_eq!(windows_path(Path::new("$MFT")), "$MFT");
+        assert_eq!(windows_path(Path::new(".")), ".");
+        assert_eq!(windows_path(Path::new("")), "");
+    }
 
     #[test]
     fn windows_filetime_to_timestamp_out_of_range_is_error() {

@@ -56,7 +56,15 @@ pub struct FlatMftEntryWithName {
     #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
     pub file_name_created: Option<Timestamp>,
 
+    /// Written with `\` separators on every platform.
+    #[serde(serialize_with = "crate::utils::serialize_windows_path")]
     pub full_path: PathBuf,
+
+    // These come after `FullPath` so the earlier columns keep their positions.
+    #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
+    pub standard_info_last_mft_modified: Option<Timestamp>,
+    #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
+    pub file_name_last_mft_modified: Option<Timestamp>,
 }
 
 impl FlatMftEntryWithName {
@@ -138,6 +146,8 @@ impl FlatMftEntryWithName {
             file_name_last_modified: file_name.as_ref().map(|i| i.modified),
             file_name_last_access: file_name.as_ref().map(|i| i.accessed),
             file_name_created: file_name.as_ref().map(|i| i.created),
+            standard_info_last_mft_modified: standard_info.as_ref().map(|i| i.mft_modified),
+            file_name_last_mft_modified: file_name.as_ref().map(|i| i.mft_modified),
             file_size,
             full_path,
         }

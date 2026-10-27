@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- CSV output has `StandardInfoLastMftModified` and `FileNameLastMftModified` columns (the "MFT entry changed" times), appended after `FullPath` so existing column positions don't move (#123).
+- `windows_path`, `serialize_windows_path` and `serialize_option_windows_path` format a resolved path with `\` separators.
 - Parse `$VOLUME_NAME` (0x60) and `$VOLUME_INFORMATION` (0x70) into `VolumeNameAttr` and `VolumeInformationAttr` (label, NTFS version, volume flags) instead of raw hex.
 - `mft_dump -o bodyfile` writes Sleuth Kit bodyfile lines in the `fls -m` layout, for timelining with `mactime`: one line per `$DATA` stream and `$INDEX_ROOT` with the `$STANDARD_INFORMATION` times, and a `($FILE_NAME)` line with the `$FILE_NAME` times.
 - Parse `$REPARSE_POINT` (0xC0) into `ReparsePointAttr`: the tag, its documented name, the GUID for third-party tags, and decoded symlink, junction/mount point, AppExecLink and WSL symlink targets. Other tags keep their data as hex.
@@ -18,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `MftAttributeType::PropertySet` (`0xF0`, NT4-era `$PROPERTY_SET`).
 
 ### Changed
+- CSV and JSON output write `full_path` with `\` separators on every platform, the way Windows shows NTFS paths. Linux and macOS builds used `/`. `get_full_path_for_entry` still returns a `PathBuf`, and bodyfile output keeps `fls`'s `/`.
 - JSON output of `$VOLUME_NAME` and `$VOLUME_INFORMATION` attributes changes from `{attribute_type, data}` raw hex to the parsed fields; `MftAttributeContent` gains the `AttrX60` and `AttrX70` variants, which breaks exhaustive matches.
 - `MftAttributeContent` has a new `AttrXC0` variant, and `$REPARSE_POINT` JSON output changes from raw hex to the parsed structure.
 - Timestamps keep NTFS's full 100ns resolution and are always written with 7 fractional digits (`2007-06-30T12:50:52.2523952Z`). They were truncated to microseconds and printed with 0, 3, 6 or 9 digits, chrono style. This changes every timestamp in JSON and CSV output. `serialize_timestamp_chrono_compat` and `serialize_option_timestamp_chrono_compat` are renamed to `serialize_timestamp` and `serialize_option_timestamp`.
