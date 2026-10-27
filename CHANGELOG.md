@@ -16,11 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - JSON output lists attributes that failed to parse in a per-entry `errors` array (only present when non-empty). Previously they were dropped silently.
 - Expand `FileAttributeFlags` with the latest Windows-defined bits for NTFS parsing.
 - Add `MftAttributeType::PropertySet` (`0xF0`, NT4-era `$PROPERTY_SET`).
+- Parse resident `$SECURITY_DESCRIPTOR` (0x50) attributes into `winstructs::security::SecurityDescriptor`: owner and group SIDs and the DACL/SACL entries. Non-resident ones keep their data runs.
 - Parse `$EA_INFORMATION` (0xD0) and `$EA` (0xE0) into `EaInformationAttr` and `EaAttr`: each extended attribute's flags, name and value. WSL's `$LXUID`, `$LXGID`, `$LXMOD` and `$LXDEV` and code integrity's `$CI.CATALOGHINT` are decoded, and other values keep their data as hex.
 
 ### Changed
 - JSON output of `$VOLUME_NAME` and `$VOLUME_INFORMATION` attributes changes from `{attribute_type, data}` raw hex to the parsed fields; `MftAttributeContent` gains the `AttrX60` and `AttrX70` variants, which breaks exhaustive matches.
 - `MftAttributeContent` has a new `AttrXC0` variant, and `$REPARSE_POINT` JSON output changes from raw hex to the parsed structure.
+- `MftAttributeContent` has a new `AttrX50` variant, and resident `$SECURITY_DESCRIPTOR` JSON output changes from raw hex to the parsed descriptor.
 - `MftAttributeContent` has new `AttrXD0` and `AttrXE0` variants, and `$EA_INFORMATION` and `$EA` JSON output changes from raw hex to the parsed structures.
 - Timestamps keep NTFS's full 100ns resolution and are always written with 7 fractional digits (`2007-06-30T12:50:52.2523952Z`). They were truncated to microseconds and printed with 0, 3, 6 or 9 digits, chrono style. This changes every timestamp in JSON and CSV output. `serialize_timestamp_chrono_compat` and `serialize_option_timestamp_chrono_compat` are renamed to `serialize_timestamp` and `serialize_option_timestamp`.
 - `FileNameAttr::logical_size` now holds the real size and `physical_size` the allocated size (see Fixed). Code that worked around the old swap needs to drop the workaround.

@@ -6,6 +6,7 @@ pub mod x10;
 pub mod x20;
 pub mod x30;
 pub mod x40;
+pub mod x50;
 pub mod x60;
 pub mod x70;
 pub mod x80;
@@ -30,6 +31,7 @@ use crate::attribute::data_run::decode_data_runs;
 use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
 use crate::attribute::non_resident_attr::NonResidentAttr;
 use crate::attribute::x40::ObjectIdAttr;
+use crate::attribute::x50::parse_security_descriptor;
 use crate::attribute::x60::VolumeNameAttr;
 use crate::attribute::x70::VolumeInformationAttr;
 use crate::attribute::x80::DataAttr;
@@ -38,6 +40,7 @@ use crate::attribute::xc0::ReparsePointAttr;
 use crate::attribute::xd0::EaInformationAttr;
 use crate::attribute::xe0::EaAttr;
 use serde::Serialize;
+use winstructs::security::SecurityDescriptor;
 
 #[derive(Serialize, Clone, Debug)]
 pub struct MftAttribute<'a> {
@@ -61,8 +64,8 @@ impl<'a> MftAttributeContent<'a> {
                     .get(data_offset..end)
                     .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
 
-                // `None` keeps the value raw: a reparse point or extended attribute that doesn't
-                // parse stays in the output instead of erroring.
+                // `None` keeps the value raw: a security descriptor, reparse point or extended
+                // attribute that doesn't parse stays in the output instead of erroring.
                 let parsed = match header.type_code {
                     MftAttributeType::StandardInformation => Some(MftAttributeContent::AttrX10(
                         StandardInfoAttr::from_slice(value)?,
@@ -79,6 +82,9 @@ impl<'a> MftAttributeContent<'a> {
                     MftAttributeType::ObjectId => Some(MftAttributeContent::AttrX40(
                         ObjectIdAttr::from_stream(&mut Cursor::new(value), value.len())?,
                     )),
+                    MftAttributeType::SecurityDescriptor => {
+                        parse_security_descriptor(value).map(MftAttributeContent::AttrX50)
+                    }
                     MftAttributeType::VolumeName => Some(MftAttributeContent::AttrX60(
                         VolumeNameAttr::from_slice(value),
                     )),
@@ -147,6 +153,13 @@ impl<'a> MftAttributeContent<'a> {
     pub fn as_object_id(&self) -> Option<&ObjectIdAttr> {
         match self {
             MftAttributeContent::AttrX40(content) => Some(content),
+            _ => None,
+        }
+    }
+
+    pub fn as_security_descriptor(&self) -> Option<&SecurityDescriptor> {
+        match self {
+            MftAttributeContent::AttrX50(content) => Some(content),
             _ => None,
         }
     }
@@ -223,6 +236,7 @@ pub enum MftAttributeContent<'a> {
     AttrX20(AttributeListAttr<'a>),
     AttrX30(FileNameAttr<'a>),
     AttrX40(ObjectIdAttr),
+    AttrX50(SecurityDescriptor),
     AttrX60(VolumeNameAttr<'a>),
     AttrX70(VolumeInformationAttr),
     AttrX80(DataAttr<'a>),

@@ -136,8 +136,31 @@ expression: json
         "start_offset": 272
       },
       "data": {
-        "attribute_type": "SecurityDescriptor",
-        "data": "01000480480000005800000000000000140000000200340002000000000014009F011200010100000000000512000000000018009F011200010200000000000520000000200200000102000000000005200000002002000001020000000000052000000020020000"
+        "owner_sid": "S-1-5-32-544",
+        "group_sid": "S-1-5-32-544",
+        "dacl": {
+          "revision": 2,
+          "count": 2,
+          "entries": [
+            {
+              "ace_type": "ACCESS_ALLOWED",
+              "ace_flags": "(empty)",
+              "data": {
+                "access_rights": 1180063,
+                "sid": "S-1-5-18"
+              }
+            },
+            {
+              "ace_type": "ACCESS_ALLOWED",
+              "ace_flags": "(empty)",
+              "data": {
+                "access_rights": 1180063,
+                "sid": "S-1-5-32-544"
+              }
+            }
+          ]
+        },
+        "sacl": null
       }
     },
     {
