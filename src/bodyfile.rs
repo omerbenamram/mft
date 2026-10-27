@@ -4,6 +4,8 @@
 //! `MD5|name|inode|mode_as_string|UID|GID|size|atime|mtime|ctime|crtime`
 //! <https://wiki.sleuthkit.org/index.php?title=Body_file>
 use crate::attribute::header::ResidentialHeader;
+use crate::attribute::x10::StandardInfoAttr;
+use crate::attribute::x30::FileNameAttr;
 use crate::attribute::{FileAttributeFlags, MftAttribute, MftAttributeType};
 use crate::entry::MftEntry;
 
@@ -20,18 +22,24 @@ struct Times {
     created: i64,
 }
 
-impl Times {
-    fn new(
-        accessed: Timestamp,
-        modified: Timestamp,
-        changed: Timestamp,
-        created: Timestamp,
-    ) -> Self {
+impl From<&StandardInfoAttr> for Times {
+    fn from(si: &StandardInfoAttr) -> Self {
         Times {
-            accessed: unix_seconds(accessed),
-            modified: unix_seconds(modified),
-            changed: unix_seconds(changed),
-            created: unix_seconds(created),
+            accessed: unix_seconds(si.accessed),
+            modified: unix_seconds(si.modified),
+            changed: unix_seconds(si.mft_modified),
+            created: unix_seconds(si.created),
+        }
+    }
+}
+
+impl From<&FileNameAttr<'_>> for Times {
+    fn from(fname: &FileNameAttr<'_>) -> Self {
+        Times {
+            accessed: unix_seconds(fname.accessed),
+            modified: unix_seconds(fname.modified),
+            changed: unix_seconds(fname.mft_modified),
+            created: unix_seconds(fname.created),
         }
     }
 }
@@ -45,11 +53,22 @@ impl Times {
 ///   `full_path` was built from.
 ///
 /// The inode column is `<entry>-<attribute type>-<attribute id>` and the size column is that
-/// attribute's size. Unallocated entries get ` (deleted)` after their name. Entries without a
-/// `$FILE_NAME` attribute (unused or extension records) are skipped, since `fls` can't reach
-/// them either. Attributes stored in extension records (through an `$ATTRIBUTE_LIST`) are not
+/// attribute's size. Unallocated entries get ` (deleted)` after their name. Extension records,
+/// and entries without a `$FILE_NAME` attribute, are skipped, since `fls` can't reach them
+/// either. Attributes stored in extension records (through an `$ATTRIBUTE_LIST`) are not
 /// followed, so a file whose `$DATA` lives there gets a single line without an attribute.
 pub fn write_entry<W: Write>(out: &mut W, entry: &MftEntry, full_path: &Path) -> io::Result<()> {
+    // An extension record can hold `$FILE_NAME` attributes moved out of its base record (e.g. a
+    // file with many hard links), but it has no `$STANDARD_INFORMATION` and isn't a file itself.
+    if entry.header.base_reference.entry != 0 {
+        return Ok(());
+    }
+
+    let best_name = entry.find_best_name_attribute();
+    if best_name.is_none() {
+        return Ok(());
+    }
+
     let attributes: Vec<MftAttribute> = entry
         .iter_attributes_matching(Some(vec![
             MftAttributeType::StandardInformation,
@@ -60,15 +79,8 @@ pub fn write_entry<W: Write>(out: &mut W, entry: &MftEntry, full_path: &Path) ->
         .filter_map(Result::ok)
         .collect();
 
-    let best_name = entry.find_best_name_attribute();
-    if best_name.is_none() {
-        return Ok(());
-    }
-
     let standard_info = attributes.iter().find_map(|a| a.data.as_standard_info());
-    let times = standard_info.map_or_else(Times::default, |si| {
-        Times::new(si.accessed, si.modified, si.mft_modified, si.created)
-    });
+    let times = standard_info.map_or_else(Times::default, Times::from);
 
     let line = Line {
         path: bodyfile_path(full_path),
@@ -87,14 +99,15 @@ pub fn write_entry<W: Write>(out: &mut W, entry: &MftEntry, full_path: &Path) ->
         match attribute.header.type_code {
             MftAttributeType::DATA | MftAttributeType::IndexRoot => {
                 let name = &attribute.header.name;
-                let is_stream = !name.is_empty()
-                    && !(attribute.header.type_code == MftAttributeType::IndexRoot
-                        && name.to_utf8_string() == "$I30");
-                let suffix = if is_stream {
-                    format!(":{}", sanitize(&name.to_utf8_string()))
-                } else {
-                    String::new()
-                };
+                // A directory's `$I30` index is its default stream, like an unnamed `$DATA`.
+                let mut suffix = String::new();
+                let default_stream = name.is_empty()
+                    || (attribute.header.type_code == MftAttributeType::IndexRoot
+                        && name.eq_utf8("$I30"));
+                if !default_stream {
+                    suffix.push(':');
+                    name.with_utf8(|s| push_sanitized(&mut suffix, s));
+                }
                 line.write(out, &suffix, Some(attribute), &times)?;
                 printed_stream = true;
             }
@@ -102,13 +115,7 @@ pub fn write_entry<W: Write>(out: &mut W, entry: &MftEntry, full_path: &Path) ->
                 if let Some(fname) = attribute.data.as_file_name()
                     && Some(fname) == best_name.as_ref()
                 {
-                    let fn_times = Times::new(
-                        fname.accessed,
-                        fname.modified,
-                        fname.mft_modified,
-                        fname.created,
-                    );
-                    line.write(out, " ($FILE_NAME)", Some(attribute), &fn_times)?;
+                    line.write(out, " ($FILE_NAME)", Some(attribute), &Times::from(fname))?;
                 }
             }
             _ => {}
@@ -140,28 +147,23 @@ impl Line {
         attribute: Option<&MftAttribute>,
         times: &Times,
     ) -> io::Result<()> {
-        let Line {
-            path,
-            deleted,
-            record,
-            mode,
-            uid,
-        } = self;
-        let (inode, size) = match attribute {
-            Some(a) => (
-                format!(
-                    "{record}-{}-{}",
-                    a.header.type_code.clone() as u32,
-                    a.header.instance
-                ),
-                attribute_size(a),
-            ),
-            None => (record.to_string(), 0),
+        write!(
+            out,
+            "0|{}{suffix}{}|{}",
+            self.path, self.deleted, self.record
+        )?;
+        let size = match attribute {
+            Some(a) => {
+                let type_code = a.header.type_code.clone() as u32;
+                write!(out, "-{type_code}-{}", a.header.instance)?;
+                attribute_size(a)
+            }
+            None => 0,
         };
         writeln!(
             out,
-            "0|{path}{suffix}{deleted}|{inode}|{mode}|{uid}|0|{size}|{}|{}|{}|{}",
-            times.accessed, times.modified, times.changed, times.created,
+            "|{}|{}|0|{size}|{}|{}|{}|{}",
+            self.mode, self.uid, times.accessed, times.modified, times.changed, times.created,
         )
     }
 }
@@ -173,17 +175,15 @@ fn mode(entry: &MftEntry, flags: Option<&FileAttributeFlags>) -> String {
     let meta_type = if entry.is_dir() { 'd' } else { 'r' };
     let name_type = if entry.is_allocated() { meta_type } else { '-' };
     let has = |flag| flags.is_some_and(|f| f.contains(flag));
-    let read = if has(FileAttributeFlags::FILE_ATTRIBUTE_READONLY) {
-        '-'
-    } else {
-        'r'
+    let rwx = match (
+        has(FileAttributeFlags::FILE_ATTRIBUTE_READONLY),
+        has(FileAttributeFlags::FILE_ATTRIBUTE_HIDDEN),
+    ) {
+        (false, false) => "rwx",
+        (true, false) => "-wx",
+        (false, true) => "r-x",
+        (true, true) => "--x",
     };
-    let write = if has(FileAttributeFlags::FILE_ATTRIBUTE_HIDDEN) {
-        '-'
-    } else {
-        'w'
-    };
-    let rwx: String = [read, write, 'x'].iter().collect();
     format!("{name_type}/{meta_type}{rwx}{rwx}{rwx}")
 }
 
@@ -201,7 +201,7 @@ fn bodyfile_path(full_path: &Path) -> String {
     for component in full_path.components() {
         if let Component::Normal(part) = component {
             out.push('/');
-            out.push_str(&sanitize(&part.to_string_lossy()));
+            push_sanitized(&mut out, &part.to_string_lossy());
         }
     }
     if out.is_empty() {
@@ -210,16 +210,17 @@ fn bodyfile_path(full_path: &Path) -> String {
     out
 }
 
-/// Replaces control characters with `^` like `fls` does, and `|` too so a name can't break the
-/// line apart.
-fn sanitize(name: &str) -> String {
-    name.chars()
-        .map(|c| if c.is_control() || c == '|' { '^' } else { c })
-        .collect()
+/// Replaces C0 control characters (below 0x20) with `^` like `fls` does, and `|` too so a name
+/// can't break the line apart.
+fn push_sanitized(out: &mut String, name: &str) {
+    out.extend(
+        name.chars()
+            .map(|c| if c < ' ' || c == '|' { '^' } else { c }),
+    );
 }
 
 /// Bodyfiles hold Unix seconds. Unset NTFS timestamps (FILETIME 0, i.e. 1601) and anything
-/// else before 1970 are written as 0, like `fls` does.
+/// else before 1970 are written as 0; `fls` would wrap them around as unsigned 32-bit values.
 fn unix_seconds(ts: Timestamp) -> i64 {
     ts.as_second().max(0)
 }
@@ -230,7 +231,13 @@ mod tests {
 
     #[test]
     fn sanitizes_separators_and_control_characters() {
+        let sanitize = |name| {
+            let mut out = String::new();
+            push_sanitized(&mut out, name);
+            out
+        };
         assert_eq!(sanitize("a|b\\c\td"), "a^b\\c^d");
+        assert_eq!(sanitize("a\nb\u{7f}\u{85}"), "a^b\u{7f}\u{85}");
     }
 
     #[test]
