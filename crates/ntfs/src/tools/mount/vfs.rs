@@ -92,7 +92,7 @@ impl Vfs {
             entry.iter_attributes_matching(Some(vec![MftAttributeType::StandardInformation]))
         {
             let attr = attr?;
-            if let Some(x) = attr.data.into_standard_info() {
+            if let Some(x) = attr.data.as_standard_info().cloned() {
                 si = Some(x);
                 break;
             }

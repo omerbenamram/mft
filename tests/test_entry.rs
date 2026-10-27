@@ -11,20 +11,8 @@ use mft::err::Error as MftError;
 use mft::mft::MftParser;
 
 fn filetime_bytes_to_timestamp(bytes: [u8; 8]) -> Timestamp {
-    // Windows FILETIME: 100ns intervals since 1601-01-01 UTC.
-    // Match historical behavior (`winstructs::timestamp::WinTimestamp::to_datetime`):
-    // truncate to microseconds.
-    const WINDOWS_TO_UNIX_EPOCH_MICROS: i64 = 11_644_473_600_000_000;
-    let filetime_100ns = u64::from_le_bytes(bytes);
-
-    let micros_since_windows_epoch = (filetime_100ns / 10) as i64;
-    let micros_since_unix_epoch = micros_since_windows_epoch - WINDOWS_TO_UNIX_EPOCH_MICROS;
-
-    let seconds = micros_since_unix_epoch.div_euclid(1_000_000);
-    let subsec_micros = micros_since_unix_epoch.rem_euclid(1_000_000);
-    let subsec_nanos = (subsec_micros * 1_000) as i32;
-
-    Timestamp::new(seconds, subsec_nanos).expect("valid FILETIME conversion")
+    mft::windows_filetime_to_timestamp(u64::from_le_bytes(bytes))
+        .expect("valid FILETIME conversion")
 }
 
 #[test]
@@ -77,8 +65,8 @@ fn test_entry_index_root() {
                 assert_eq!(last_index_entry.fname_info.modified, created);
                 assert_eq!(last_index_entry.fname_info.mft_modified, mft_modified);
                 assert_eq!(last_index_entry.fname_info.accessed, mft_modified);
-                assert_eq!(last_index_entry.fname_info.logical_size, 4096);
-                assert_eq!(last_index_entry.fname_info.physical_size, 1484);
+                assert_eq!(last_index_entry.fname_info.logical_size, 1484);
+                assert_eq!(last_index_entry.fname_info.physical_size, 4096);
                 assert_eq!(
                     last_index_entry.fname_info.flags,
                     mft::attribute::FileAttributeFlags::FILE_ATTRIBUTE_ARCHIVE
@@ -148,6 +136,31 @@ fn test_out_of_range_filetime_is_error_not_panic() {
 
     // `MftEntry` serialization drops attribute parse errors; it should never panic.
     serde_json::to_value(&entry).expect("entry should serialize");
+}
+
+#[test]
+fn test_bitflags_serialize_as_flag_names() {
+    use mft::attribute::x90::IndexRootFlags;
+    use mft::attribute::{AttributeDataFlags, FileAttributeFlags};
+    use mft::entry::EntryFlags;
+
+    let flags =
+        FileAttributeFlags::FILE_ATTRIBUTE_HIDDEN | FileAttributeFlags::FILE_ATTRIBUTE_SYSTEM;
+    assert_eq!(
+        serde_json::to_string(&flags).unwrap(),
+        r#""FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM""#
+    );
+    assert_eq!(
+        serde_json::to_string(&EntryFlags::ALLOCATED).unwrap(),
+        r#""ALLOCATED""#
+    );
+    assert_eq!(
+        serde_json::to_string(&AttributeDataFlags::empty()).unwrap(),
+        r#""(empty)""#
+    );
+    // A zero-valued flag names the empty set.
+    assert_eq!(IndexRootFlags::empty().to_string(), "SMALL_INDEX");
+    assert_eq!(IndexRootFlags::LARGE_INDEX.to_string(), "LARGE_INDEX");
 }
 
 #[test]

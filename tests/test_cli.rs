@@ -68,5 +68,9 @@ fn test_it_exports_resident_streams() {
 
     cmd.assert().success();
 
-    assert_eq!(fs::read_dir(d.path()).unwrap().count(), 2142)
+    // 2142 resident streams, 92 of which are empty and are not exported.
+    assert_eq!(fs::read_dir(d.path()).unwrap().count(), 2050);
+    for f in fs::read_dir(d.path()).unwrap() {
+        assert!(f.unwrap().metadata().unwrap().len() > 0);
+    }
 }

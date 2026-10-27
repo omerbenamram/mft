@@ -43,19 +43,19 @@ pub struct FlatMftEntryWithName {
 
     /// All of these fields are present for entries that have an 0x10 attribute.
     pub standard_info_flags: Option<FileAttributeFlags>,
-    #[serde(serialize_with = "crate::utils::serialize_option_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
     pub standard_info_last_modified: Option<Timestamp>,
-    #[serde(serialize_with = "crate::utils::serialize_option_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
     pub standard_info_last_access: Option<Timestamp>,
-    #[serde(serialize_with = "crate::utils::serialize_option_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
     pub standard_info_created: Option<Timestamp>,
     /// All of these fields are present for entries that have an 0x30 attribute.
     pub file_name_flags: Option<FileAttributeFlags>,
-    #[serde(serialize_with = "crate::utils::serialize_option_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
     pub file_name_last_modified: Option<Timestamp>,
-    #[serde(serialize_with = "crate::utils::serialize_option_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
     pub file_name_last_access: Option<Timestamp>,
-    #[serde(serialize_with = "crate::utils::serialize_option_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
     pub file_name_created: Option<Timestamp>,
 
     pub full_path: PathBuf,

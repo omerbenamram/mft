@@ -23,15 +23,17 @@ pub enum FileNamespace {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct FileNameAttr<'a> {
     pub parent: MftReference,
-    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_timestamp")]
     pub created: Timestamp,
-    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_timestamp")]
     pub modified: Timestamp,
-    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_timestamp")]
     pub mft_modified: Timestamp,
-    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_timestamp")]
     pub accessed: Timestamp,
+    /// The file's real (logical) size, as of the last time this name was updated.
     pub logical_size: u64,
+    /// The size allocated on disk, as of the last time this name was updated.
     pub physical_size: u64,
     pub flags: FileAttributeFlags,
     pub reparse_value: u32,
@@ -54,7 +56,7 @@ impl<'a> FileNameAttr<'a> {
     ///     0x05,0x00,0x00,0x00,0x00,0x00,0x05,0x00,0xD5,0x2D,0x48,0x58,0x43,0x5F,0xCE,0x01,
     ///     0xD5,0x2D,0x48,0x58,0x43,0x5F,0xCE,0x01,0xD5,0x2D,0x48,0x58,0x43,0x5F,0xCE,0x01,
     ///     0xD5,0x2D,0x48,0x58,0x43,0x5F,0xCE,0x01,0x00,0x00,0x00,0x04,0x00,0x00,0x00,0x00,
-    ///     0x00,0x00,0x00,0x04,0x00,0x00,0x00,0x00,0x06,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    ///     0x00,0x00,0x00,0x03,0x00,0x00,0x00,0x00,0x06,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
     ///     0x08,0x03,0x24,0x00,0x4C,0x00,0x6F,0x00,0x67,0x00,0x46,0x00,0x69,0x00,0x6C,0x00,
     ///     0x65,0x00,0x00,0x00,0x00,0x00,0x00,0x00
     /// ];
@@ -66,7 +68,8 @@ impl<'a> FileNameAttr<'a> {
     /// assert_eq!(attribute.modified.as_second(), 1370144608);
     /// assert_eq!(attribute.mft_modified.as_second(), 1370144608);
     /// assert_eq!(attribute.accessed.as_second(), 1370144608);
-    /// assert_eq!(attribute.logical_size, 67108864);
+    /// // Allocated size (0x28) and real size (0x30) differ, so a swap would be caught here.
+    /// assert_eq!(attribute.logical_size, 50331648);
     /// assert_eq!(attribute.physical_size, 67108864);
     /// assert_eq!(attribute.flags.bits(), 6);
     /// assert_eq!(attribute.reparse_value, 0);
@@ -90,8 +93,9 @@ impl<'a> FileNameAttr<'a> {
         let accessed =
             crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?)?;
 
-        let logical_size = stream.read_u64::<LittleEndian>()?;
+        // The allocated size comes first (0x28), then the real size (0x30).
         let physical_size = stream.read_u64::<LittleEndian>()?;
+        let logical_size = stream.read_u64::<LittleEndian>()?;
         let flags = FileAttributeFlags::from_bits_truncate(stream.read_u32::<LittleEndian>()?);
         let reparse_value = stream.read_u32::<LittleEndian>()?;
         let name_length = stream.read_u8()?;
