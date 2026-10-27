@@ -6,6 +6,8 @@ pub mod x10;
 pub mod x20;
 pub mod x30;
 pub mod x40;
+pub mod x60;
+pub mod x70;
 pub mod x80;
 pub mod x90;
 
@@ -25,6 +27,8 @@ use crate::attribute::data_run::decode_data_runs;
 use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
 use crate::attribute::non_resident_attr::NonResidentAttr;
 use crate::attribute::x40::ObjectIdAttr;
+use crate::attribute::x60::VolumeNameAttr;
+use crate::attribute::x70::VolumeInformationAttr;
 use crate::attribute::x80::DataAttr;
 use crate::attribute::x90::IndexRootAttr;
 use serde::Serialize;
@@ -66,6 +70,12 @@ impl<'a> MftAttributeContent<'a> {
                     }
                     MftAttributeType::ObjectId => Ok(MftAttributeContent::AttrX40(
                         ObjectIdAttr::from_stream(&mut Cursor::new(value), value.len())?,
+                    )),
+                    MftAttributeType::VolumeName => Ok(MftAttributeContent::AttrX60(
+                        VolumeNameAttr::from_slice(value),
+                    )),
+                    MftAttributeType::VolumeInformation => Ok(MftAttributeContent::AttrX70(
+                        VolumeInformationAttr::from_slice(value)?,
                     )),
                     MftAttributeType::IndexRoot => Ok(MftAttributeContent::AttrX90(
                         IndexRootAttr::from_slice(value)?,
@@ -121,6 +131,20 @@ impl<'a> MftAttributeContent<'a> {
         }
     }
 
+    pub fn as_volume_name(&self) -> Option<&VolumeNameAttr<'a>> {
+        match self {
+            MftAttributeContent::AttrX60(content) => Some(content),
+            _ => None,
+        }
+    }
+
+    pub fn as_volume_information(&self) -> Option<&VolumeInformationAttr> {
+        match self {
+            MftAttributeContent::AttrX70(content) => Some(content),
+            _ => None,
+        }
+    }
+
     pub fn as_standard_info(&self) -> Option<&StandardInfoAttr> {
         match self {
             MftAttributeContent::AttrX10(content) => Some(content),
@@ -158,6 +182,8 @@ pub enum MftAttributeContent<'a> {
     AttrX20(AttributeListAttr<'a>),
     AttrX30(FileNameAttr<'a>),
     AttrX40(ObjectIdAttr),
+    AttrX60(VolumeNameAttr<'a>),
+    AttrX70(VolumeInformationAttr),
     AttrX80(DataAttr<'a>),
     AttrX90(IndexRootAttr<'a>),
     DataRun(NonResidentAttr),
