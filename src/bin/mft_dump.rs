@@ -17,7 +17,7 @@ use sonic_rs as sonic_json;
 use std::backtrace::Backtrace;
 use std::fmt::{self, Write as FmtWrite};
 use std::fs::File;
-use std::io::{BufWriter, Read, Seek, Write};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use mft::entry::ZERO_HEADER;
@@ -81,7 +81,7 @@ impl FromStr for Ranges {
 /// A JSON output record: the entry plus its full path, which only the parser can resolve.
 #[derive(Serialize)]
 struct JsonEntry<'a> {
-    full_path: Option<String>,
+    full_path: Option<PathBuf>,
     #[serde(flatten)]
     entry: &'a MftEntry,
 }
@@ -267,8 +267,10 @@ impl MftDump {
                 }
             };
 
+            let full_path = parser.get_full_path_for_entry(&entry).ok().flatten();
+
             if let Some(data_streams_dir) = &self.data_streams_output
-                && let Ok(Some(path)) = parser.get_full_path_for_entry(&entry)
+                && let Some(path) = &full_path
             {
                 let sanitized_path = sanitized(&path.to_string_lossy());
 
@@ -313,11 +315,11 @@ impl MftDump {
 
             match self.output_format {
                 OutputFormat::JSON | OutputFormat::JSONL => {
-                    self.print_json_entry(&entry, &mut parser)?
+                    self.print_json_entry(&entry, full_path)?
                 }
                 OutputFormat::CSV => self.print_csv_entry(
                     &entry,
-                    &mut parser,
+                    full_path,
                     csv_writer
                         .as_mut()
                         .expect("CSV Writer is for OutputFormat::CSV"),
@@ -341,24 +343,13 @@ impl MftDump {
         }
     }
 
-    pub fn print_json_entry(
-        &mut self,
-        entry: &MftEntry,
-        parser: &mut MftParser<impl Read + Seek>,
-    ) -> Result<()> {
+    pub fn print_json_entry(&mut self, entry: &MftEntry, full_path: Option<PathBuf>) -> Result<()> {
         let out = self
             .output
             .as_mut()
             .expect("CSV Flow cannot occur, so `Mftdump` should still Own `output`");
 
-        let json_entry = JsonEntry {
-            full_path: parser
-                .get_full_path_for_entry(entry)
-                .ok()
-                .flatten()
-                .map(|path| path.to_string_lossy().into_owned()),
-            entry,
-        };
+        let json_entry = JsonEntry { full_path, entry };
 
         self.json_buf.clear();
         if self.output_format == OutputFormat::JSON {
@@ -376,10 +367,11 @@ impl MftDump {
     pub fn print_csv_entry<W: Write>(
         &self,
         entry: &MftEntry,
-        parser: &mut MftParser<impl Read + Seek>,
+        full_path: Option<PathBuf>,
         writer: &mut csv::Writer<W>,
     ) -> Result<()> {
-        let flat_entry = FlatMftEntryWithName::from_entry(entry, parser);
+        let flat_entry =
+            FlatMftEntryWithName::from_entry_with_path(entry, full_path.unwrap_or_default());
 
         writer.serialize(flat_entry)?;
 

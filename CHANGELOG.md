@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `mft_dump` JSON and JSONL output include each entry's `full_path` (previously only CSV had it).
+- `FlatMftEntryWithName::from_entry_with_path` builds a CSV row from an already-resolved path.
 - Expand `FileAttributeFlags` with the latest Windows-defined bits for NTFS parsing.
 
 ### Changed

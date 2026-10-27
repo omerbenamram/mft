@@ -66,6 +66,16 @@ impl FlatMftEntryWithName {
         entry: &MftEntry,
         parser: &mut MftParser<impl Read + Seek>,
     ) -> FlatMftEntryWithName {
+        let full_path = parser
+            .get_full_path_for_entry(entry)
+            .expect("I/O Err")
+            .unwrap_or_default();
+        Self::from_entry_with_path(entry, full_path)
+    }
+
+    /// Same as [`FlatMftEntryWithName::from_entry`], for callers that already resolved the
+    /// entry's full path.
+    pub fn from_entry_with_path(entry: &MftEntry, full_path: PathBuf) -> FlatMftEntryWithName {
         let entry_attributes: Vec<MftAttribute> = entry
             .iter_attributes_matching(Some(vec![
                 MftAttributeType::FileName,
@@ -126,10 +136,7 @@ impl FlatMftEntryWithName {
             file_name_last_access: file_name.as_ref().map(|i| i.accessed),
             file_name_created: file_name.as_ref().map(|i| i.created),
             file_size,
-            full_path: parser
-                .get_full_path_for_entry(entry)
-                .expect("I/O Err")
-                .unwrap_or_default(),
+            full_path,
         }
     }
 }
