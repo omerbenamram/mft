@@ -1,0 +1,41 @@
+[package]
+name = "mft-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+[dependencies.mft]
+path = ".."
+default-features = false
+
+# Keep the fuzz crate out of the parent workspace.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "entry"
+path = "fuzz_targets/entry.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "data_runs"
+path = "fuzz_targets/data_runs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parser"
+path = "fuzz_targets/parser.rs"
+test = false
+doc = false
+bench = false
