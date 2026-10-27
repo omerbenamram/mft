@@ -12,7 +12,7 @@ OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 
 status=0
-for format in jsonl json csv; do
+for format in jsonl json csv bodyfile; do
     "$BEFORE" "$INPUT" -o "$format" -f "$OUT/before.$format" --no-confirm-overwrite 2>"$OUT/before.$format.err" || true
     "$AFTER" "$INPUT" -o "$format" -f "$OUT/after.$format" --no-confirm-overwrite 2>"$OUT/after.$format.err" || true
     if cmp -s "$OUT/before.$format" "$OUT/after.$format" &&

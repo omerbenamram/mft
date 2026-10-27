@@ -36,7 +36,7 @@ RUSTFLAGS="-Cprofile-generate=$PGO_DATA_DIR" \
     cargo build --release --bin mft_dump --target "$TARGET"
 
 echo "Running instrumented binary"
-for format in jsonl json csv; do
+for format in jsonl json csv bodyfile; do
     "$BIN" samples/MFT -o "$format" -f /dev/null --no-confirm-overwrite
 done
 

@@ -67,6 +67,21 @@ pub enum ResidentialHeader {
 }
 
 impl<'a> MftAttributeHeader<'a> {
+    /// Whether this record continues a non-resident attribute that starts in another record (its
+    /// lowest VCN isn't 0). Only the first record of an attribute has its sizes.
+    pub fn is_continuation(&self) -> bool {
+        matches!(&self.residential_header, ResidentialHeader::NonResident(nr) if nr.vnc_first != 0)
+    }
+
+    /// The size of the attribute's value: its resident data, or the real size of non-resident
+    /// data.
+    pub fn value_size(&self) -> u64 {
+        match &self.residential_header {
+            ResidentialHeader::Resident(r) => u64::from(r.data_size),
+            ResidentialHeader::NonResident(nr) => nr.file_size,
+        }
+    }
+
     /// Parse an attribute header from an attribute record slice.
     ///
     /// Returns `Ok(None)` if the type code is `$END` (`0xFFFF_FFFF`).
@@ -170,7 +185,6 @@ impl<'a> MftAttributeHeader<'a> {
 
 #[derive(Serialize, Clone, Debug)]
 pub struct ResidentHeader {
-    #[serde(skip_serializing)]
     /// The size of the attribute value, in bytes.
     pub data_size: u32,
     #[serde(skip_serializing)]

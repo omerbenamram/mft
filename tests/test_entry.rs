@@ -11,20 +11,8 @@ use mft::err::Error as MftError;
 use mft::mft::MftParser;
 
 fn filetime_bytes_to_timestamp(bytes: [u8; 8]) -> Timestamp {
-    // Windows FILETIME: 100ns intervals since 1601-01-01 UTC.
-    // Match historical behavior (`winstructs::timestamp::WinTimestamp::to_datetime`):
-    // truncate to microseconds.
-    const WINDOWS_TO_UNIX_EPOCH_MICROS: i64 = 11_644_473_600_000_000;
-    let filetime_100ns = u64::from_le_bytes(bytes);
-
-    let micros_since_windows_epoch = (filetime_100ns / 10) as i64;
-    let micros_since_unix_epoch = micros_since_windows_epoch - WINDOWS_TO_UNIX_EPOCH_MICROS;
-
-    let seconds = micros_since_unix_epoch.div_euclid(1_000_000);
-    let subsec_micros = micros_since_unix_epoch.rem_euclid(1_000_000);
-    let subsec_nanos = (subsec_micros * 1_000) as i32;
-
-    Timestamp::new(seconds, subsec_nanos).expect("valid FILETIME conversion")
+    mft::windows_filetime_to_timestamp(u64::from_le_bytes(bytes))
+        .expect("valid FILETIME conversion")
 }
 
 #[test]
@@ -77,8 +65,8 @@ fn test_entry_index_root() {
                 assert_eq!(last_index_entry.fname_info.modified, created);
                 assert_eq!(last_index_entry.fname_info.mft_modified, mft_modified);
                 assert_eq!(last_index_entry.fname_info.accessed, mft_modified);
-                assert_eq!(last_index_entry.fname_info.logical_size, 4096);
-                assert_eq!(last_index_entry.fname_info.physical_size, 1484);
+                assert_eq!(last_index_entry.fname_info.logical_size, 1484);
+                assert_eq!(last_index_entry.fname_info.physical_size, 4096);
                 assert_eq!(
                     last_index_entry.fname_info.flags,
                     mft::attribute::FileAttributeFlags::FILE_ATTRIBUTE_ARCHIVE
@@ -146,6 +134,101 @@ fn test_out_of_range_filetime_is_error_not_panic() {
         "expected an out-of-range timestamp error while parsing attributes"
     );
 
-    // `MftEntry` serialization drops attribute parse errors; it should never panic.
-    serde_json::to_value(&entry).expect("entry should serialize");
+    // `MftEntry` serialization reports attribute parse errors instead of panicking.
+    let json = serde_json::to_value(&entry).expect("entry should serialize");
+    let errors = json["errors"].as_array().expect("expected an errors field");
+    assert!(
+        errors.iter().any(|e| e
+            .as_str()
+            .is_some_and(|s| s.contains("out of range for jiff::Timestamp"))),
+        "unexpected errors: {errors:?}"
+    );
+}
+
+#[test]
+fn test_json_lists_attribute_errors() {
+    let mut parser = MftParser::from_path(mft_sample()).unwrap();
+    let mut entry = parser.get_entry(0).unwrap();
+
+    let clean: serde_json::Value = serde_json::to_value(&entry).unwrap();
+    assert!(
+        clean.get("errors").is_none(),
+        "entries that parse cleanly should not carry an errors field"
+    );
+
+    // Corrupt the form code (byte 8 of the header) of the second attribute ($FILE_NAME) so its
+    // header fails to parse.
+    let second = entry
+        .iter_attributes()
+        .nth(1)
+        .unwrap()
+        .unwrap()
+        .header
+        .start_offset as usize;
+    entry.data[second + 8] = 0x7F;
+
+    let json: serde_json::Value = serde_json::to_value(&entry).unwrap();
+    let errors = json["errors"].as_array().expect("expected an errors field");
+    assert_eq!(errors.len(), 1);
+    assert!(
+        errors[0]
+            .as_str()
+            .unwrap()
+            .contains("Unhandled resident flag: 127"),
+        "unexpected error message: {}",
+        errors[0]
+    );
+    // The attribute before the corrupt one is still emitted.
+    let attributes = json["attributes"].as_array().unwrap();
+    assert_eq!(attributes.len(), 1);
+}
+
+#[test]
+fn test_bitflags_serialize_as_flag_names() {
+    use mft::attribute::x90::IndexRootFlags;
+    use mft::attribute::{AttributeDataFlags, FileAttributeFlags};
+    use mft::entry::EntryFlags;
+
+    let flags =
+        FileAttributeFlags::FILE_ATTRIBUTE_HIDDEN | FileAttributeFlags::FILE_ATTRIBUTE_SYSTEM;
+    assert_eq!(
+        serde_json::to_string(&flags).unwrap(),
+        r#""FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM""#
+    );
+    assert_eq!(
+        serde_json::to_string(&EntryFlags::ALLOCATED).unwrap(),
+        r#""ALLOCATED""#
+    );
+    assert_eq!(
+        serde_json::to_string(&AttributeDataFlags::empty()).unwrap(),
+        r#""(empty)""#
+    );
+    // A zero-valued flag names the empty set.
+    assert_eq!(IndexRootFlags::empty().to_string(), "SMALL_INDEX");
+    assert_eq!(IndexRootFlags::LARGE_INDEX.to_string(), "LARGE_INDEX");
+}
+
+#[test]
+fn test_volume_attributes_are_parsed() {
+    let mut parser = MftParser::from_path(mft_sample()).unwrap();
+    let volume = parser.get_entry(3).unwrap();
+
+    let name = volume
+        .iter_attributes_matching(Some(vec![MftAttributeType::VolumeName]))
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        name.data.as_volume_name().unwrap().name.to_utf8_string(),
+        ""
+    );
+
+    let info = volume
+        .iter_attributes_matching(Some(vec![MftAttributeType::VolumeInformation]))
+        .next()
+        .unwrap()
+        .unwrap();
+    let info = info.data.as_volume_information().unwrap();
+    assert_eq!((info.major_version, info.minor_version), (3, 1));
+    assert!(info.flags.is_empty());
 }

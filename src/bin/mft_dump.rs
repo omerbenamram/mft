@@ -2,6 +2,7 @@
 use clap::{Arg, ArgAction, ArgMatches};
 use indoc::indoc;
 use log::Level;
+use serde::Serialize;
 
 use mft::MftEntry;
 use mft::attribute::MftAttributeType;
@@ -30,6 +31,7 @@ enum OutputFormat {
     JSON,
     JSONL,
     CSV,
+    Bodyfile,
 }
 
 impl OutputFormat {
@@ -38,6 +40,7 @@ impl OutputFormat {
             "json" => Some(OutputFormat::JSON),
             "jsonl" => Some(OutputFormat::JSONL),
             "csv" => Some(OutputFormat::CSV),
+            "bodyfile" => Some(OutputFormat::Bodyfile),
             _ => None,
         }
     }
@@ -75,6 +78,14 @@ impl FromStr for Ranges {
 
         Ok(Ranges(ranges))
     }
+}
+
+/// A JSON output record: the entry plus its full path, which only the parser can resolve.
+#[derive(Serialize)]
+struct JsonEntry<'a> {
+    full_path: Option<PathBuf>,
+    #[serde(flatten)]
+    entry: &'a MftEntry,
 }
 
 struct MftDump {
@@ -258,19 +269,41 @@ impl MftDump {
                 }
             };
 
+            let full_path = parser.get_full_path_for_entry(&entry).ok().flatten();
+            // Exported streams, CSV and bodyfile describe a file rather than one record, so they
+            // include the attributes stored in its extension records.
+            let extensions = if self.data_streams_output.is_some()
+                || matches!(
+                    self.output_format,
+                    OutputFormat::CSV | OutputFormat::Bodyfile
+                ) {
+                parser.get_extension_entries(&entry)
+            } else {
+                Vec::new()
+            };
+
             if let Some(data_streams_dir) = &self.data_streams_output
-                && let Ok(Some(path)) = parser.get_full_path_for_entry(&entry)
+                // An extension record's streams are exported with its base entry, under the
+                // file's path. Only an extension that its base entry doesn't list exports its own.
+                && (entry.header.is_base_record() || !is_listed_by_its_base(&mut parser, &entry))
+                && let Some(path) = &full_path
             {
                 let sanitized_path = sanitized(&path.to_string_lossy());
 
-                for (i, (name, stream)) in entry
-                    .iter_attributes()
+                for (i, (name, stream)) in std::iter::once(&entry)
+                    .chain(&extensions)
+                    .flat_map(|record| record.iter_attributes())
                     .filter_map(|a| a.ok())
                     .filter_map(|a| {
                         if a.header.type_code == MftAttributeType::DATA {
                             // resident
                             let name = a.header.name;
-                            a.data.as_data().copied().map(|data| (name, data))
+                            a.data
+                                .as_data()
+                                .copied()
+                                // Empty streams carry no content, don't litter the output with them.
+                                .filter(|data| !data.data().is_empty())
+                                .map(|data| (name, data))
                         } else {
                             None
                         }
@@ -303,10 +336,16 @@ impl MftDump {
             }
 
             match self.output_format {
-                OutputFormat::JSON | OutputFormat::JSONL => self.print_json_entry(&entry)?,
+                OutputFormat::JSON | OutputFormat::JSONL => {
+                    self.print_json_entry(&entry, full_path)?
+                }
+                OutputFormat::Bodyfile => {
+                    self.print_bodyfile_entry(&entry, &extensions, full_path)?
+                }
                 OutputFormat::CSV => self.print_csv_entry(
                     &entry,
-                    &mut parser,
+                    &extensions,
+                    full_path,
                     csv_writer
                         .as_mut()
                         .expect("CSV Writer is for OutputFormat::CSV"),
@@ -330,18 +369,20 @@ impl MftDump {
         }
     }
 
-    pub fn print_json_entry(&mut self, entry: &MftEntry) -> Result<()> {
+    pub fn print_json_entry(&mut self, entry: &MftEntry, full_path: Option<PathBuf>) -> Result<()> {
         let out = self
             .output
             .as_mut()
             .expect("CSV Flow cannot occur, so `Mftdump` should still Own `output`");
 
+        let json_entry = JsonEntry { full_path, entry };
+
         self.json_buf.clear();
         if self.output_format == OutputFormat::JSON {
-            sonic_json::to_writer_pretty(&mut self.json_buf, entry)?;
+            sonic_json::to_writer_pretty(&mut self.json_buf, &json_entry)?;
         } else {
             // JSONL is the performance-critical mode; use a faster serializer.
-            sonic_json::to_writer(&mut self.json_buf, entry)?;
+            sonic_json::to_writer(&mut self.json_buf, &json_entry)?;
         }
         self.json_buf.push(b'\n');
         out.write_all(&self.json_buf)?;
@@ -349,13 +390,34 @@ impl MftDump {
         Ok(())
     }
 
+    pub fn print_bodyfile_entry(
+        &mut self,
+        entry: &MftEntry,
+        extensions: &[MftEntry],
+        full_path: Option<PathBuf>,
+    ) -> Result<()> {
+        let out = self
+            .output
+            .as_mut()
+            .expect("Bodyfile flow keeps `output`, it is only taken by the CSV writer");
+
+        mft::bodyfile::write_entry(out, entry, extensions, &full_path.unwrap_or_default())?;
+
+        Ok(())
+    }
+
     pub fn print_csv_entry<W: Write>(
         &self,
         entry: &MftEntry,
-        parser: &mut MftParser<impl Read + Seek>,
+        extensions: &[MftEntry],
+        full_path: Option<PathBuf>,
         writer: &mut csv::Writer<W>,
     ) -> Result<()> {
-        let flat_entry = FlatMftEntryWithName::from_entry(entry, parser);
+        let flat_entry = FlatMftEntryWithName::from_entry_with_path(
+            entry,
+            extensions,
+            full_path.unwrap_or_default(),
+        );
 
         writer.serialize(flat_entry)?;
 
@@ -365,6 +427,20 @@ impl MftDump {
     fn annotate_error(&self, err: Error) -> Error {
         annotate_with_backtrace(err, self.backtraces_enabled)
     }
+}
+
+/// Whether `entry` is one of the extension records that its base entry's `$ATTRIBUTE_LIST`
+/// leads to.
+fn is_listed_by_its_base<T: Read + Seek>(parser: &mut MftParser<T>, entry: &MftEntry) -> bool {
+    let record_number = entry.header.record_number;
+    parser
+        .get_entry(entry.header.base_reference.entry)
+        .is_ok_and(|base| {
+            parser
+                .get_extension_entries(&base)
+                .iter()
+                .any(|e| e.header.record_number == record_number)
+        })
 }
 
 fn to_hex_string(bytes: &[u8]) -> String {
@@ -404,9 +480,9 @@ fn main() -> Result<()> {
                 .short('o')
                 .long("output-format")
                 .action(ArgAction::Set)
-                .value_parser(clap::builder::PossibleValuesParser::new(["csv", "json", "jsonl"]))
+                .value_parser(clap::builder::PossibleValuesParser::new(["csv", "json", "jsonl", "bodyfile"]))
                 .default_value("json")
-                .help("Output format."),
+                .help("Output format. `bodyfile` writes Sleuth Kit bodyfile lines (like `fls -m`) for mactime."),
         )
         .arg(
             Arg::new("entry-range")
@@ -494,7 +570,7 @@ impl fmt::Debug for ForcedBacktrace {
 
 #[cfg(test)]
 mod tests {
-    use super::Ranges;
+    use super::{MftParser, Path, Ranges, is_listed_by_its_base};
     use std::str::FromStr;
 
     #[test]
@@ -543,5 +619,19 @@ mod tests {
     fn it_errors_on_a_range_with_too_many_dashes() {
         let ranges = Ranges::from_str("1-5-8");
         assert!(ranges.is_err())
+    }
+
+    #[test]
+    fn extension_records_are_exported_with_their_base_entry() {
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/ntfs1-gen2.MFT");
+        let mut parser = MftParser::from_path(sample).unwrap();
+
+        // Record 52 is one of the extension records listed by record 47.
+        let extension = parser.get_entry(52).unwrap();
+        assert!(is_listed_by_its_base(&mut parser, &extension));
+
+        // Record 47 is a base record, and isn't one of `$MFT`'s extensions.
+        let base = parser.get_entry(47).unwrap();
+        assert!(!is_listed_by_its_base(&mut parser, &base));
     }
 }

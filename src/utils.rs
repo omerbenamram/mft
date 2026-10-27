@@ -1,51 +1,18 @@
 use jiff::Timestamp;
-use jiff::fmt::StdFmtWrite;
-use jiff::fmt::temporal::DateTimePrinter;
 use serde::Serializer;
 use std::fmt;
 
-const TIMESTAMP_PRINTER_P0: DateTimePrinter = DateTimePrinter::new().precision(Some(0));
-const TIMESTAMP_PRINTER_P3: DateTimePrinter = DateTimePrinter::new().precision(Some(3));
-const TIMESTAMP_PRINTER_P6: DateTimePrinter = DateTimePrinter::new().precision(Some(6));
-const TIMESTAMP_PRINTER_P9: DateTimePrinter = DateTimePrinter::new().precision(Some(9));
+/// Length of the string produced by [`format_timestamp`]: `YYYY-MM-DDTHH:MM:SS.fffffffZ`.
+const TIMESTAMP_LEN: usize = 28;
 
-struct ChronoRfc3339Compat<'a>(&'a Timestamp);
-
-impl fmt::Display for ChronoRfc3339Compat<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Match chrono's `SecondsFormat::AutoSi` behavior.
-        let nanos = self.0.subsec_nanosecond();
-        let printer = if nanos == 0 {
-            &TIMESTAMP_PRINTER_P0
-        } else if nanos % 1_000_000 == 0 {
-            &TIMESTAMP_PRINTER_P3
-        } else if nanos % 1_000 == 0 {
-            &TIMESTAMP_PRINTER_P6
-        } else {
-            &TIMESTAMP_PRINTER_P9
-        };
-
-        printer
-            .print_timestamp(self.0, StdFmtWrite(f))
-            .map_err(|_| fmt::Error)
-    }
-}
-
-/// Longest string produced by [`format_timestamp_chrono_compat`]:
-/// `YYYY-MM-DDTHH:MM:SS.fffffffffZ`.
-const TIMESTAMP_FAST_MAX_LEN: usize = 30;
-
-/// Formats `ts` exactly like [`ChronoRfc3339Compat`] does, without going through `core::fmt`.
+/// Formats `ts` exactly like `format!("{ts:.7}")`, without going through `core::fmt`.
 ///
 /// This is a hot path for both JSON and CSV output (every entry has 4-8 timestamps), and the
 /// generic `fmt` machinery (plus serializers' `collect_str` adapters) dominated its cost.
 ///
 /// Only years `0..=9999` are handled here (jiff prints other years with a sign and 6 digits);
-/// returns `None` for those so the caller can fall back to jiff's printer.
-fn format_timestamp_chrono_compat(
-    ts: &Timestamp,
-    out: &mut [u8; TIMESTAMP_FAST_MAX_LEN],
-) -> Option<usize> {
+/// returns `None` for those so the caller can fall back to jiff's `Display`.
+fn format_timestamp(ts: &Timestamp, out: &mut [u8; TIMESTAMP_LEN]) -> Option<()> {
     fn put2(out: &mut [u8], v: u32) {
         out[0] = b'0' + (v / 10) as u8;
         out[1] = b'0' + (v % 10) as u8;
@@ -84,30 +51,15 @@ fn format_timestamp_chrono_compat(
     put2(&mut out[14..16], (sod / 60) % 60);
     out[16] = b':';
     put2(&mut out[17..19], sod % 60);
-
-    // Match chrono's `SecondsFormat::AutoSi` (see `ChronoRfc3339Compat`).
-    let (frac, digits) = if nanos == 0 {
-        (0, 0)
-    } else if nanos % 1_000_000 == 0 {
-        (nanos / 1_000_000, 3)
-    } else if nanos % 1_000 == 0 {
-        (nanos / 1_000, 6)
-    } else {
-        (nanos, 9)
-    };
-
-    let mut len = 19;
-    if digits > 0 {
-        out[len] = b'.';
-        let mut v = frac;
-        for i in (0..digits).rev() {
-            out[len + 1 + i] = b'0' + (v % 10) as u8;
-            v /= 10;
-        }
-        len += 1 + digits;
+    out[19] = b'.';
+    // 7 fractional digits (100ns), truncated like jiff's precision formatting.
+    let mut frac = nanos / 100;
+    for i in (20..27).rev() {
+        out[i] = b'0' + (frac % 10) as u8;
+        frac /= 10;
     }
-    out[len] = b'Z';
-    Some(len + 1)
+    out[27] = b'Z';
+    Some(())
 }
 
 const DAYS_PER_ERA: u32 = 146_097;
@@ -127,32 +79,20 @@ fn civil_from_shifted_days(z: u32) -> (u32, u32, u32) {
     (year, month, day)
 }
 
-pub fn serialize_timestamp_chrono_compat<S>(
-    ts: &Timestamp,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
+/// Serializes a timestamp as RFC 3339 in UTC with 100ns precision, e.g.
+/// `2007-06-30T12:50:52.2523952Z`.
+pub fn serialize_timestamp<S>(ts: &Timestamp, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    let mut buf = [0u8; TIMESTAMP_FAST_MAX_LEN];
-    match format_timestamp_chrono_compat(ts, &mut buf) {
-        Some(len) => serializer.serialize_str(
-            std::str::from_utf8(&buf[..len]).expect("timestamp formatting emits ASCII only"),
+    let mut buf = [0u8; TIMESTAMP_LEN];
+    match format_timestamp(ts, &mut buf) {
+        Some(()) => serializer.serialize_str(
+            std::str::from_utf8(&buf).expect("timestamp formatting emits ASCII only"),
         ),
-        None => serializer.collect_str(&ChronoRfc3339Compat(ts)),
-    }
-}
-
-pub fn serialize_option_timestamp_chrono_compat<S>(
-    ts: &Option<Timestamp>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    match ts {
-        Some(ts) => serialize_timestamp_chrono_compat(ts, serializer),
-        None => serializer.serialize_none(),
+        // NTFS timestamps have 100ns resolution, so always print all 7 fractional digits.
+        // jiff's `Display` uses the formatter precision as the fractional-second precision.
+        None => serializer.collect_str(&format_args!("{ts:.7}")),
     }
 }
 
@@ -191,79 +131,64 @@ impl<const N: usize> fmt::Write for StackStr<N> {
     }
 }
 
-/// Writes the same text as the `Debug` impl generated by `bitflags!` (`Name(A | B | 0x40)`, or
-/// `Name(0x0)` when empty), using the flag names directly instead of `core::fmt` plumbing.
-pub(crate) fn write_bitflags_debug<B>(
-    type_name: &str,
-    flags: &B,
-    w: &mut impl fmt::Write,
-) -> fmt::Result
+/// Writes flags as `A | B | 0x40`, or as the name of a zero-valued flag (else `(empty)`) when no
+/// bits are set: the format `mft` used with bitflags 1.x. Shared by the `Display` impl and
+/// serialization generated by `impl_serialize_for_bitflags!`.
+pub(crate) fn write_bitflags<B>(flags: &B, w: &mut impl fmt::Write) -> fmt::Result
 where
     B: bitflags::Flags,
-    B::Bits: fmt::LowerHex,
+    B::Bits: bitflags::parser::WriteHex,
 {
-    w.write_str(type_name)?;
-    w.write_char('(')?;
     if flags.is_empty() {
-        w.write_str("0x0")?;
-    } else {
-        let mut first = true;
-        let mut iter = flags.iter_names();
-        for (name, _) in &mut iter {
-            if !first {
-                w.write_str(" | ")?;
-            }
-            first = false;
-            w.write_str(name)?;
-        }
-
-        let remaining = iter.remaining().bits();
-        if remaining != <B::Bits as bitflags::Bits>::EMPTY {
-            if !first {
-                w.write_str(" | ")?;
-            }
-            write!(w, "0x{remaining:x}")?;
-        }
+        let zero_flag = B::FLAGS.iter().find(|flag| flag.value().is_empty());
+        return match zero_flag {
+            Some(flag) => w.write_str(flag.name()),
+            None => w.write_str("(empty)"),
+        };
     }
-    w.write_char(')')
+
+    bitflags::parser::to_writer(flags, w)
 }
 
-/// Serializes a `bitflags!` type as its `Debug` string (the historical output format).
-pub(crate) fn serialize_bitflags_debug<B, S>(
-    type_name: &str,
-    flags: &B,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
+/// Serializes flags in the [`write_bitflags`] format, built in a stack buffer so the serializer
+/// gets one `serialize_str` call instead of `core::fmt` plumbing.
+pub(crate) fn serialize_bitflags<B, S>(flags: &B, serializer: S) -> Result<S::Ok, S::Error>
 where
-    B: bitflags::Flags + fmt::Debug,
-    B::Bits: fmt::LowerHex,
+    B: bitflags::Flags + fmt::Display,
+    B::Bits: bitflags::parser::WriteHex,
     S: Serializer,
 {
     let mut buf = StackStr::<256>::new();
-    match write_bitflags_debug(type_name, flags, &mut buf) {
+    match write_bitflags(flags, &mut buf) {
         Ok(()) => serializer.serialize_str(buf.as_str()),
-        // Only reachable for pathological flag combinations that overflow the buffer.
-        Err(_) => serializer.collect_str(&format_args!("{flags:?}")),
+        // Only reachable for flag combinations whose text overflows the buffer.
+        Err(_) => serializer.collect_str(flags),
     }
 }
 
-/// Converts a Windows FILETIME (100ns intervals since 1601-01-01 UTC) to a Unix-epoch timestamp.
-///
-/// This is a hot path: we avoid chrono entirely and only allocate on error.
+pub fn serialize_option_timestamp<S>(
+    ts: &Option<Timestamp>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match ts {
+        Some(ts) => serialize_timestamp(ts, serializer),
+        None => serializer.serialize_none(),
+    }
+}
+
+/// Converts a Windows FILETIME (100ns intervals since 1601-01-01 UTC) to a timestamp, keeping the
+/// full 100ns resolution.
 ///
 /// Returns an error instead of panicking when the resulting timestamp is outside `jiff::Timestamp`'s
 /// supported range (roughly years -9999 to 9999).
 pub fn windows_filetime_to_timestamp(filetime_100ns: u64) -> crate::err::Result<Timestamp> {
-    // Match historical behavior (`winstructs::timestamp::WinTimestamp::to_datetime`):
-    // FILETIME is 100ns resolution, but the conversion truncates to microseconds.
-    const WINDOWS_TO_UNIX_EPOCH_MICROS: i64 = 11_644_473_600_000_000;
+    const WINDOWS_TO_UNIX_SECS: i64 = 11_644_473_600;
 
-    let micros_since_windows_epoch = (filetime_100ns / 10) as i64;
-    let micros_since_unix_epoch = micros_since_windows_epoch - WINDOWS_TO_UNIX_EPOCH_MICROS;
-
-    let seconds = micros_since_unix_epoch.div_euclid(1_000_000);
-    let subsec_micros = micros_since_unix_epoch.rem_euclid(1_000_000);
-    let subsec_nanos = (subsec_micros * 1_000) as i32;
+    let seconds = (filetime_100ns / 10_000_000) as i64 - WINDOWS_TO_UNIX_SECS;
+    let subsec_nanos = ((filetime_100ns % 10_000_000) * 100) as i32;
 
     Timestamp::new(seconds, subsec_nanos)
         .map_err(|_| crate::err::Error::FiletimeTimestampOutOfRange { filetime_100ns })
@@ -296,28 +221,50 @@ mod tests {
         }
     }
 
-    fn fast_timestamp(ts: &Timestamp) -> Option<String> {
-        let mut buf = [0u8; TIMESTAMP_FAST_MAX_LEN];
-        format_timestamp_chrono_compat(ts, &mut buf)
-            .map(|len| std::str::from_utf8(&buf[..len]).unwrap().to_owned())
+    #[test]
+    fn timestamps_keep_100ns_precision() {
+        let print = |filetime| {
+            let ts = windows_filetime_to_timestamp(filetime).unwrap();
+            serialize_timestamp(&ts, serde_json::value::Serializer)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(
+            print(128_276_814_522_523_952),
+            "2007-06-30T12:50:52.2523952Z"
+        );
+        assert_eq!(print(0), "1601-01-01T00:00:00.0000000Z");
+        // Pre-1970 values have negative seconds with a nonnegative subsecond part.
+        assert_eq!(print(1), "1601-01-01T00:00:00.0000001Z");
+        assert_eq!(
+            print(116_444_735_999_999_999),
+            "1969-12-31T23:59:59.9999999Z"
+        );
+        assert_eq!(
+            print(116_444_736_000_000_001),
+            "1970-01-01T00:00:00.0000001Z"
+        );
     }
 
     #[test]
-    fn fast_timestamp_formatting_matches_jiff_printer() {
+    fn fast_timestamp_formatting_matches_jiff_display() {
         let mut cases: Vec<(i64, i32)> = vec![
             (0, 0),
             (-1, 0),
             (-1, -1),
+            (-1, -100),
             (0, 1),
+            (0, 99),
+            (0, 100),
             (0, 999_999_999),
             (951_782_400, 0), // 2000-02-29
-            (1_234_567_890, 123_000_000),
-            (1_234_567_890, 123_456_000),
-            (1_234_567_890, 123_456_789),
+            (1_234_567_890, 123_456_700),
             (-11_644_473_600, 0),           // 1601-01-01, the FILETIME epoch
             (-62_167_219_200, 0),           // 0000-01-01
             (-62_167_219_201, 0),           // -0001-12-31 (falls back)
-            (253_402_300_799, 999_000_000), // 9999-12-31T23:59:59.999
+            (253_402_300_799, 999_999_900), // 9999-12-31T23:59:59.9999999
         ];
 
         // Deterministic pseudo-random sweep over the whole supported range.
@@ -328,10 +275,9 @@ mod tests {
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
             let secs = min + (state >> 11) as i64 % (max - min);
-            let nanos = match state % 4 {
+            let nanos = match state % 3 {
                 0 => 0,
-                1 => ((state >> 7) % 1_000) as i32 * 1_000_000,
-                2 => ((state >> 7) % 1_000_000) as i32 * 1_000,
+                1 => ((state >> 7) % 10_000_000) as i32 * 100,
                 _ => ((state >> 7) % 1_000_000_000) as i32,
             };
             cases.push((secs, if secs < 0 { -nanos } else { nanos }));
@@ -341,9 +287,14 @@ mod tests {
             let Ok(ts) = Timestamp::new(secs, nanos) else {
                 continue;
             };
-            let expected = ChronoRfc3339Compat(&ts).to_string();
-            match fast_timestamp(&ts) {
-                Some(actual) => assert_eq!(actual, expected, "secs={secs} nanos={nanos}"),
+            let expected = format!("{ts:.7}");
+            let mut buf = [0u8; TIMESTAMP_LEN];
+            match format_timestamp(&ts, &mut buf) {
+                Some(()) => assert_eq!(
+                    std::str::from_utf8(&buf).unwrap(),
+                    expected,
+                    "secs={secs} nanos={nanos}"
+                ),
                 // Only years outside 0..=9999 may take the fallback path.
                 None => assert!(
                     expected.starts_with('-') || expected.starts_with('+'),
@@ -354,35 +305,53 @@ mod tests {
     }
 
     #[test]
-    fn serialize_timestamp_uses_chrono_compat_format() {
-        let ts = windows_filetime_to_timestamp(0x01CE_5F43_5848_2DD5).unwrap();
-        let json = serde_json::to_string(&SerializeTs(ts)).unwrap();
-        assert_eq!(json, format!("\"{}\"", ChronoRfc3339Compat(&ts)));
-        assert_eq!(json, "\"2013-06-02T03:43:28.889595Z\"");
-    }
-
-    struct SerializeTs(Timestamp);
-
-    impl serde::Serialize for SerializeTs {
-        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-            serialize_timestamp_chrono_compat(&self.0, s)
-        }
-    }
-
-    #[test]
-    fn bitflags_formatting_matches_debug() {
+    fn bitflags_formatting_matches_display() {
         use crate::attribute::x90::{IndexEntryFlags, IndexRootFlags};
         use crate::attribute::{AttributeDataFlags, FileAttributeFlags};
         use crate::entry::EntryFlags;
 
-        fn check<B>(name: &str, flags: B)
+        /// The `Display` logic `impl_serialize_for_bitflags!` used before `write_bitflags`.
+        fn reference<B>(flags: &B) -> String
         where
-            B: bitflags::Flags + fmt::Debug,
-            B::Bits: fmt::LowerHex,
+            B: bitflags::Flags,
+            B::Bits: bitflags::parser::WriteHex,
+        {
+            if flags.is_empty() {
+                return match B::FLAGS.iter().find(|flag| flag.value().is_empty()) {
+                    Some(flag) => flag.name().to_string(),
+                    None => "(empty)".to_string(),
+                };
+            }
+            let mut s = String::new();
+            bitflags::parser::to_writer(flags, &mut s).unwrap();
+            s
+        }
+
+        fn check<B>(flags: B)
+        where
+            B: bitflags::Flags + fmt::Display,
+            B::Bits: bitflags::parser::WriteHex,
         {
             let mut buf = StackStr::<1024>::new();
-            write_bitflags_debug(name, &flags, &mut buf).unwrap();
-            assert_eq!(buf.as_str(), format!("{flags:?}"));
+            write_bitflags(&flags, &mut buf).unwrap();
+            assert_eq!(buf.as_str(), reference(&flags));
+            assert_eq!(flags.to_string(), reference(&flags));
+            assert_eq!(
+                serde_json::to_string(&SerializeFlags(&flags)).unwrap(),
+                serde_json::to_string(&flags.to_string()).unwrap()
+            );
+        }
+
+        struct SerializeFlags<'a, B>(&'a B);
+
+        impl<B> serde::Serialize for SerializeFlags<'_, B>
+        where
+            B: bitflags::Flags + fmt::Display,
+            B::Bits: bitflags::parser::WriteHex,
+        {
+            fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                serialize_bitflags(self.0, s)
+            }
         }
 
         let mut state: u32 = 0x1234_5678;
@@ -394,28 +363,17 @@ mod tests {
                 1 => state & (state >> 7) & (state >> 13),
                 _ => 1u32.wrapping_shl(i % 32),
             };
-            check(
-                "FileAttributeFlags",
-                FileAttributeFlags::from_bits_retain(bits),
-            );
-            check("EntryFlags", EntryFlags::from_bits_retain(bits as u16));
-            check(
-                "AttributeDataFlags",
-                AttributeDataFlags::from_bits_retain(bits as u16),
-            );
-            check("IndexRootFlags", IndexRootFlags::from_bits_retain(bits));
-            check("IndexEntryFlags", IndexEntryFlags::from_bits_retain(bits));
+            check(FileAttributeFlags::from_bits_retain(bits));
+            check(EntryFlags::from_bits_retain(bits as u16));
+            check(AttributeDataFlags::from_bits_retain(bits as u16));
+            check(IndexRootFlags::from_bits_retain(bits));
+            check(IndexEntryFlags::from_bits_retain(bits));
         }
-        check("FileAttributeFlags", FileAttributeFlags::empty());
-        check("FileAttributeFlags", FileAttributeFlags::all());
-
+        check(FileAttributeFlags::empty());
+        check(EntryFlags::empty());
         // Longer than the serializer's stack buffer: must fall back, not truncate.
-        let all = FileAttributeFlags::all();
-        assert!(format!("{all:?}").len() > 256);
-        assert_eq!(
-            serde_json::to_string(&all).unwrap(),
-            serde_json::to_string(&format!("{all:?}")).unwrap()
-        );
+        assert!(FileAttributeFlags::all().to_string().len() > 256);
+        check(FileAttributeFlags::all());
     }
 
     #[test]

@@ -451,7 +451,7 @@ After (`target/samply/h2_after.profile.json.gz`, inverted call tree):
   - `FileNameAttr` (`0x30`)
   - `FlatMftEntryWithName` (CSV)
   with `jiff::Timestamp` (re-exported as `mft::Timestamp`).
-- Convert Windows FILETIME directly in `mft::utils::windows_filetime_to_timestamp` (truncate to microseconds to match historical behavior).
+- Convert Windows FILETIME directly in `mft::utils::windows_filetime_to_timestamp` (truncate to microseconds to match historical behavior). Superseded: timestamps now keep the full 100ns resolution and always print 7 fractional digits (see CHANGELOG).
 - Preserve the exact JSON/CSV timestamp string format by forcing chrono-compatible RFC3339 precision using `jiff::fmt::temporal::DateTimePrinter` (via `#[serde(serialize_with = ...)]`).
 - Enable `jiff`’s `perf-inline` feature (important when using `default-features = false`; it’s enabled by default otherwise).
 
@@ -527,7 +527,28 @@ Profiles:
 
 
 
-## H5–H10 (2026-10-27, Linux x86_64 VM, 4 vCPU, rustc 1.99.1)
+## H5–H10, re-measured on master `23361de` (2026-10-27)
+
+After merging master (100ns timestamps, `A | B` flag format, `full_path` in JSON, bodyfile
+output, the reworked directory path resolution), on `samples/MFT`. Output is byte-identical to
+master in all four formats (`scripts/perf/check_identical.sh`).
+
+| | JSONL | CSV | JSON (pretty) | bodyfile |
+| --- | ---: | ---: | ---: | ---: |
+| instructions, master | 556.5M | 288.2M | 908.5M | 292.6M |
+| instructions, H5–H9 | 505.9M (−9%) | 220.5M (−23%) | 757.9M (−17%) | 275.9M (−6%) |
+| instructions, H5–H10 (PGO) | 363.4M (−35%) | 169.0M (−41%) | 505.7M (−44%) | 234.1M (−20%) |
+| wall median, master | 65.1 ms | 37.2 ms | 104.2 ms | |
+| wall median, H5–H9 | 57.5 ms (1.13x) | 28.2 ms (1.32x) | 85.6 ms (1.22x) | |
+| wall median, H5–H10 (PGO) | 43.9 ms (1.48x) | 21.8 ms (1.71x) | 67.2 ms (1.55x) | |
+
+Syscalls (`strace -c`): JSONL read/write 3362/4310 → 506/486; CSV read/write 3367/550 → 512/69.
+
+Master's rewrite of directory path resolution (`resolve_directory_path`) already caches each
+directory as it is resolved, which is what H8's path-cache change did, so that part was dropped in
+the merge; only H8's buffer sizes remain.
+
+## H5–H10 as first measured (2026-10-27, on `18b6c05`, Linux x86_64 VM, 4 vCPU, rustc 1.99.1)
 
 Measured on `samples/MFT` with the scripts above. Every step was checked byte-identical against
 the pre-change binary in all three formats with `scripts/perf/check_identical.sh`.
@@ -561,8 +582,10 @@ Syscalls (`strace -c`): JSONL read/write 3278/4272 → 415/484; CSV read/lseek 4
 - **Change**: format into a 30-byte stack buffer with integer arithmetic (Hinnant's
   `civil_from_days` in `u32`, shifted by one 400-year era) and call `serialize_str` once. Years
   outside `0..=9999` (which jiff prints as `±YYYYYY`) still fall back to the old path.
-- **Guardrail**: `fast_timestamp_formatting_matches_jiff_printer` compares 200k pseudo-random
+- **Guardrail**: `fast_timestamp_formatting_matches_jiff_display` compares 200k pseudo-random
   timestamps across jiff's whole range (plus edge cases) against the previous formatter.
+- **Update (master `23361de`)**: timestamps are now always printed with 7 fractional digits
+  (`{ts:.7}`); the fast path writes that fixed 28-byte form.
 
 ### H6 — Bitflags without `core::fmt`
 
@@ -571,7 +594,10 @@ Syscalls (`strace -c`): JSONL read/write 3278/4272 → 415/484; CSV read/lseek 4
 - **Change**: `utils::write_bitflags_debug` writes `Name(A | B | 0x40)` / `Name(0x0)` from
   `Flags::iter_names()` (the same iteration bitflags' own `Debug` uses) into a 256-byte stack
   buffer, falling back to `Debug` if it doesn't fit.
-- **Guardrail**: `bitflags_formatting_matches_debug` checks 20k bit patterns for every flags type.
+- **Guardrail**: `bitflags_formatting_matches_display` checks 20k bit patterns for every flags type.
+- **Update (master `23361de`)**: flags are now serialized as `A | B` (bitflags 1.x style, zero
+  flag name or `(empty)` when empty). `utils::write_bitflags` produces that text and is shared by
+  the `Display` impl and the stack-buffer serializer.
 
 ### H7 — Release profile
 

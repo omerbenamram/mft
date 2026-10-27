@@ -15,6 +15,7 @@ use crate::attribute::header::MftAttributeHeader;
 use crate::attribute::x30::{FileNameAttr, FileNamespace};
 use crate::attribute::{MftAttribute, MftAttributeContent, MftAttributeType};
 
+use std::cell::RefCell;
 use std::io::{self, Cursor, Read};
 
 pub const ZERO_HEADER: &[u8; 4] = b"\x00\x00\x00\x00";
@@ -36,8 +37,11 @@ impl ser::Serialize for MftEntry {
     where
         S: Serializer,
     {
+        /// Streams the attributes that parsed, and collects the errors from the ones that
+        /// didn't so they can be emitted after the list in the same pass.
         struct Attributes<'a> {
             entry: &'a MftEntry,
+            errors: RefCell<Vec<String>>,
         }
 
         impl ser::Serialize for Attributes<'_> {
@@ -46,19 +50,47 @@ impl ser::Serialize for MftEntry {
                 S: Serializer,
             {
                 let mut seq = serializer.serialize_seq(None)?;
-                for attr in self.entry.iter_attributes().filter_map(Result::ok) {
-                    seq.serialize_element(&attr)?;
+                for attr in self.entry.iter_attributes() {
+                    match attr {
+                        Ok(attr) => seq.serialize_element(&attr)?,
+                        Err(e) => self.errors.borrow_mut().push(error_chain_message(&e)),
+                    }
                 }
                 seq.end()
             }
         }
 
-        let mut state = serializer.serialize_struct("MftEntry", 3)?;
+        let attributes = Attributes {
+            entry: self,
+            errors: RefCell::new(Vec::new()),
+        };
+
+        let mut state = serializer.serialize_struct("MftEntry", 4)?;
         state.serialize_field("header", &self.header)?;
-        state.serialize_field("attributes", &Attributes { entry: self })?;
+        state.serialize_field("attributes", &attributes)?;
         state.serialize_field("valid_fixup", &self.valid_fixup)?;
+        // Only present when an attribute failed to parse, so clean entries are unchanged.
+        let errors = attributes.errors.into_inner();
+        if errors.is_empty() {
+            state.skip_field("errors")?;
+        } else {
+            state.serialize_field("errors", &errors)?;
+        }
         state.end()
     }
+}
+
+/// Formats an error with its chain of sources, e.g. "An I/O error has occurred: failed to fill
+/// whole buffer", since the top-level message alone often doesn't say what went wrong.
+fn error_chain_message(error: &Error) -> String {
+    let mut message = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    message
 }
 
 /// <https://docs.microsoft.com/en-us/windows/desktop/devnotes/file-record-segment-header>
@@ -157,6 +189,12 @@ impl EntryHeader {
         })
     }
 
+    /// Whether this is a base record, as opposed to an extension record holding attributes moved
+    /// out of one. An extension record of `$MFT` (entry 0) is told apart by its non-zero sequence.
+    pub fn is_base_record(&self) -> bool {
+        self.base_reference.entry == 0 && self.base_reference.sequence == 0
+    }
+
     pub fn is_valid(&self) -> bool {
         self.signature == *FILE_HEADER
     }
@@ -229,37 +267,13 @@ impl MftEntry {
     }
 
     /// Retrieves most human-readable representation of a file path entry.
-    /// Will prefer `Win32` file name attributes, and fallback to `Dos` paths.
+    /// Will prefer `Win32` file name attributes, then `POSIX` ones, and fallback to `Dos` paths.
+    ///
+    /// Only this record's own attributes are considered. Use [`find_best_name_attribute_in`]
+    /// with the entry's extension records (see [`crate::MftParser::get_extension_entries`]) to
+    /// also consider names stored there.
     pub fn find_best_name_attribute(&self) -> Option<FileNameAttr<'_>> {
-        let mut first: Option<FileNameAttr<'_>> = None;
-        let mut best_win32: Option<FileNameAttr<'_>> = None;
-
-        for attr in self
-            .iter_attributes_matching(Some(vec![MftAttributeType::FileName]))
-            .filter_map(Result::ok)
-        {
-            let Some(fname) = attr.data.as_file_name() else {
-                continue;
-            };
-
-            if first.is_none() {
-                first = Some(fname.clone());
-            }
-
-            if matches!(
-                fname.namespace,
-                FileNamespace::Win32 | FileNamespace::Win32AndDos
-            ) {
-                // Preserve the first Win32/Win32AndDos name for stability.
-                // MFT entries can contain multiple Win32 names (e.g. hard links), and there
-                // isn't a canonical choice without directory context.
-                if best_win32.is_none() {
-                    best_win32 = Some(fname.clone());
-                }
-            }
-        }
-
-        best_win32.or(first)
+        best_name_of([self])
     }
 
     /// Applies the update sequence array fixups.
@@ -307,9 +321,25 @@ impl MftEntry {
         &self,
         types: Option<Vec<MftAttributeType>>,
     ) -> impl Iterator<Item = Result<MftAttribute<'_>>> + '_ {
+        self.iter_attribute_records_matching(types).map(|record| {
+            let (header, record) = record?;
+            let data = MftAttributeContent::from_record(record, &header)?;
+            Ok(MftAttribute { header, data })
+        })
+    }
+
+    /// Like [`MftEntry::iter_attributes_matching`], but yields each attribute's header and raw
+    /// record without parsing its content, so a header survives content that fails to parse.
+    pub(crate) fn iter_attribute_records_matching(
+        &self,
+        types: Option<Vec<MftAttributeType>>,
+    ) -> impl Iterator<Item = Result<(MftAttributeHeader<'_>, &[u8])>> + '_ {
         let data = self.data.as_slice();
         let mut offset = self.header.first_attribute_record_offset as usize;
         let mut exhausted = false;
+        // Filter on raw type codes so attributes with an unknown type code can still be skipped.
+        let type_codes: Option<Vec<u32>> =
+            types.map(|types| types.into_iter().map(|t| t as u32).collect());
 
         std::iter::from_fn(move || {
             loop {
@@ -378,40 +408,102 @@ impl MftEntry {
                 let start_offset = offset as u64;
                 offset = record_end;
 
+                // Skip filtered-out attributes before parsing their header, so an attribute the
+                // caller did not ask for (including one with an unknown type code) never errors.
+                if let Some(filter) = &type_codes
+                    && !filter.contains(&type_code_value)
+                {
+                    continue;
+                }
+
+                // An unknown type code only invalidates this attribute: its record_length was
+                // bounds-checked above, so report it and move on to the next record instead of
+                // dropping the rest of the entry. Any other header error means the record itself is malformed
+                // (its length can't be trusted), so stop rather than resync at a bogus offset.
                 let header = match MftAttributeHeader::from_slice(record, start_offset) {
                     Ok(Some(h)) => h,
                     Ok(None) => return None,
+                    Err(e @ Error::UnknownAttributeType { .. }) => return Some(Err(e)),
                     Err(e) => {
                         exhausted = true;
                         return Some(Err(e));
                     }
                 };
 
-                // Skip attribute if filtered
-                if let Some(filter) = &types
-                    && !filter.contains(&header.type_code)
-                {
-                    continue;
-                }
-
-                let content = match MftAttributeContent::from_record(record, &header) {
-                    Ok(c) => c,
-                    Err(e) => return Some(Err(e)),
-                };
-
-                return Some(Ok(MftAttribute {
-                    header,
-                    data: content,
-                }));
+                return Some(Ok((header, record)));
             }
         })
     }
+}
+
+/// The best name of a file whose attributes are spread over a base record and its extension
+/// records (from [`crate::MftParser::get_extension_entries`]).
+///
+/// This is the base record's [`MftEntry::find_best_name_attribute`], unless the base record has
+/// no name or only a `Dos` one: then its extension records are searched too, preferring a `Win32`
+/// name there over the base record's short name. NTFS moves the long name out of a full base
+/// record and keeps the short one, so only searching the base record gives `PROGRA~1`-style
+/// paths.
+pub fn find_best_name_attribute_in<'a>(
+    base: &'a MftEntry,
+    extensions: &'a [MftEntry],
+) -> Option<FileNameAttr<'a>> {
+    let base_name = base.find_best_name_attribute();
+    if base_name.as_ref().is_some_and(is_long_name) {
+        return base_name;
+    }
+    best_name_of(std::iter::once(base).chain(extensions))
+}
+
+/// Whether a name is more than an 8.3 short name.
+pub(crate) fn is_long_name(name: &FileNameAttr<'_>) -> bool {
+    name.namespace != FileNamespace::DOS
+}
+
+fn best_name_of<'a>(entries: impl IntoIterator<Item = &'a MftEntry>) -> Option<FileNameAttr<'a>> {
+    let mut first: Option<FileNameAttr<'a>> = None;
+    let mut first_long: Option<FileNameAttr<'a>> = None;
+    let mut best_win32: Option<FileNameAttr<'a>> = None;
+
+    for attr in entries.into_iter().flat_map(|entry| {
+        entry
+            .iter_attributes_matching(Some(vec![MftAttributeType::FileName]))
+            .filter_map(Result::ok)
+    }) {
+        let Some(fname) = attr.data.as_file_name() else {
+            continue;
+        };
+
+        if first.is_none() {
+            first = Some(fname.clone());
+        }
+        if first_long.is_none() && is_long_name(fname) {
+            first_long = Some(fname.clone());
+        }
+
+        if matches!(
+            fname.namespace,
+            FileNamespace::Win32 | FileNamespace::Win32AndDos
+        ) {
+            // Preserve the first Win32/Win32AndDos name for stability.
+            // MFT entries can contain multiple Win32 names (e.g. hard links), and there
+            // isn't a canonical choice without directory context.
+            if best_win32.is_none() {
+                best_win32 = Some(fname.clone());
+            }
+        }
+    }
+
+    // A `POSIX` name is still a long name, better than the `Dos` one.
+    best_win32.or(first_long).or(first)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{EntryHeader, MftEntry};
     use crate::attribute::x30::FileNamespace;
+    use crate::attribute::{MftAttribute, MftAttributeType};
+    use crate::err::{Error, Result};
     use std::io::Cursor;
 
     #[test]
@@ -537,22 +629,10 @@ mod tests {
         let v1 = filename_value_bytes("first.txt", FileNamespace::Win32);
         let v2 = filename_value_bytes("second.txt", FileNamespace::Win32);
 
-        let a1 = resident_attribute_record(0x30, &v1);
-        let a2 = resident_attribute_record(0x30, &v2);
-
-        let mut data = Vec::new();
-        data.extend_from_slice(&a1);
-        data.extend_from_slice(&a2);
-        data.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // $END
-
-        let mut header = EntryHeader::zero();
-        header.first_attribute_record_offset = 0;
-
-        let entry = MftEntry {
-            header,
-            data,
-            valid_fixup: None,
-        };
+        let entry = entry_with_attributes(&[
+            resident_attribute_record(0x30, &v1),
+            resident_attribute_record(0x30, &v2),
+        ]);
 
         let best = entry
             .find_best_name_attribute()
@@ -566,23 +646,95 @@ mod tests {
         // (0xFFFF_FFFF), the iterator must stop cleanly (return None) without trying to read
         // a non-existent record length.
         let v1 = filename_value_bytes("one.txt", FileNamespace::Win32);
-        let a1 = resident_attribute_record(0x30, &v1);
-
-        let mut data = Vec::new();
-        data.extend_from_slice(&a1);
-        data.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // $END (exactly 4 bytes)
-
-        let mut header = EntryHeader::zero();
-        header.first_attribute_record_offset = 0;
-
-        let entry = MftEntry {
-            header,
-            data,
-            valid_fixup: None,
-        };
+        // `entry_with_attributes` appends exactly the 4-byte $END marker.
+        let entry = entry_with_attributes(&[resident_attribute_record(0x30, &v1)]);
 
         let mut it = entry.iter_attributes();
         assert!(it.next().expect("expected first attribute").is_ok());
         assert!(it.next().is_none());
+    }
+
+    fn entry_with_attributes(records: &[Vec<u8>]) -> MftEntry {
+        let mut data = Vec::new();
+        for r in records {
+            data.extend_from_slice(r);
+        }
+        data.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // $END
+
+        let mut header = EntryHeader::zero();
+        header.first_attribute_record_offset = 0;
+
+        MftEntry {
+            header,
+            data,
+            valid_fixup: None,
+        }
+    }
+
+    #[test]
+    fn iter_attributes_continues_past_unknown_attribute_type() {
+        // An unknown type code only invalidates that attribute; its record length is still
+        // usable, so the attributes after it must still be returned. Filtering happens on the raw
+        // type code, so a caller that did not ask for the unknown type never sees the error.
+        let fname = filename_value_bytes("after.txt", FileNamespace::Win32);
+        let entry = entry_with_attributes(&[
+            resident_attribute_record(0x1234, &[0xAA; 8]),
+            resident_attribute_record(0x30, &fname),
+        ]);
+        let name_of = |attr: &Result<MftAttribute<'_>>| {
+            attr.as_ref()
+                .unwrap()
+                .data
+                .as_file_name()
+                .unwrap()
+                .name
+                .to_utf8_string()
+        };
+
+        let all: Vec<_> = entry.iter_attributes().collect();
+        assert_eq!(all.len(), 2);
+        assert!(matches!(
+            all[0],
+            Err(Error::UnknownAttributeType {
+                attribute_type: 0x1234
+            })
+        ));
+        assert_eq!(name_of(&all[1]), "after.txt");
+
+        let names: Vec<_> = entry
+            .iter_attributes_matching(Some(vec![MftAttributeType::FileName]))
+            .collect();
+        assert_eq!(names.len(), 1);
+        assert_eq!(name_of(&names[0]), "after.txt");
+    }
+
+    #[test]
+    fn iter_attributes_stops_after_malformed_attribute_header() {
+        // A header error other than an unknown type code (here: an invalid form code) means the
+        // record length can't be trusted, so iteration must stop instead of resyncing.
+        let fname = filename_value_bytes("after.txt", FileNamespace::Win32);
+        let mut bad = resident_attribute_record(0x80, &[0xAA; 8]);
+        bad[8] = 0x7F; // invalid form code
+        let entry = entry_with_attributes(&[bad, resident_attribute_record(0x30, &fname)]);
+
+        let results: Vec<_> = entry.iter_attributes().collect();
+        assert_eq!(results.len(), 1);
+        assert!(matches!(
+            results[0],
+            Err(Error::UnhandledResidentFlag { flag: 0x7F, .. })
+        ));
+    }
+
+    #[test]
+    fn property_set_attribute_is_known() {
+        // 0xF0 $PROPERTY_SET exists on NT4-era volumes; it should parse as a raw attribute.
+        let entry = entry_with_attributes(&[resident_attribute_record(0xF0, &[0x01; 8])]);
+
+        let attr = entry
+            .iter_attributes()
+            .next()
+            .expect("expected an attribute")
+            .expect("expected $PROPERTY_SET to parse");
+        assert_eq!(attr.header.type_code, MftAttributeType::PropertySet);
     }
 }

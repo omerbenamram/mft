@@ -6,8 +6,11 @@ pub mod x10;
 pub mod x20;
 pub mod x30;
 pub mod x40;
+pub mod x60;
+pub mod x70;
 pub mod x80;
 pub mod x90;
+pub mod xc0;
 
 use crate::err::Result;
 use crate::impl_serialize_for_bitflags;
@@ -25,8 +28,11 @@ use crate::attribute::data_run::decode_data_runs;
 use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
 use crate::attribute::non_resident_attr::NonResidentAttr;
 use crate::attribute::x40::ObjectIdAttr;
+use crate::attribute::x60::VolumeNameAttr;
+use crate::attribute::x70::VolumeInformationAttr;
 use crate::attribute::x80::DataAttr;
 use crate::attribute::x90::IndexRootAttr;
+use crate::attribute::xc0::ReparsePointAttr;
 use serde::Serialize;
 
 #[derive(Serialize, Clone, Debug)]
@@ -67,6 +73,23 @@ impl<'a> MftAttributeContent<'a> {
                     MftAttributeType::ObjectId => Ok(MftAttributeContent::AttrX40(
                         ObjectIdAttr::from_stream(&mut Cursor::new(value), value.len())?,
                     )),
+                    MftAttributeType::VolumeName => Ok(MftAttributeContent::AttrX60(
+                        VolumeNameAttr::from_slice(value),
+                    )),
+                    MftAttributeType::VolumeInformation => Ok(MftAttributeContent::AttrX70(
+                        VolumeInformationAttr::from_slice(value)?,
+                    )),
+                    // A value too short for the reparse header stays raw instead of erroring,
+                    // so the attribute isn't dropped from output.
+                    MftAttributeType::ReparsePoint => {
+                        Ok(match ReparsePointAttr::from_slice(value) {
+                            Some(reparse_point) => MftAttributeContent::AttrXC0(reparse_point),
+                            None => MftAttributeContent::Raw(RawAttribute::from_slice(
+                                header.type_code.clone(),
+                                value,
+                            )),
+                        })
+                    }
                     MftAttributeType::IndexRoot => Ok(MftAttributeContent::AttrX90(
                         IndexRootAttr::from_slice(value)?,
                     )),
@@ -121,6 +144,27 @@ impl<'a> MftAttributeContent<'a> {
         }
     }
 
+    pub fn as_volume_name(&self) -> Option<&VolumeNameAttr<'a>> {
+        match self {
+            MftAttributeContent::AttrX60(content) => Some(content),
+            _ => None,
+        }
+    }
+
+    pub fn as_volume_information(&self) -> Option<&VolumeInformationAttr> {
+        match self {
+            MftAttributeContent::AttrX70(content) => Some(content),
+            _ => None,
+        }
+    }
+
+    pub fn as_reparse_point(&self) -> Option<&ReparsePointAttr<'a>> {
+        match self {
+            MftAttributeContent::AttrXC0(content) => Some(content),
+            _ => None,
+        }
+    }
+
     pub fn as_standard_info(&self) -> Option<&StandardInfoAttr> {
         match self {
             MftAttributeContent::AttrX10(content) => Some(content),
@@ -158,8 +202,11 @@ pub enum MftAttributeContent<'a> {
     AttrX20(AttributeListAttr<'a>),
     AttrX30(FileNameAttr<'a>),
     AttrX40(ObjectIdAttr),
+    AttrX60(VolumeNameAttr<'a>),
+    AttrX70(VolumeInformationAttr),
     AttrX80(DataAttr<'a>),
     AttrX90(IndexRootAttr<'a>),
+    AttrXC0(ReparsePointAttr<'a>),
     DataRun(NonResidentAttr),
 }
 
@@ -197,6 +244,8 @@ pub enum MftAttributeType {
     EaInformation = 0xD0_u32,
     /// Used for backward compatibility with OS/2 applications (HPFS)
     EA = 0xE0_u32,
+    /// Obsolete. Only present on NT4-era volumes (NTFS 1.2).
+    PropertySet = 0xF0_u32,
     /// Keys and other information about encrypted attributes (NTFS 3.0+; Windows 2000+)
     LoggedUtilityStream = 0x100_u32,
 }
@@ -296,6 +345,23 @@ mod tests {
                 assert!(nonresident.data_runs.is_empty());
             }
             other => panic!("expected DataRun content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn truncated_reparse_point_stays_raw() {
+        // A resident $REPARSE_POINT whose 4-byte value can't hold the 8-byte reparse header.
+        let mut record = vec![0u8; 32];
+        record[0..4].copy_from_slice(&(MftAttributeType::ReparsePoint as u32).to_le_bytes());
+        record[4..8].copy_from_slice(&32u32.to_le_bytes());
+        record[16..20].copy_from_slice(&4u32.to_le_bytes()); // data size
+        record[20..22].copy_from_slice(&24u16.to_le_bytes()); // data offset
+        record[24..28].copy_from_slice(&[0x03, 0x00, 0x00, 0xA0]);
+
+        let header = MftAttributeHeader::from_slice(&record, 0).unwrap().unwrap();
+        match MftAttributeContent::from_record(&record, &header).unwrap() {
+            MftAttributeContent::Raw(raw) => assert_eq!(raw.data, [0x03, 0x00, 0x00, 0xA0]),
+            other => panic!("expected Raw content, got {other:?}"),
         }
     }
 }
