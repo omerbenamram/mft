@@ -259,7 +259,7 @@ impl<T: Read + Seek> MftParser<T> {
                         .push(id);
                 }
             }
-            self.extensions_index = Some(index);
+            return self.extensions_index.insert(index);
         }
         self.extensions_index.get_or_insert_default()
     }
@@ -271,10 +271,11 @@ impl<T: Read + Seek> MftParser<T> {
         let to_owned = |fname: FileNameAttr<'_>| (fname.name.to_utf8_string(), fname.parent.entry);
 
         let base_name = entry.find_best_name_attribute();
-        if base_name.as_ref().is_some_and(is_long_name) || !entry.has_attribute_list() {
+        if base_name.as_ref().is_some_and(is_long_name) {
             return base_name.map(to_owned);
         }
 
+        // Without an `$ATTRIBUTE_LIST`, there are no extension records and nothing is read.
         let extensions = self.get_extension_entries(entry);
         find_best_name_attribute_in(entry, &extensions).map(to_owned)
     }

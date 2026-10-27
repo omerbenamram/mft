@@ -1,5 +1,3 @@
-use crate::attribute::header::ResidentialHeader;
-
 use crate::attribute::{FileAttributeFlags, MftAttributeType};
 use crate::entry::EntryFlags;
 use crate::{MftAttribute, MftEntry, MftParser};
@@ -108,22 +106,11 @@ impl FlatMftEntryWithName {
 
         // The unnamed stream, or a named one if there is none. Records that continue a stream
         // started elsewhere don't hold its size.
-        let data_streams: Vec<&MftAttribute> = entry_attributes
+        let file_size = entry_attributes
             .iter()
             .filter(|a| a.header.type_code == MftAttributeType::DATA && !a.header.is_continuation())
-            .collect();
-        let data_attr = data_streams
-            .iter()
-            .find(|a| a.header.name.is_empty())
-            .or(data_streams.first());
-
-        let file_size = match data_attr {
-            Some(attr) => match &attr.header.residential_header {
-                ResidentialHeader::Resident(r) => u64::from(r.data_size),
-                ResidentialHeader::NonResident(nr) => nr.file_size,
-            },
-            _ => 0,
-        };
+            .min_by_key(|a| !a.header.name.is_empty())
+            .map_or(0, |a| a.header.value_size());
 
         let has_ads = entry_attributes
             .iter()

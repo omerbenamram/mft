@@ -3,7 +3,7 @@
 //! Lines follow the TSK 3.x layout that `fls -m` writes for NTFS:
 //! `MD5|name|inode|mode_as_string|UID|GID|size|atime|mtime|ctime|crtime`
 //! <https://wiki.sleuthkit.org/index.php?title=Body_file>
-use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
+use crate::attribute::header::MftAttributeHeader;
 use crate::attribute::x10::StandardInfoAttr;
 use crate::attribute::x30::FileNameAttr;
 use crate::attribute::{FileAttributeFlags, MftAttributeContent, MftAttributeType};
@@ -68,7 +68,7 @@ pub fn write_entry<W: Write>(
 ) -> io::Result<()> {
     // An extension record can hold `$FILE_NAME` attributes moved out of its base record (e.g. a
     // file with many hard links), but it has no `$STANDARD_INFORMATION` and isn't a file itself.
-    if entry.header.base_reference.entry != 0 {
+    if !entry.header.is_base_record() {
         return Ok(());
     }
 
@@ -184,7 +184,7 @@ impl Line {
             Some(h) => {
                 let type_code = h.type_code.clone() as u32;
                 write!(out, "-{type_code}-{}", h.instance)?;
-                attribute_size(h)
+                h.value_size()
             }
             None => 0,
         };
@@ -213,14 +213,6 @@ fn mode(entry: &MftEntry, flags: Option<&FileAttributeFlags>) -> String {
         (true, true) => "--x",
     };
     format!("{name_type}/{meta_type}{rwx}{rwx}{rwx}")
-}
-
-/// The size of an attribute's value (the logical size for non-resident data).
-fn attribute_size(header: &MftAttributeHeader) -> u64 {
-    match &header.residential_header {
-        ResidentialHeader::Resident(r) => u64::from(r.data_size),
-        ResidentialHeader::NonResident(nr) => nr.file_size,
-    }
 }
 
 /// `fls` writes absolute paths with `/` separators, whatever the host platform.

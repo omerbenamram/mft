@@ -23,7 +23,6 @@ fn test_resident_attribute_list_extension_records() {
 fn test_non_resident_attribute_list_extension_records() {
     let mut parser = MftParser::from_path(mft_sample_name("ntfs1-gen2.MFT")).unwrap();
     let entry = parser.get_entry(48).unwrap();
-    assert!(entry.has_attribute_list());
 
     // The list's clusters aren't in the MFT, so the extensions are found by their base reference.
     let extensions = parser.get_extension_entries(&entry);
@@ -39,7 +38,6 @@ fn test_non_resident_attribute_list_extension_records() {
 fn test_entry_without_attribute_list_has_no_extension_records() {
     let mut parser = MftParser::from_path(mft_sample()).unwrap();
     let entry = parser.get_entry(0).unwrap();
-    assert!(!entry.has_attribute_list());
     assert!(parser.get_extension_entries(&entry).is_empty());
 
     // Record 3498 (`system.LOG`) keeps its `$DATA` in record 4711.

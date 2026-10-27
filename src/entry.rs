@@ -276,13 +276,6 @@ impl MftEntry {
         best_name_of([self])
     }
 
-    /// Whether this record has an `$ATTRIBUTE_LIST`, i.e. some of its attributes may be stored in
-    /// extension records.
-    pub fn has_attribute_list(&self) -> bool {
-        self.iter_attribute_records_matching(Some(vec![MftAttributeType::AttributeList]))
-            .any(|record| record.is_ok())
-    }
-
     /// Applies the update sequence array fixups.
     /// https://docs.microsoft.com/en-us/windows/desktop/devnotes/multi-sector-header
     /// **Note**: The fixup will be written at the end of each 512-byte stride,
@@ -456,7 +449,7 @@ pub fn find_best_name_attribute_in<'a>(
     extensions: &'a [MftEntry],
 ) -> Option<FileNameAttr<'a>> {
     let base_name = base.find_best_name_attribute();
-    if extensions.is_empty() || base_name.as_ref().is_some_and(is_long_name) {
+    if base_name.as_ref().is_some_and(is_long_name) {
         return base_name;
     }
     best_name_of(std::iter::once(base).chain(extensions))
