@@ -37,7 +37,7 @@ fn test_efs_rsa_key_size_matches_ddf_ciphertext_size() {
             entry.data[start..end].to_vec()
         }
         ResidentialHeader::NonResident(nr) => {
-            let runs = attr.data.clone().into_data_runs().unwrap().data_runs;
+            let runs = attr.data.as_data_runs().cloned().unwrap().data_runs;
             let mut buf = vec![0u8; nr.file_size as usize];
             ntfs::ntfs::data_stream::read_from_data_runs(fs.volume(), &runs, 0, &mut buf).unwrap();
             buf
