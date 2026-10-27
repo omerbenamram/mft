@@ -3,10 +3,10 @@
 //! Lines follow the TSK 3.x layout that `fls -m` writes for NTFS:
 //! `MD5|name|inode|mode_as_string|UID|GID|size|atime|mtime|ctime|crtime`
 //! <https://wiki.sleuthkit.org/index.php?title=Body_file>
-use crate::attribute::header::ResidentialHeader;
+use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
 use crate::attribute::x10::StandardInfoAttr;
 use crate::attribute::x30::FileNameAttr;
-use crate::attribute::{FileAttributeFlags, MftAttribute, MftAttributeType};
+use crate::attribute::{FileAttributeFlags, MftAttributeContent, MftAttributeType};
 use crate::entry::MftEntry;
 
 use jiff::Timestamp;
@@ -69,17 +69,30 @@ pub fn write_entry<W: Write>(out: &mut W, entry: &MftEntry, full_path: &Path) ->
         return Ok(());
     }
 
-    let attributes: Vec<MftAttribute> = entry
-        .iter_attributes_matching(Some(vec![
+    // A stream line only needs the attribute header, so only the timestamp attributes' content is
+    // parsed: a `$DATA` or `$INDEX_ROOT` whose content is corrupt still gets its line.
+    let attributes: Vec<(MftAttributeHeader, Option<MftAttributeContent>)> = entry
+        .iter_attribute_records_matching(Some(vec![
             MftAttributeType::StandardInformation,
             MftAttributeType::FileName,
             MftAttributeType::DATA,
             MftAttributeType::IndexRoot,
         ]))
         .filter_map(Result::ok)
+        .map(|(header, record)| {
+            let content = matches!(
+                header.type_code,
+                MftAttributeType::StandardInformation | MftAttributeType::FileName
+            )
+            .then(|| MftAttributeContent::from_record(record, &header).ok())
+            .flatten();
+            (header, content)
+        })
         .collect();
 
-    let standard_info = attributes.iter().find_map(|a| a.data.as_standard_info());
+    let standard_info = attributes
+        .iter()
+        .find_map(|(_, content)| content.as_ref()?.as_standard_info());
     let times = standard_info.map_or_else(Times::default, Times::from);
 
     let line = Line {
@@ -95,27 +108,33 @@ pub fn write_entry<W: Write>(out: &mut W, entry: &MftEntry, full_path: &Path) ->
     };
 
     let mut printed_stream = false;
-    for attribute in &attributes {
-        match attribute.header.type_code {
+    for (header, content) in &attributes {
+        match header.type_code {
             MftAttributeType::DATA | MftAttributeType::IndexRoot => {
-                let name = &attribute.header.name;
+                // A non-resident attribute split over several records repeats in each of them,
+                // and only the one starting at VCN 0 has the stream's size.
+                if let ResidentialHeader::NonResident(nr) = &header.residential_header
+                    && nr.vnc_first != 0
+                {
+                    continue;
+                }
+                let name = &header.name;
                 // A directory's `$I30` index is its default stream, like an unnamed `$DATA`.
                 let mut suffix = String::new();
                 let default_stream = name.is_empty()
-                    || (attribute.header.type_code == MftAttributeType::IndexRoot
-                        && name.eq_utf8("$I30"));
+                    || (header.type_code == MftAttributeType::IndexRoot && name.eq_utf8("$I30"));
                 if !default_stream {
                     suffix.push(':');
                     name.with_utf8(|s| push_sanitized(&mut suffix, s));
                 }
-                line.write(out, &suffix, Some(attribute), &times)?;
+                line.write(out, &suffix, Some(header), &times)?;
                 printed_stream = true;
             }
             MftAttributeType::FileName => {
-                if let Some(fname) = attribute.data.as_file_name()
+                if let Some(fname) = content.as_ref().and_then(|c| c.as_file_name())
                     && Some(fname) == best_name.as_ref()
                 {
-                    line.write(out, " ($FILE_NAME)", Some(attribute), &Times::from(fname))?;
+                    line.write(out, " ($FILE_NAME)", Some(header), &Times::from(fname))?;
                 }
             }
             _ => {}
@@ -144,7 +163,7 @@ impl Line {
         &self,
         out: &mut W,
         suffix: &str,
-        attribute: Option<&MftAttribute>,
+        header: Option<&MftAttributeHeader>,
         times: &Times,
     ) -> io::Result<()> {
         write!(
@@ -152,11 +171,11 @@ impl Line {
             "0|{}{suffix}{}|{}",
             self.path, self.deleted, self.record
         )?;
-        let size = match attribute {
-            Some(a) => {
-                let type_code = a.header.type_code.clone() as u32;
-                write!(out, "-{type_code}-{}", a.header.instance)?;
-                attribute_size(a)
+        let size = match header {
+            Some(h) => {
+                let type_code = h.type_code.clone() as u32;
+                write!(out, "-{type_code}-{}", h.instance)?;
+                attribute_size(h)
             }
             None => 0,
         };
@@ -188,8 +207,8 @@ fn mode(entry: &MftEntry, flags: Option<&FileAttributeFlags>) -> String {
 }
 
 /// The size of an attribute's value (the logical size for non-resident data).
-fn attribute_size(attribute: &MftAttribute) -> u64 {
-    match &attribute.header.residential_header {
+fn attribute_size(header: &MftAttributeHeader) -> u64 {
+    match &header.residential_header {
         ResidentialHeader::Resident(r) => u64::from(r.data_size),
         ResidentialHeader::NonResident(nr) => nr.file_size,
     }
@@ -238,6 +257,65 @@ mod tests {
         };
         assert_eq!(sanitize("a|b\\c\td"), "a^b\\c^d");
         assert_eq!(sanitize("a\nb\u{7f}\u{85}"), "a^b\u{7f}\u{85}");
+    }
+
+    /// The `$MFT` entry of the sample, and the record offset of its unnamed `$DATA` attribute.
+    fn mft_entry_and_data_offset() -> (MftEntry, usize) {
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/MFT");
+        let entry = crate::MftParser::from_path(sample)
+            .unwrap()
+            .get_entry(0)
+            .unwrap();
+        let data = entry
+            .iter_attributes_matching(Some(vec![MftAttributeType::DATA]))
+            .next()
+            .unwrap()
+            .unwrap();
+        let offset = data.header.start_offset as usize;
+        (entry, offset)
+    }
+
+    fn lines(entry: &MftEntry) -> Vec<String> {
+        let mut out = Vec::new();
+        write_entry(&mut out, entry, Path::new("$MFT")).unwrap();
+        String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| l.split('|').take(7).collect::<Vec<_>>().join("|"))
+            .collect()
+    }
+
+    #[test]
+    fn stream_line_survives_undecodable_data_runs() {
+        let (mut entry, offset) = mft_entry_and_data_offset();
+        let datarun_offset =
+            u16::from_le_bytes([entry.data[offset + 0x20], entry.data[offset + 0x21]]) as usize;
+        // A run header claiming 15-byte length and offset fields runs past the record.
+        entry.data[offset + datarun_offset] = 0xFF;
+        assert!(entry.iter_attributes().any(|a| a.is_err()));
+
+        assert_eq!(
+            lines(&entry),
+            [
+                "0|/$MFT ($FILE_NAME)|0-48-3|r/rr-xr-xr-x|0|0|74",
+                "0|/$MFT|0-128-1|r/rr-xr-xr-x|0|0|13402112",
+            ]
+        );
+    }
+
+    #[test]
+    fn data_continuation_records_get_no_line() {
+        let (mut entry, offset) = mft_entry_and_data_offset();
+        // Lowest VCN, at 0x10 in a non-resident attribute header.
+        entry.data[offset + 0x10] = 1;
+
+        assert_eq!(
+            lines(&entry),
+            [
+                "0|/$MFT ($FILE_NAME)|0-48-3|r/rr-xr-xr-x|0|0|74",
+                "0|/$MFT|0|r/rr-xr-xr-x|0|0|0",
+            ]
+        );
     }
 
     #[test]

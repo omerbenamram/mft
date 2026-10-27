@@ -339,6 +339,19 @@ impl MftEntry {
         &self,
         types: Option<Vec<MftAttributeType>>,
     ) -> impl Iterator<Item = Result<MftAttribute<'_>>> + '_ {
+        self.iter_attribute_records_matching(types).map(|record| {
+            let (header, record) = record?;
+            let data = MftAttributeContent::from_record(record, &header)?;
+            Ok(MftAttribute { header, data })
+        })
+    }
+
+    /// Like [`MftEntry::iter_attributes_matching`], but yields each attribute's header and raw
+    /// record without parsing its content, so a header survives content that fails to parse.
+    pub(crate) fn iter_attribute_records_matching(
+        &self,
+        types: Option<Vec<MftAttributeType>>,
+    ) -> impl Iterator<Item = Result<(MftAttributeHeader<'_>, &[u8])>> + '_ {
         let data = self.data.as_slice();
         let mut offset = self.header.first_attribute_record_offset as usize;
         let mut exhausted = false;
@@ -435,15 +448,7 @@ impl MftEntry {
                     }
                 };
 
-                let content = match MftAttributeContent::from_record(record, &header) {
-                    Ok(c) => c,
-                    Err(e) => return Some(Err(e)),
-                };
-
-                return Some(Ok(MftAttribute {
-                    header,
-                    data: content,
-                }));
+                return Some(Ok((header, record)));
             }
         })
     }
