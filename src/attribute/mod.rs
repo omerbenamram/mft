@@ -11,6 +11,8 @@ pub mod x70;
 pub mod x80;
 pub mod x90;
 pub mod xc0;
+pub mod xd0;
+pub mod xe0;
 
 use crate::err::Result;
 use crate::impl_serialize_for_bitflags;
@@ -33,6 +35,8 @@ use crate::attribute::x70::VolumeInformationAttr;
 use crate::attribute::x80::DataAttr;
 use crate::attribute::x90::IndexRootAttr;
 use crate::attribute::xc0::ReparsePointAttr;
+use crate::attribute::xd0::EaInformationAttr;
+use crate::attribute::xe0::EaAttr;
 use serde::Serialize;
 
 #[derive(Serialize, Clone, Debug)]
@@ -79,24 +83,18 @@ impl<'a> MftAttributeContent<'a> {
                     MftAttributeType::VolumeInformation => Ok(MftAttributeContent::AttrX70(
                         VolumeInformationAttr::from_slice(value)?,
                     )),
-                    // A value too short for the reparse header stays raw instead of erroring,
-                    // so the attribute isn't dropped from output.
-                    MftAttributeType::ReparsePoint => {
-                        Ok(match ReparsePointAttr::from_slice(value) {
-                            Some(reparse_point) => MftAttributeContent::AttrXC0(reparse_point),
-                            None => MftAttributeContent::Raw(RawAttribute::from_slice(
-                                header.type_code.clone(),
-                                value,
-                            )),
-                        })
-                    }
+                    // A reparse point or extended attribute value that doesn't parse stays raw
+                    // instead of erroring, so the attribute isn't dropped from output.
+                    MftAttributeType::ReparsePoint => Ok(ReparsePointAttr::from_slice(value)
+                        .map_or_else(|| Self::raw(header, value), MftAttributeContent::AttrXC0)),
                     MftAttributeType::IndexRoot => Ok(MftAttributeContent::AttrX90(
                         IndexRootAttr::from_slice(value)?,
                     )),
-                    _ => Ok(MftAttributeContent::Raw(RawAttribute::from_slice(
-                        header.type_code.clone(),
-                        value,
-                    ))),
+                    MftAttributeType::EaInformation => Ok(EaInformationAttr::from_slice(value)
+                        .map_or_else(|| Self::raw(header, value), MftAttributeContent::AttrXD0)),
+                    MftAttributeType::EA => Ok(EaAttr::from_slice(value)
+                        .map_or_else(|| Self::raw(header, value), MftAttributeContent::AttrXE0)),
+                    _ => Ok(Self::raw(header, value)),
                 }
             }
             ResidentialHeader::NonResident(nonresident) => {
@@ -121,6 +119,10 @@ impl<'a> MftAttributeContent<'a> {
                 Ok(MftAttributeContent::DataRun(NonResidentAttr { data_runs }))
             }
         }
+    }
+
+    fn raw(header: &MftAttributeHeader<'a>, value: &'a [u8]) -> Self {
+        MftAttributeContent::Raw(RawAttribute::from_slice(header.type_code.clone(), value))
     }
 
     pub fn as_attribute_list(&self) -> Option<&AttributeListAttr<'a>> {
@@ -161,6 +163,20 @@ impl<'a> MftAttributeContent<'a> {
     pub fn as_reparse_point(&self) -> Option<&ReparsePointAttr<'a>> {
         match self {
             MftAttributeContent::AttrXC0(content) => Some(content),
+            _ => None,
+        }
+    }
+
+    pub fn as_ea_information(&self) -> Option<&EaInformationAttr> {
+        match self {
+            MftAttributeContent::AttrXD0(content) => Some(content),
+            _ => None,
+        }
+    }
+
+    pub fn as_ea(&self) -> Option<&EaAttr<'a>> {
+        match self {
+            MftAttributeContent::AttrXE0(content) => Some(content),
             _ => None,
         }
     }
@@ -207,6 +223,8 @@ pub enum MftAttributeContent<'a> {
     AttrX80(DataAttr<'a>),
     AttrX90(IndexRootAttr<'a>),
     AttrXC0(ReparsePointAttr<'a>),
+    AttrXD0(EaInformationAttr),
+    AttrXE0(EaAttr<'a>),
     DataRun(NonResidentAttr),
 }
 
