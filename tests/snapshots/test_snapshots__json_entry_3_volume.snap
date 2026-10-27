@@ -153,8 +153,7 @@ expression: json
         "start_offset": 400
       },
       "data": {
-        "attribute_type": "VolumeName",
-        "data": ""
+        "name": ""
       }
     },
     {
@@ -174,8 +173,9 @@ expression: json
         "start_offset": 424
       },
       "data": {
-        "attribute_type": "VolumeInformation",
-        "data": "000000000000000003010000"
+        "major_version": 3,
+        "minor_version": 1,
+        "flags": "VolumeFlags(0x0)"
       }
     },
     {
