@@ -17,6 +17,9 @@ pub struct DataRun {
 }
 
 fn decode_run_value<T: Iterator<Item = u8>>(it: &mut T, bytes: u8) -> Option<u64> {
+    if bytes == 0 {
+        return Some(0);
+    }
     let mut acc = 0u64;
     for _ in 0..bytes {
         let v = it.next()?;
@@ -47,7 +50,8 @@ pub fn decode_data_runs(runs: &[u8]) -> Option<Vec<DataRun>> {
         }
         let offset_size = (h & 0xF0) >> 4;
         let length_size = h & 0x0F;
-        if offset_size > 8 || length_size > 8 {
+        // Every run has a length, a zero-sized length field is malformed.
+        if offset_size > 8 || length_size == 0 || length_size > 8 {
             return None;
         }
         let length = decode_run_value(&mut it, length_size)?;
@@ -86,6 +90,22 @@ mod tests {
             Some(-0x20)
         );
         assert_eq!(decode_run_svalue(&mut vec![0xE0].into_iter(), 2), None);
+    }
+
+    #[test]
+    fn test_zero_length_size_is_rejected() {
+        // Found by fuzzing: a length nibble of 0 used to shift by 64.
+        assert_eq!(decode_data_runs(&[0x50, 0x00]), None);
+        assert_eq!(decode_run_value(&mut std::iter::empty(), 0), Some(0));
+    }
+
+    #[test]
+    fn test_lcn_overflow_is_rejected() {
+        // First run at i64::MAX, second run +1.
+        let runs = [
+            0x81, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 0x11, 0x01, 0x01, 0x00,
+        ];
+        assert_eq!(decode_data_runs(&runs), None);
     }
 
     #[test]
