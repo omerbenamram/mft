@@ -6,7 +6,7 @@ Fuzz targets for the record parser, built with [cargo-fuzz](https://github.com/r
 |--------|-------|-------------------|
 | `entry` | one MFT record | `MftEntry::from_buffer` (with and without fixups), attribute iteration, `find_best_name_attribute`, JSON serialization |
 | `data_runs` | a mapping pairs array | `decode_data_runs` |
-| `parser` | a whole `$MFT` | `MftParser::from_buffer`, entry iteration and full path resolution across parent references |
+| `parser` | a whole `$MFT` | `MftParser`, entry iteration, CSV rows and full path resolution across parent references |
 
 ```bash
 cargo install cargo-fuzz

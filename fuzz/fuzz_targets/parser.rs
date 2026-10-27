@@ -1,25 +1,21 @@
-//! Treats the input as a whole $MFT: iterates records and resolves full paths, which follows
-//! parent references between records.
+//! Treats the input as a whole $MFT: reads every record and builds its CSV row, which resolves
+//! the full path by following parent references between records.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
 use mft::MftParser;
-
-/// Caps the work per input so tiny record sizes don't turn one input into millions of records.
-const MAX_ENTRIES: u64 = 256;
+use mft::csv::FlatMftEntryWithName;
+use std::io::Cursor;
 
 fuzz_target!(|data: &[u8]| {
-    let Ok(mut parser) = MftParser::from_buffer(data.to_vec()) else {
+    let Ok(mut parser) = MftParser::from_read_seek(Cursor::new(data), Some(data.len() as u64))
+    else {
         return;
     };
 
-    let entries: Vec<_> = parser
-        .iter_entries()
-        .take(MAX_ENTRIES as usize)
-        .filter_map(Result::ok)
-        .collect();
-
-    for entry in &entries {
-        let _ = parser.get_full_path_for_entry(entry);
+    for i in 0..parser.get_entry_count() {
+        if let Ok(entry) = parser.get_entry(i) {
+            let _ = FlatMftEntryWithName::from_entry(&entry, &mut parser);
+        }
     }
 });

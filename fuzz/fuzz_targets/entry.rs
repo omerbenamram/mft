@@ -12,10 +12,8 @@ fuzz_target!(|data: &[u8]| {
     .into_iter()
     .flatten()
     {
-        for attribute in entry.iter_attributes() {
-            let _ = attribute;
-        }
         let _ = entry.find_best_name_attribute();
-        let _ = serde_json::to_vec(&entry);
+        // Serializing walks `iter_attributes` and every attribute's content.
+        let _ = serde_json::to_writer(std::io::sink(), &entry);
     }
 });
