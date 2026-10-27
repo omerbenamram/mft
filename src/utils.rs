@@ -1,21 +1,5 @@
 use jiff::Timestamp;
-use jiff::fmt::StdFmtWrite;
-use jiff::fmt::temporal::DateTimePrinter;
 use serde::Serializer;
-use std::fmt;
-
-/// NTFS timestamps have 100ns resolution, so always print all 7 fractional digits.
-const TIMESTAMP_PRINTER: DateTimePrinter = DateTimePrinter::new().precision(Some(7));
-
-struct Rfc3339<'a>(&'a Timestamp);
-
-impl fmt::Display for Rfc3339<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        TIMESTAMP_PRINTER
-            .print_timestamp(self.0, StdFmtWrite(f))
-            .map_err(|_| fmt::Error)
-    }
-}
 
 /// Serializes a timestamp as RFC 3339 in UTC with 100ns precision, e.g.
 /// `2007-06-30T12:50:52.2523952Z`.
@@ -23,7 +7,9 @@ pub fn serialize_timestamp<S>(ts: &Timestamp, serializer: S) -> Result<S::Ok, S:
 where
     S: Serializer,
 {
-    serializer.collect_str(&Rfc3339(ts))
+    // NTFS timestamps have 100ns resolution, so always print all 7 fractional digits.
+    // jiff's `Display` uses the formatter precision as the fractional-second precision.
+    serializer.collect_str(&format_args!("{ts:.7}"))
 }
 
 pub fn serialize_option_timestamp<S>(
@@ -96,6 +82,16 @@ mod tests {
             "2007-06-30T12:50:52.2523952Z"
         );
         assert_eq!(print(0), "1601-01-01T00:00:00.0000000Z");
+        // Pre-1970 values have negative seconds with a nonnegative subsecond part.
+        assert_eq!(print(1), "1601-01-01T00:00:00.0000001Z");
+        assert_eq!(
+            print(116_444_735_999_999_999),
+            "1969-12-31T23:59:59.9999999Z"
+        );
+        assert_eq!(
+            print(116_444_736_000_000_001),
+            "1970-01-01T00:00:00.0000001Z"
+        );
     }
 
     #[test]
