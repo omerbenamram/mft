@@ -5,8 +5,8 @@
 mod fixtures;
 
 use fixtures::*;
-use mft::csv::FlatMftEntryWithName;
 use mft::mft::MftParser;
+use std::collections::BTreeSet;
 
 /// Entries chosen to cover different record shapes in `samples/MFT`.
 const JSON_ENTRIES: &[(u64, &str)] = &[
@@ -20,7 +20,7 @@ const JSON_ENTRIES: &[(u64, &str)] = &[
     (11600, "deleted"),
 ];
 
-/// Full paths are built with the platform's separator, so Windows output uses `\\`.
+/// Full paths are built with the platform's separator, so Windows output uses `\`.
 fn normalize_path_separators(s: &str) -> String {
     if cfg!(windows) {
         s.replace('\\', "/")
@@ -41,44 +41,34 @@ fn test_json_output_snapshots() {
     }
 }
 
-#[test]
-fn test_csv_output_snapshot() {
-    ensure_env_logger_initialized();
-    let mut parser = MftParser::from_path(mft_sample()).unwrap();
-
-    let entry_ids: Vec<u64> = (0..40)
-        .chain(JSON_ENTRIES.iter().map(|(id, _)| *id))
-        .collect();
-
-    let mut writer = csv::Writer::from_writer(Vec::new());
-    for entry_id in entry_ids {
-        let entry = parser.get_entry(entry_id).unwrap();
-        if !entry.header.is_valid() {
-            continue;
-        }
-        let flat = FlatMftEntryWithName::from_entry(&entry, &mut parser);
-        writer.serialize(flat).unwrap();
-    }
-
-    let csv = String::from_utf8(writer.into_inner().unwrap()).unwrap();
-    insta::assert_snapshot!("csv_selected_entries", normalize_path_separators(&csv));
+/// Formats an entry list as an `mft_dump --ranges` argument.
+fn ranges_arg(ids: impl IntoIterator<Item = u64>) -> String {
+    ids.into_iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// `mft_dump` uses a different JSON serializer for JSONL than the library's serde_json output, so
-/// snapshot the CLI output too.
+/// snapshot the CLI output too. CSV covers the first 40 records plus the JSON entries.
 #[test]
 #[cfg(feature = "mft_dump")]
 fn test_cli_output_snapshots() {
     use assert_cmd::cargo::cargo_bin_cmd;
 
-    let ranges = "0,3,5,9,462,3498,8671,11600";
+    let json_ids = || JSON_ENTRIES.iter().map(|&(id, _)| id);
+    let csv_ids: BTreeSet<u64> = (0..40).chain(json_ids()).collect();
 
-    for format in ["jsonl", "csv"] {
+    // Only CSV carries file system paths; backslashes in JSONL are JSON escapes and must stay.
+    for (format, ids, has_paths) in [
+        ("jsonl", ranges_arg(json_ids()), false),
+        ("csv", ranges_arg(csv_ids), true),
+    ] {
         let mut cmd = cargo_bin_cmd!("mft_dump");
         cmd.arg("-o")
             .arg(format)
             .arg("-r")
-            .arg(ranges)
+            .arg(ids)
             .arg(mft_sample());
         let output = cmd.output().unwrap();
         assert!(
@@ -87,7 +77,10 @@ fn test_cli_output_snapshots() {
             String::from_utf8_lossy(&output.stderr)
         );
 
-        let stdout = normalize_path_separators(&String::from_utf8(output.stdout).unwrap());
+        let mut stdout = String::from_utf8(output.stdout).unwrap();
+        if has_paths {
+            stdout = normalize_path_separators(&stdout);
+        }
         insta::assert_snapshot!(format!("cli_{format}_selected_entries"), stdout);
     }
 }
