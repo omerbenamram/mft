@@ -1,5 +1,3 @@
-use crate::attribute::header::ResidentialHeader;
-
 use crate::attribute::{FileAttributeFlags, MftAttributeType};
 use crate::entry::EntryFlags;
 use crate::{MftAttribute, MftEntry, MftParser};
@@ -70,18 +68,27 @@ impl FlatMftEntryWithName {
             .get_full_path_for_entry(entry)
             .expect("I/O Err")
             .unwrap_or_default();
-        Self::from_entry_with_path(entry, full_path)
+        let extensions = parser.get_extension_entries(entry);
+        Self::from_entry_with_path(entry, &extensions, full_path)
     }
 
     /// Same as [`FlatMftEntryWithName::from_entry`], for callers that already resolved the
-    /// entry's full path.
-    pub fn from_entry_with_path(entry: &MftEntry, full_path: PathBuf) -> FlatMftEntryWithName {
-        let entry_attributes: Vec<MftAttribute> = entry
-            .iter_attributes_matching(Some(vec![
-                MftAttributeType::FileName,
-                MftAttributeType::StandardInformation,
-                MftAttributeType::DATA,
-            ]))
+    /// entry's full path and read its extension records (see
+    /// [`MftParser::get_extension_entries`]).
+    pub fn from_entry_with_path(
+        entry: &MftEntry,
+        extensions: &[MftEntry],
+        full_path: PathBuf,
+    ) -> FlatMftEntryWithName {
+        let entry_attributes: Vec<MftAttribute> = std::iter::once(entry)
+            .chain(extensions)
+            .flat_map(|record| {
+                record.iter_attributes_matching(Some(vec![
+                    MftAttributeType::FileName,
+                    MftAttributeType::StandardInformation,
+                    MftAttributeType::DATA,
+                ]))
+            })
             .filter_map(Result::ok)
             .collect();
 
@@ -97,17 +104,13 @@ impl FlatMftEntryWithName {
             .and_then(|a| a.data.as_standard_info())
             .cloned();
 
-        let data_attr = entry_attributes
+        // The unnamed stream, or a named one if there is none. Records that continue a stream
+        // started elsewhere don't hold its size.
+        let file_size = entry_attributes
             .iter()
-            .find(|a| a.header.type_code == MftAttributeType::DATA);
-
-        let file_size = match data_attr {
-            Some(attr) => match &attr.header.residential_header {
-                ResidentialHeader::Resident(r) => u64::from(r.data_size),
-                ResidentialHeader::NonResident(nr) => nr.file_size,
-            },
-            _ => 0,
-        };
+            .filter(|a| a.header.type_code == MftAttributeType::DATA && !a.header.is_continuation())
+            .min_by_key(|a| !a.header.name.is_empty())
+            .map_or(0, |a| a.header.value_size());
 
         let has_ads = entry_attributes
             .iter()

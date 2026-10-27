@@ -3,11 +3,11 @@
 //! Lines follow the TSK 3.x layout that `fls -m` writes for NTFS:
 //! `MD5|name|inode|mode_as_string|UID|GID|size|atime|mtime|ctime|crtime`
 //! <https://wiki.sleuthkit.org/index.php?title=Body_file>
-use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
+use crate::attribute::header::MftAttributeHeader;
 use crate::attribute::x10::StandardInfoAttr;
 use crate::attribute::x30::FileNameAttr;
 use crate::attribute::{FileAttributeFlags, MftAttributeContent, MftAttributeType};
-use crate::entry::MftEntry;
+use crate::entry::{MftEntry, find_best_name_attribute_in};
 
 use jiff::Timestamp;
 use std::io::{self, Write};
@@ -55,29 +55,40 @@ impl From<&FileNameAttr<'_>> for Times {
 /// The inode column is `<entry>-<attribute type>-<attribute id>` and the size column is that
 /// attribute's size. Unallocated entries get ` (deleted)` after their name. Extension records,
 /// and entries without a `$FILE_NAME` attribute, are skipped, since `fls` can't reach them
-/// either. Attributes stored in extension records (through an `$ATTRIBUTE_LIST`) are not
-/// followed, so a file whose `$DATA` lives there gets a single line without an attribute.
-pub fn write_entry<W: Write>(out: &mut W, entry: &MftEntry, full_path: &Path) -> io::Result<()> {
+/// either.
+///
+/// `extensions` are the entry's extension records (from
+/// [`crate::MftParser::get_extension_entries`]): attributes stored there through an
+/// `$ATTRIBUTE_LIST` get their lines too, numbered with the base entry like `fls` does.
+pub fn write_entry<W: Write>(
+    out: &mut W,
+    entry: &MftEntry,
+    extensions: &[MftEntry],
+    full_path: &Path,
+) -> io::Result<()> {
     // An extension record can hold `$FILE_NAME` attributes moved out of its base record (e.g. a
     // file with many hard links), but it has no `$STANDARD_INFORMATION` and isn't a file itself.
-    if entry.header.base_reference.entry != 0 {
+    if !entry.header.is_base_record() {
         return Ok(());
     }
 
-    let best_name = entry.find_best_name_attribute();
+    let best_name = find_best_name_attribute_in(entry, extensions);
     if best_name.is_none() {
         return Ok(());
     }
 
     // A stream line only needs the attribute header, so only the timestamp attributes' content is
     // parsed: a `$DATA` or `$INDEX_ROOT` whose content is corrupt still gets its line.
-    let attributes: Vec<(MftAttributeHeader, Option<MftAttributeContent>)> = entry
-        .iter_attribute_records_matching(Some(vec![
-            MftAttributeType::StandardInformation,
-            MftAttributeType::FileName,
-            MftAttributeType::DATA,
-            MftAttributeType::IndexRoot,
-        ]))
+    let attributes: Vec<(MftAttributeHeader, Option<MftAttributeContent>)> = std::iter::once(entry)
+        .chain(extensions)
+        .flat_map(|record| {
+            record.iter_attribute_records_matching(Some(vec![
+                MftAttributeType::StandardInformation,
+                MftAttributeType::FileName,
+                MftAttributeType::DATA,
+                MftAttributeType::IndexRoot,
+            ]))
+        })
         .filter_map(Result::ok)
         .map(|(header, record)| {
             let content = matches!(
@@ -113,9 +124,7 @@ pub fn write_entry<W: Write>(out: &mut W, entry: &MftEntry, full_path: &Path) ->
             MftAttributeType::DATA | MftAttributeType::IndexRoot => {
                 // A non-resident attribute split over several records repeats in each of them,
                 // and only the one starting at VCN 0 has the stream's size.
-                if let ResidentialHeader::NonResident(nr) = &header.residential_header
-                    && nr.vnc_first != 0
-                {
+                if header.is_continuation() {
                     continue;
                 }
                 let name = &header.name;
@@ -175,7 +184,7 @@ impl Line {
             Some(h) => {
                 let type_code = h.type_code.clone() as u32;
                 write!(out, "-{type_code}-{}", h.instance)?;
-                attribute_size(h)
+                h.value_size()
             }
             None => 0,
         };
@@ -204,14 +213,6 @@ fn mode(entry: &MftEntry, flags: Option<&FileAttributeFlags>) -> String {
         (true, true) => "--x",
     };
     format!("{name_type}/{meta_type}{rwx}{rwx}{rwx}")
-}
-
-/// The size of an attribute's value (the logical size for non-resident data).
-fn attribute_size(header: &MftAttributeHeader) -> u64 {
-    match &header.residential_header {
-        ResidentialHeader::Resident(r) => u64::from(r.data_size),
-        ResidentialHeader::NonResident(nr) => nr.file_size,
-    }
 }
 
 /// `fls` writes absolute paths with `/` separators, whatever the host platform.
@@ -277,7 +278,7 @@ mod tests {
 
     fn lines(entry: &MftEntry) -> Vec<String> {
         let mut out = Vec::new();
-        write_entry(&mut out, entry, Path::new("$MFT")).unwrap();
+        write_entry(&mut out, entry, &[], Path::new("$MFT")).unwrap();
         String::from_utf8(out)
             .unwrap()
             .lines()

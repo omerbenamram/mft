@@ -189,6 +189,12 @@ impl EntryHeader {
         })
     }
 
+    /// Whether this is a base record, as opposed to an extension record holding attributes moved
+    /// out of one. An extension record of `$MFT` (entry 0) is told apart by its non-zero sequence.
+    pub fn is_base_record(&self) -> bool {
+        self.base_reference.entry == 0 && self.base_reference.sequence == 0
+    }
+
     pub fn is_valid(&self) -> bool {
         self.signature == *FILE_HEADER
     }
@@ -261,37 +267,13 @@ impl MftEntry {
     }
 
     /// Retrieves most human-readable representation of a file path entry.
-    /// Will prefer `Win32` file name attributes, and fallback to `Dos` paths.
+    /// Will prefer `Win32` file name attributes, then `POSIX` ones, and fallback to `Dos` paths.
+    ///
+    /// Only this record's own attributes are considered. Use [`find_best_name_attribute_in`]
+    /// with the entry's extension records (see [`crate::MftParser::get_extension_entries`]) to
+    /// also consider names stored there.
     pub fn find_best_name_attribute(&self) -> Option<FileNameAttr<'_>> {
-        let mut first: Option<FileNameAttr<'_>> = None;
-        let mut best_win32: Option<FileNameAttr<'_>> = None;
-
-        for attr in self
-            .iter_attributes_matching(Some(vec![MftAttributeType::FileName]))
-            .filter_map(Result::ok)
-        {
-            let Some(fname) = attr.data.as_file_name() else {
-                continue;
-            };
-
-            if first.is_none() {
-                first = Some(fname.clone());
-            }
-
-            if matches!(
-                fname.namespace,
-                FileNamespace::Win32 | FileNamespace::Win32AndDos
-            ) {
-                // Preserve the first Win32/Win32AndDos name for stability.
-                // MFT entries can contain multiple Win32 names (e.g. hard links), and there
-                // isn't a canonical choice without directory context.
-                if best_win32.is_none() {
-                    best_win32 = Some(fname.clone());
-                }
-            }
-        }
-
-        best_win32.or(first)
+        best_name_of([self])
     }
 
     /// Applies the update sequence array fixups.
@@ -452,6 +434,68 @@ impl MftEntry {
             }
         })
     }
+}
+
+/// The best name of a file whose attributes are spread over a base record and its extension
+/// records (from [`crate::MftParser::get_extension_entries`]).
+///
+/// This is the base record's [`MftEntry::find_best_name_attribute`], unless the base record has
+/// no name or only a `Dos` one: then its extension records are searched too, preferring a `Win32`
+/// name there over the base record's short name. NTFS moves the long name out of a full base
+/// record and keeps the short one, so only searching the base record gives `PROGRA~1`-style
+/// paths.
+pub fn find_best_name_attribute_in<'a>(
+    base: &'a MftEntry,
+    extensions: &'a [MftEntry],
+) -> Option<FileNameAttr<'a>> {
+    let base_name = base.find_best_name_attribute();
+    if base_name.as_ref().is_some_and(is_long_name) {
+        return base_name;
+    }
+    best_name_of(std::iter::once(base).chain(extensions))
+}
+
+/// Whether a name is more than an 8.3 short name.
+pub(crate) fn is_long_name(name: &FileNameAttr<'_>) -> bool {
+    name.namespace != FileNamespace::DOS
+}
+
+fn best_name_of<'a>(entries: impl IntoIterator<Item = &'a MftEntry>) -> Option<FileNameAttr<'a>> {
+    let mut first: Option<FileNameAttr<'a>> = None;
+    let mut first_long: Option<FileNameAttr<'a>> = None;
+    let mut best_win32: Option<FileNameAttr<'a>> = None;
+
+    for attr in entries.into_iter().flat_map(|entry| {
+        entry
+            .iter_attributes_matching(Some(vec![MftAttributeType::FileName]))
+            .filter_map(Result::ok)
+    }) {
+        let Some(fname) = attr.data.as_file_name() else {
+            continue;
+        };
+
+        if first.is_none() {
+            first = Some(fname.clone());
+        }
+        if first_long.is_none() && is_long_name(fname) {
+            first_long = Some(fname.clone());
+        }
+
+        if matches!(
+            fname.namespace,
+            FileNamespace::Win32 | FileNamespace::Win32AndDos
+        ) {
+            // Preserve the first Win32/Win32AndDos name for stability.
+            // MFT entries can contain multiple Win32 names (e.g. hard links), and there
+            // isn't a canonical choice without directory context.
+            if best_win32.is_none() {
+                best_win32 = Some(fname.clone());
+            }
+        }
+    }
+
+    // A `POSIX` name is still a long name, better than the `Dos` one.
+    best_win32.or(first_long).or(first)
 }
 
 #[cfg(test)]
