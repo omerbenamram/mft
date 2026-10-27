@@ -10,6 +10,7 @@ pub mod x60;
 pub mod x70;
 pub mod x80;
 pub mod x90;
+pub mod xc0;
 
 use crate::err::Result;
 use crate::impl_serialize_for_bitflags;
@@ -31,6 +32,7 @@ use crate::attribute::x60::VolumeNameAttr;
 use crate::attribute::x70::VolumeInformationAttr;
 use crate::attribute::x80::DataAttr;
 use crate::attribute::x90::IndexRootAttr;
+use crate::attribute::xc0::ReparsePointAttr;
 use serde::Serialize;
 
 #[derive(Serialize, Clone, Debug)]
@@ -77,6 +79,17 @@ impl<'a> MftAttributeContent<'a> {
                     MftAttributeType::VolumeInformation => Ok(MftAttributeContent::AttrX70(
                         VolumeInformationAttr::from_slice(value)?,
                     )),
+                    // A value too short for the reparse header stays raw instead of erroring,
+                    // so the attribute isn't dropped from output.
+                    MftAttributeType::ReparsePoint => {
+                        Ok(match ReparsePointAttr::from_slice(value) {
+                            Some(reparse_point) => MftAttributeContent::AttrXC0(reparse_point),
+                            None => MftAttributeContent::Raw(RawAttribute::from_slice(
+                                header.type_code.clone(),
+                                value,
+                            )),
+                        })
+                    }
                     MftAttributeType::IndexRoot => Ok(MftAttributeContent::AttrX90(
                         IndexRootAttr::from_slice(value)?,
                     )),
@@ -145,6 +158,13 @@ impl<'a> MftAttributeContent<'a> {
         }
     }
 
+    pub fn as_reparse_point(&self) -> Option<&ReparsePointAttr<'a>> {
+        match self {
+            MftAttributeContent::AttrXC0(content) => Some(content),
+            _ => None,
+        }
+    }
+
     pub fn as_standard_info(&self) -> Option<&StandardInfoAttr> {
         match self {
             MftAttributeContent::AttrX10(content) => Some(content),
@@ -186,6 +206,7 @@ pub enum MftAttributeContent<'a> {
     AttrX70(VolumeInformationAttr),
     AttrX80(DataAttr<'a>),
     AttrX90(IndexRootAttr<'a>),
+    AttrXC0(ReparsePointAttr<'a>),
     DataRun(NonResidentAttr),
 }
 
@@ -324,6 +345,23 @@ mod tests {
                 assert!(nonresident.data_runs.is_empty());
             }
             other => panic!("expected DataRun content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn truncated_reparse_point_stays_raw() {
+        // A resident $REPARSE_POINT whose 4-byte value can't hold the 8-byte reparse header.
+        let mut record = vec![0u8; 32];
+        record[0..4].copy_from_slice(&(MftAttributeType::ReparsePoint as u32).to_le_bytes());
+        record[4..8].copy_from_slice(&32u32.to_le_bytes());
+        record[16..20].copy_from_slice(&4u32.to_le_bytes()); // data size
+        record[20..22].copy_from_slice(&24u16.to_le_bytes()); // data offset
+        record[24..28].copy_from_slice(&[0x03, 0x00, 0x00, 0xA0]);
+
+        let header = MftAttributeHeader::from_slice(&record, 0).unwrap().unwrap();
+        match MftAttributeContent::from_record(&record, &header).unwrap() {
+            MftAttributeContent::Raw(raw) => assert_eq!(raw.data, [0x03, 0x00, 0x00, 0xA0]),
+            other => panic!("expected Raw content, got {other:?}"),
         }
     }
 }
