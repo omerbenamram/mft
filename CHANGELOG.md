@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Expand `FileAttributeFlags` with the latest Windows-defined bits for NTFS parsing.
+- Add `MftAttributeType::PropertySet` (`0xF0`, NT4-era `$PROPERTY_SET`).
 
 ### Changed
 - Upgrade the crate to the Rust 2024 edition and require Rust 1.90 for builds.
@@ -15,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep formatting and lint configuration aligned with Rust 2024 expectations.
 
 ### Fixed
+- `iter_attributes` keeps returning later attributes after one with an unknown type code, and
+  `iter_attributes_matching` skips unrequested attributes without parsing their headers.
 - Correct decoding of sparse non-resident data runs when reading MFT entries.
 - Address the `clippy::collapsible_if` warning emitted for the `mft_dump` CLI.
 
