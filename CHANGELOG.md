@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-27
+
 ### Added
 - CSV output has `StandardInfoLastMftModified` and `FileNameLastMftModified` columns (the "MFT entry changed" times), appended after `FullPath` so existing column positions don't move (#123).
 - `windows_path`, `serialize_windows_path` and `serialize_option_windows_path` format a resolved path with `\` separators.
@@ -18,8 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - JSON output lists attributes that failed to parse in a per-entry `errors` array (only present when non-empty). Previously they were dropped silently.
 - Expand `FileAttributeFlags` with the latest Windows-defined bits for NTFS parsing.
 - Add `MftAttributeType::PropertySet` (`0xF0`, NT4-era `$PROPERTY_SET`).
+- JSON output includes `data_size` for resident attributes (#125).
 
 ### Changed
+- **Breaking:** attributes borrow from the entry's record buffer instead of copying it. `MftAttribute`, `MftAttributeContent` and the name-carrying attribute types (`FileNameAttr`, `DataAttr`, `AttributeListAttr`, `IndexRootAttr`, ...) take a lifetime, names are borrowed UTF-16LE that decode on demand, and the `into_*` accessors are replaced by borrowing `as_*` ones (`as_file_name`, `as_data_runs`, ...). This makes parsing much faster but needs callers to keep the `MftEntry` alive while they use its attributes.
+- Faster `mft_dump`: release builds use thin LTO with one codegen unit and native release binaries are profile-guided (PGO), timestamps and flags are formatted without `core::fmt`, directory paths are cached, and I/O buffers are larger (see PERF.md).
 - CSV and JSON output write `full_path` with `\` separators on every platform, the way Windows shows NTFS paths. Linux and macOS builds used `/`. `get_full_path_for_entry` still returns a `PathBuf`, and bodyfile output keeps `fls`'s `/`.
 - JSON output of `$VOLUME_NAME` and `$VOLUME_INFORMATION` attributes changes from `{attribute_type, data}` raw hex to the parsed fields; `MftAttributeContent` gains the `AttrX60` and `AttrX70` variants, which breaks exhaustive matches.
 - `MftAttributeContent` has a new `AttrXC0` variant, and `$REPARSE_POINT` JSON output changes from raw hex to the parsed structure.
@@ -44,12 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Break cycles in parent references instead of overflowing the stack while resolving paths.
 - Recover the entry size from later records when the first entry is zeroed, instead of dividing by zero.
 - `mft_dump -e` no longer writes empty files for zero-length resident streams (#23).
-
-### Added
-- JSON output includes `data_size` for resident attributes (#125).
-- Address the `clippy::collapsible_if` warning emitted for the `mft_dump` CLI.
-- Restore compilation of the `ntfs` crate, its tools and the NTFS explorer GUI against the borrowed
-  UTF-16 attribute API.
+- The `ntfs` crate, its tools and the NTFS explorer GUI build again against the borrowed attribute API.
 
 ### CI
 - Refresh CI workflows, add Apple Silicon release artifacts, and scope push triggers to `master` and `release/**`.
