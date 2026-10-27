@@ -13,6 +13,9 @@ use winstructs::guid::Guid;
 /// Since NTFS 3.0, most files only keep a security ID in `$STANDARD_INFORMATION` and the
 /// descriptor itself is in `$Secure`, so a resident one is mostly found on system files and on
 /// volumes that started out as NTFS 1.x.
+///
+/// Parsed here rather than with `winstructs::security`, which in 0.3.2 drops the control flags,
+/// miscomputes SID authorities and reads object ACE GUIDs whether or not they are present.
 #[derive(Serialize, Clone, Debug)]
 pub struct SecurityDescriptorAttr<'a> {
     pub revision: u8,
@@ -190,32 +193,36 @@ impl<'a> Ace<'a> {
             data: body,
         };
 
-        let mut offset = 4;
-        match ace_type {
+        let sid_offset = match ace_type {
+            // The compound ACE and undocumented types keep their body undecoded.
+            0x04 | 0x16.. => return Some(decoded),
             // Object ACEs: the mask, which object types follow, the object types, then the SID.
             0x05..=0x08 | 0x0B | 0x0C | 0x0F | 0x10 => {
                 let object_flags = read_u32(body, 4)?;
-                offset = 8;
-                let mut guid = |present| {
-                    if object_flags & present == 0 {
-                        return Some(None);
+                let mut offset = 8;
+                for (present, object_type) in [
+                    (OBJECT_TYPE_PRESENT, &mut decoded.object_type),
+                    (
+                        INHERITED_OBJECT_TYPE_PRESENT,
+                        &mut decoded.inherited_object_type,
+                    ),
+                ] {
+                    if object_flags & present != 0 {
+                        *object_type =
+                            Some(Guid::from_buffer(body.get(offset..offset + 16)?).ok()?);
+                        offset += 16;
                     }
-                    let guid = Guid::from_buffer(body.get(offset..offset + 16)?).ok()?;
-                    offset += 16;
-                    Some(Some(guid))
-                };
-                decoded.object_type = guid(OBJECT_TYPE_PRESENT)?;
-                decoded.inherited_object_type = guid(INHERITED_OBJECT_TYPE_PRESENT)?;
+                }
+                offset
             }
-            // The other documented types except the compound ACE: the mask, then the SID.
-            0x00..=0x03 | 0x09 | 0x0A | 0x0D | 0x0E | 0x11..=0x15 => {}
-            _ => return Some(decoded),
-        }
+            // The other documented types: the mask, then the SID.
+            _ => 4,
+        };
 
         decoded.access_mask = Some(read_u32(body, 0)?);
-        let (sid, sid_len) = sid(body, offset)?;
+        let (sid, sid_len) = sid(body, sid_offset)?;
         decoded.sid = Some(sid);
-        decoded.data = body.get(offset + sid_len..)?;
+        decoded.data = body.get(sid_offset + sid_len..)?;
         Some(decoded)
     }
 }
