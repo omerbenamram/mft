@@ -51,20 +51,10 @@ impl<'a> MftAttributeContent<'a> {
     pub fn from_record(record: &'a [u8], header: &MftAttributeHeader<'a>) -> Result<Self> {
         match &header.residential_header {
             ResidentialHeader::Resident(resident) => {
-                let data_offset = resident.data_offset as usize;
-                let data_size = resident.data_size as usize;
-                let end =
-                    data_offset
-                        .checked_add(data_size)
-                        .ok_or_else(|| crate::err::Error::Any {
-                            detail: "attribute resident data offset overflow".to_string(),
-                        })?;
-                let value = record
-                    .get(data_offset..end)
-                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
-
-                // `None` keeps the value raw: a security descriptor, reparse point or extended
-                // attribute that doesn't parse stays in the output instead of erroring.
+                let value = resident.value(record)?;
+                // `None` keeps the value raw: a value too short for its fixed fields, or a security
+                // descriptor, reparse point or extended attribute that doesn't parse, stays in the
+                // output instead of erroring.
                 let parsed = match header.type_code {
                     MftAttributeType::StandardInformation => Some(MftAttributeContent::AttrX10(
                         StandardInfoAttr::from_slice(value)?,
@@ -87,9 +77,9 @@ impl<'a> MftAttributeContent<'a> {
                     MftAttributeType::VolumeName => Some(MftAttributeContent::AttrX60(
                         VolumeNameAttr::from_slice(value),
                     )),
-                    MftAttributeType::VolumeInformation => Some(MftAttributeContent::AttrX70(
-                        VolumeInformationAttr::from_slice(value)?,
-                    )),
+                    MftAttributeType::VolumeInformation => VolumeInformationAttr::from_slice(value)
+                        .ok()
+                        .map(MftAttributeContent::AttrX70),
                     MftAttributeType::ReparsePoint => {
                         ReparsePointAttr::from_slice(value).map(MftAttributeContent::AttrXC0)
                     }
@@ -341,6 +331,7 @@ impl_serialize_for_bitflags! {AttributeDataFlags}
 mod tests {
     use super::*;
     use crate::attribute::header::MftAttributeHeader;
+    use crate::entry::tests::resident_attribute_record;
 
     #[test]
     fn nonresident_attribute_allows_empty_mapping_pairs_section() {
@@ -385,19 +376,20 @@ mod tests {
     }
 
     #[test]
-    fn truncated_reparse_point_stays_raw() {
-        // A resident $REPARSE_POINT whose 4-byte value can't hold the 8-byte reparse header.
-        let mut record = vec![0u8; 32];
-        record[0..4].copy_from_slice(&(MftAttributeType::ReparsePoint as u32).to_le_bytes());
-        record[4..8].copy_from_slice(&32u32.to_le_bytes());
-        record[16..20].copy_from_slice(&4u32.to_le_bytes()); // data size
-        record[20..22].copy_from_slice(&24u16.to_le_bytes()); // data offset
-        record[24..28].copy_from_slice(&[0x03, 0x00, 0x00, 0xA0]);
+    fn truncated_values_stay_raw() {
+        // Values too short for $REPARSE_POINT's 8-byte header and $VOLUME_INFORMATION's 12 bytes.
+        for type_code in [
+            MftAttributeType::ReparsePoint,
+            MftAttributeType::VolumeInformation,
+        ] {
+            let value = [0x03, 0x00, 0x00, 0xA0];
+            let record = resident_attribute_record(type_code as u32, &value);
 
-        let header = MftAttributeHeader::from_slice(&record, 0).unwrap().unwrap();
-        match MftAttributeContent::from_record(&record, &header).unwrap() {
-            MftAttributeContent::Raw(raw) => assert_eq!(raw.data, [0x03, 0x00, 0x00, 0xA0]),
-            other => panic!("expected Raw content, got {other:?}"),
+            let header = MftAttributeHeader::from_slice(&record, 0).unwrap().unwrap();
+            match MftAttributeContent::from_record(&record, &header).unwrap() {
+                MftAttributeContent::Raw(raw) => assert_eq!(raw.data, value),
+                other => panic!("expected Raw content, got {other:?}"),
+            }
         }
     }
 }

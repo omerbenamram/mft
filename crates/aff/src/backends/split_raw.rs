@@ -121,12 +121,10 @@ impl ReadAt for SplitRawImage {
 
         let mut cur = offset;
         while !buf.is_empty() {
-            let (file_idx, file_off) = if self.maxsize == 0 {
-                (0usize, cur)
-            } else {
-                let idx = (cur / self.maxsize) as usize;
-                let off = cur % self.maxsize;
-                (idx, off)
+            // maxsize == 0 means a single unsplit file.
+            let (file_idx, file_off) = match cur.checked_div(self.maxsize) {
+                Some(idx) => (idx as usize, cur % self.maxsize),
+                None => (0usize, cur),
             };
 
             let file = self.files.get(file_idx).ok_or_else(|| {

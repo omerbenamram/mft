@@ -6,8 +6,29 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
 
 jobs:
+  # Fails a bad tag or a missing crates.io token before anything is built or published.
+  preflight:
+    name: Check tag and secrets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Check tag matches Cargo.toml
+        run: |
+          CRATE="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          [ "$CRATE" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != Cargo.toml $CRATE"; exit 1; }
+
+      - name: Check CRATES_IO_TOKEN is set
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: '[ -n "$CARGO_REGISTRY_TOKEN" ] || { echo "CRATES_IO_TOKEN secret is not set"; exit 1; }'
+
   build-release:
     name: Build release binaries
+    needs: preflight
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -29,7 +50,7 @@ jobs:
       CARGO_TERM_COLOR: always
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -37,6 +58,14 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+          components: llvm-tools
+
+      - name: Add llvm-tools to PATH (for PGO)
+        if: runner.os != 'Windows'
+        shell: bash
+        # A block scalar: a plain `run:` value can't contain `host: ` (YAML reads it as a mapping).
+        run: |
+          echo "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin" >> "$GITHUB_PATH"
 
       - name: Install musl tooling
         if: matrix.target == 'x86_64-unknown-linux-musl'
@@ -54,8 +83,14 @@ jobs:
           cargo install cargo-zigbuild
           cargo zigbuild --release --target ${{ matrix.target }}
 
+      # Native targets get a profile-guided build (see PERF.md, H10).
+      - name: Build release binary (PGO)
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || runner.os == 'macOS'
+        shell: bash
+        run: TARGET=${{ matrix.target }} ./build_pgo.sh
+
       - name: Build release binary
-        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        if: matrix.target == 'x86_64-unknown-linux-musl' || runner.os == 'Windows'
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Prepare artifact
@@ -78,7 +113,7 @@ jobs:
           fi
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mft_dump-${{ matrix.target }}
           path: dist/*
@@ -92,7 +127,7 @@ jobs:
       contents: write
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           merge-multiple: true
           path: dist
@@ -102,9 +137,28 @@ jobs:
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/**
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-crate:
+    name: Publish to crates.io
+    # Last: crates.io is irreversible, so only publish once every binary built and the release exists.
+    needs: publish-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish mft
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish -p mft

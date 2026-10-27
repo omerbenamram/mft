@@ -204,6 +204,16 @@ impl ResidentHeader {
             padding: reader.read_u8()?,
         })
     }
+
+    /// The attribute's value, sliced out of its attribute record (the bytes from the start of the
+    /// attribute header to `record_length`).
+    pub fn value<'r>(&self, record: &'r [u8]) -> Result<&'r [u8]> {
+        let start = self.data_offset as usize;
+        start
+            .checked_add(self.data_size as usize)
+            .and_then(|end| record.get(start..end))
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into())
+    }
 }
 
 #[derive(Serialize, Clone, Debug)]

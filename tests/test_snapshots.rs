@@ -20,16 +20,6 @@ const JSON_ENTRIES: &[(u64, &str)] = &[
     (11600, "deleted"),
 ];
 
-/// Full paths are built with the platform's separator, so Windows output uses `\`, written
-/// as `separator` in the output format.
-fn normalize_path_separators(s: &str, separator: &str) -> String {
-    if cfg!(windows) {
-        s.replace(separator, "/")
-    } else {
-        s.to_string()
-    }
-}
-
 #[test]
 fn test_json_output_snapshots() {
     ensure_env_logger_initialized();
@@ -60,10 +50,10 @@ fn test_cli_output_snapshots() {
     let json_ids = || JSON_ENTRIES.iter().map(|&(id, _)| id);
     let csv_ids: BTreeSet<u64> = (0..40).chain(json_ids()).collect();
 
-    // Both formats carry full paths. JSON escapes the Windows separator as `\\`.
-    for (format, ids, separator) in [
-        ("jsonl", ranges_arg(json_ids()), r"\\"),
-        ("csv", ranges_arg(csv_ids), r"\"),
+    // Both formats carry full paths, written with `\` on every platform.
+    for (format, ids) in [
+        ("jsonl", ranges_arg(json_ids())),
+        ("csv", ranges_arg(csv_ids)),
     ] {
         let mut cmd = cargo_bin_cmd!("mft_dump");
         cmd.arg("-o")
@@ -78,8 +68,7 @@ fn test_cli_output_snapshots() {
             String::from_utf8_lossy(&output.stderr)
         );
 
-        let stdout =
-            normalize_path_separators(&String::from_utf8(output.stdout).unwrap(), separator);
+        let stdout = String::from_utf8(output.stdout).unwrap();
         insta::assert_snapshot!(format!("cli_{format}_selected_entries"), stdout);
     }
 }

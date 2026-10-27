@@ -330,7 +330,7 @@ impl MftEntry {
 
     /// Like [`MftEntry::iter_attributes_matching`], but yields each attribute's header and raw
     /// record without parsing its content, so a header survives content that fails to parse.
-    pub(crate) fn iter_attribute_records_matching(
+    pub fn iter_attribute_records_matching(
         &self,
         types: Option<Vec<MftAttributeType>>,
     ) -> impl Iterator<Item = Result<(MftAttributeHeader<'_>, &[u8])>> + '_ {
@@ -499,7 +499,7 @@ fn best_name_of<'a>(entries: impl IntoIterator<Item = &'a MftEntry>) -> Option<F
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{EntryHeader, MftEntry};
     use crate::attribute::x30::FileNamespace;
     use crate::attribute::{MftAttribute, MftAttributeType};
@@ -599,7 +599,7 @@ mod tests {
         v
     }
 
-    fn resident_attribute_record(type_code: u32, value: &[u8]) -> Vec<u8> {
+    pub(crate) fn resident_attribute_record(type_code: u32, value: &[u8]) -> Vec<u8> {
         // Attribute header is 24 bytes for resident attributes with no name.
         const HEADER_LEN: usize = 24;
         let mut record_length = HEADER_LEN + value.len();

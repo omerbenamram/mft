@@ -22,7 +22,7 @@
 
 use crate::ntfs::{Error, Result};
 use crate::parse::Reader;
-use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
+use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
 use des::{Des, TdesEde3};
 use md5::{Digest as _, Md5};
 use openssl::pkey::Private;

@@ -213,6 +213,30 @@ If the benchmark is within noise or regresses:
   - the profile evidence (what got worse / what new leaf appeared)
   - the conclusion (“not worth it”) and what to try next
 
+## Linux / noisy-host protocol (2026-10-27)
+
+Shared VMs (CI, cloud dev boxes) have too much wall-clock noise (±20%) for hyperfine's
+"all runs of A, then all runs of B" approach to resolve single-digit changes. On such hosts use
+the scripts in `scripts/perf/`:
+
+```bash
+# 1. Prove the change does not alter output (byte-for-byte, all formats, stderr included).
+scripts/perf/check_identical.sh ./mft_dump.before ./mft_dump.after
+
+# 2. Deterministic instruction counts (valgrind/cachegrind, reproducible to <0.1%).
+scripts/perf/instructions.sh -f jsonl ./mft_dump.before ./mft_dump.after
+
+# 3. Interleaved A/B wall clock (alternates binaries every round; report median and min).
+scripts/perf/ab_bench.py --runs 30 --format jsonl ./mft_dump.before ./mft_dump.after
+```
+
+Instruction counts don't see syscalls or cache misses, so I/O changes are measured with
+`strace -c -e trace=read,lseek,write` plus `ab_bench.py`. For profiles, `perf record -g
+--call-graph dwarf` on a `CARGO_PROFILE_RELEASE_DEBUG=line-tables-only` build works without
+hardware counters (pipe through `rustfilt` for v0 symbol names). A larger input for profiling can
+be made with `for i in $(seq 8); do cat samples/MFT; done > /tmp/MFT8` (don't use it for CSV: the
+copies' parent references all point into the first copy, which defeats path caching).
+
 ## Canonical workloads
 
 All commands assume:
@@ -502,3 +526,113 @@ Profiles:
 - `target/samply/h4_after2.profile.json.gz`
 
 
+
+## H5–H10, re-measured on master `23361de` (2026-10-27)
+
+After merging master (100ns timestamps, `A | B` flag format, `full_path` in JSON, bodyfile
+output, the reworked directory path resolution), on `samples/MFT`. Output is byte-identical to
+master in all four formats (`scripts/perf/check_identical.sh`).
+
+| | JSONL | CSV | JSON (pretty) | bodyfile |
+| --- | ---: | ---: | ---: | ---: |
+| instructions, master | 556.5M | 288.2M | 908.5M | 292.6M |
+| instructions, H5–H9 | 505.9M (−9%) | 220.5M (−23%) | 757.9M (−17%) | 275.9M (−6%) |
+| instructions, H5–H10 (PGO) | 363.4M (−35%) | 169.0M (−41%) | 505.7M (−44%) | 234.1M (−20%) |
+| wall median, master | 65.1 ms | 37.2 ms | 104.2 ms | |
+| wall median, H5–H9 | 57.5 ms (1.13x) | 28.2 ms (1.32x) | 85.6 ms (1.22x) | |
+| wall median, H5–H10 (PGO) | 43.9 ms (1.48x) | 21.8 ms (1.71x) | 67.2 ms (1.55x) | |
+
+Syscalls (`strace -c`): JSONL read/write 3362/4310 → 506/486; CSV read/write 3367/550 → 512/69.
+
+Master's rewrite of directory path resolution (`resolve_directory_path`) already caches each
+directory as it is resolved, which is what H8's path-cache change did, so that part was dropped in
+the merge; only H8's buffer sizes remain.
+
+## H5–H10 as first measured (2026-10-27, on `18b6c05`, Linux x86_64 VM, 4 vCPU, rustc 1.99.1)
+
+Measured on `samples/MFT` with the scripts above. Every step was checked byte-identical against
+the pre-change binary in all three formats with `scripts/perf/check_identical.sh`.
+
+Instruction counts (cachegrind) per commit:
+
+| Step | JSONL | CSV | JSON (pretty) |
+| --- | ---: | ---: | ---: |
+| baseline (`18b6c05`) | 523.0M | 308.4M | 875.2M |
+| H5+H6 timestamps + bitflags without `core::fmt` | 453.3M (−13.3%) | 229.1M (−25.7%) | 814.9M (−6.9%) |
+| H7 thin LTO + `codegen-units = 1` | 452.5M | 219.4M (−4.3%) | 804.5M (−1.3%) |
+| H8 path cache + bigger I/O buffers | 451.9M | 215.5M (−1.8%) | 803.9M |
+| H9 sonic-rs pretty JSON | 453.4M | 215.4M | 696.5M (−13.4%) |
+| H10 PGO (`build_pgo.sh`) | 331.1M (−27.0%) | 177.2M (−17.7%) | 470.2M (−32.5%) |
+
+Wall clock (`ab_bench.py --runs 30`, median / min):
+
+| Format | baseline | H5–H9 | H5–H9 + PGO |
+| --- | ---: | ---: | ---: |
+| JSONL | 76.9 / 66.8 ms | 64.5 / 55.0 ms (1.19x) | 52.3 / 45.8 ms (1.47x) |
+| CSV | 62.7 / 48.4 ms | 40.8 / 32.9 ms (1.54x) | 33.6 / 27.9 ms (1.87x) |
+| JSON | 134.3 / 103.0 ms | 103.5 / 82.5 ms (1.30x) | 66.7 / 56.6 ms (2.01x) |
+
+Syscalls (`strace -c`): JSONL read/write 3278/4272 → 415/484; CSV read/lseek 4488/1634 → 506/112.
+
+### H5 — Timestamps without `core::fmt`
+
+- **Before**: `serialize_timestamp_chrono_compat` used `collect_str(&ChronoRfc3339Compat)`, i.e.
+  jiff's `DateTimePrinter` → `core::fmt::write` → the serializer's `collect_str` adapter, which
+  escapes every fragment separately. ~15% of JSONL and ~23% of CSV time (inclusive).
+- **Change**: format into a 30-byte stack buffer with integer arithmetic (Hinnant's
+  `civil_from_days` in `u32`, shifted by one 400-year era) and call `serialize_str` once. Years
+  outside `0..=9999` (which jiff prints as `±YYYYYY`) still fall back to the old path.
+- **Guardrail**: `fast_timestamp_formatting_matches_jiff_display` compares 200k pseudo-random
+  timestamps across jiff's whole range (plus edge cases) against the previous formatter.
+- **Update (master `23361de`)**: timestamps are now always printed with 7 fractional digits
+  (`{ts:.7}`); the fast path writes that fixed 28-byte form.
+
+### H6 — Bitflags without `core::fmt`
+
+- **Before**: `impl_serialize_for_bitflags!` used `collect_str(&format_args!("{:?}", self))`;
+  `Formatter::debug_tuple_field1_finish` was ~9% of JSONL and ~13% of CSV.
+- **Change**: `utils::write_bitflags_debug` writes `Name(A | B | 0x40)` / `Name(0x0)` from
+  `Flags::iter_names()` (the same iteration bitflags' own `Debug` uses) into a 256-byte stack
+  buffer, falling back to `Debug` if it doesn't fit.
+- **Guardrail**: `bitflags_formatting_matches_display` checks 20k bit patterns for every flags type.
+- **Update (master `23361de`)**: flags are now serialized as `A | B` (bitflags 1.x style, zero
+  flag name or `(empty)` when empty). `utils::write_bitflags` produces that text and is shared by
+  the `Display` impl and the stack-buffer serializer.
+
+### H7 — Release profile
+
+`codegen-units = 1` + `lto = "thin"` (same as evtx). `lto = "fat"` was ~1% fewer instructions
+again but slows the whole workspace's release builds; not worth it.
+
+### H8 — Path cache misses and buffer sizes
+
+- **Claim**: CSV's `get_full_path_for_entry` cached a directory's path only when one of its
+  children missed the cache, so the first child of every directory seeked back to re-read and
+  re-parse the directory (two `lseek`s, each discarding the `BufReader` buffer). Raising the LRU
+  size from 1000 to 65536 changed nothing (the misses are compulsory, not capacity misses).
+- **Change**: cache a directory's own path as soon as it is resolved (exactly the value the miss
+  path would compute). `test_get_full_path_independent_of_resolution_order` checks forward vs.
+  reverse resolution give identical paths. Input `BufReader` 4 KiB → 32 KiB, `mft_dump` output
+  `BufWriter` 8 KiB → 64 KiB (64 KiB input made random parent lookups noticeably more expensive
+  on inputs with poor locality, so 32 KiB is the compromise).
+
+### H9 — sonic-rs for pretty JSON
+
+`-o json` still used `serde_json::to_writer_pretty`. `sonic_rs::to_writer_pretty` produces
+byte-identical output on `samples/MFT` (and for every char up to U+0800, U+2028/9, U+FEFF).
+
+### H10 — PGO
+
+`build_pgo.sh` (modeled on evtx's) trains on `samples/MFT` in all three formats. The release
+workflow now uses it for x86_64 Linux (gnu) and both macOS targets; musl, aarch64 Linux (zig
+cross build) and Windows still use a plain release build.
+
+### What's left (profile after H5–H10, JSONL)
+
+- sonic-rs `serialize_str` / `serialize_key` is ~30% self time. With ~108 keys per entry, the
+  per-key cost of serde's `SerializeStruct` → escaped-string path dominates; going further
+  likely needs a hand-written JSON writer for `MftEntry` (not attempted: high maintenance cost).
+- `format_timestamp_chrono_compat` ~10% (131k timestamps per 13k entries; mostly the dependent
+  multiply chain of the date conversion).
+- `core::str::from_utf8` ~4% (validating the stack buffers; avoidable only with `unsafe` or a
+  dependency such as `arrayvec`).
