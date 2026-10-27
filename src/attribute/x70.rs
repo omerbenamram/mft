@@ -13,6 +13,7 @@ pub struct VolumeInformationAttr {
     pub major_version: u8,
     /// NTFS minor version, e.g. 1 for NTFS 3.1.
     pub minor_version: u8,
+    /// Volume state flags. Undocumented bits are kept (not truncated) so nothing is lost.
     pub flags: VolumeFlags,
 }
 
@@ -27,8 +28,8 @@ bitflags! {
         const MOUNTED_ON_NT4      = 0x0008;
         const DELETE_USN_UNDERWAY = 0x0010;
         const REPAIR_OBJECT_ID    = 0x0020;
-        // 0x0080 is set on most volumes formatted by Windows 7 and later; its meaning is not
-        // documented, so it is kept as an unnamed bit.
+        // Other bits, such as 0x0080 which shows up on many volumes, are undocumented and are
+        // kept as unnamed bits.
         const CHKDSK_UNDERWAY     = 0x4000;
         const MODIFIED_BY_CHKDSK  = 0x8000;
     }
@@ -52,22 +53,7 @@ impl VolumeInformationAttr {
     /// assert_eq!(attribute.flags, VolumeFlags::IS_DIRTY);
     /// ```
     pub fn from_slice(value: &[u8]) -> Result<VolumeInformationAttr> {
-        let [
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            major_version,
-            minor_version,
-            f0,
-            f1,
-            ..,
-        ] = *value
-        else {
+        let Some(&[major_version, minor_version, f0, f1]) = value.get(8..12) else {
             return Err(Error::new(
                 ErrorKind::UnexpectedEof,
                 format!(
@@ -83,5 +69,25 @@ impl VolumeInformationAttr {
             minor_version,
             flags: VolumeFlags::from_bits_retain(u16::from_le_bytes([f0, f1])),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_value_is_error() {
+        assert!(VolumeInformationAttr::from_slice(&[0; 11]).is_err());
+    }
+
+    #[test]
+    fn trailing_reserved_bytes_and_unnamed_flag_bits_are_kept() {
+        let value: &[u8] = &[0, 0, 0, 0, 0, 0, 0, 0, 0x03, 0x01, 0x80, 0x80, 0, 0, 0, 0];
+        let attribute = VolumeInformationAttr::from_slice(value).unwrap();
+
+        assert_eq!((attribute.major_version, attribute.minor_version), (3, 1));
+        assert_eq!(attribute.flags.bits(), 0x8080);
+        assert!(attribute.flags.contains(VolumeFlags::MODIFIED_BY_CHKDSK));
     }
 }
