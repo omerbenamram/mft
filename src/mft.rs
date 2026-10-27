@@ -31,7 +31,7 @@ impl MftParser<BufReader<File>> {
         let mft_fh = File::open(f).map_err(|e| Error::failed_to_open_file(f, e))?;
         let size = fs::metadata(f)?.len();
 
-        Self::from_read_seek(BufReader::with_capacity(4096, mft_fh), Some(size))
+        Self::from_read_seek(BufReader::with_capacity(32 * 1024, mft_fh), Some(size))
     }
 }
 
@@ -134,6 +134,23 @@ impl<T: Read + Seek> MftParser<T> {
     /// Gets the full path for an entry.
     /// Caches computations.
     pub fn get_full_path_for_entry(&mut self, entry: &MftEntry) -> Result<Option<PathBuf>> {
+        let path = self.compute_full_path_for_entry(entry)?;
+
+        // Remember directory paths as they are resolved, so that their children (which usually
+        // follow them in the MFT) hit the cache instead of seeking back to re-read and re-parse
+        // the directory entry. This is exactly the value `inner_get_entry` would cache for this
+        // entry on a miss.
+        if entry.is_dir()
+            && let Some(path) = &path
+        {
+            self.entries_cache
+                .put(entry.header.record_number, path.clone());
+        }
+
+        Ok(path)
+    }
+
+    fn compute_full_path_for_entry(&mut self, entry: &MftEntry) -> Result<Option<PathBuf>> {
         let entry_id = entry.header.record_number;
         match entry.find_best_name_attribute() {
             Some(filename_header) => {
@@ -213,6 +230,34 @@ mod tests {
         }
 
         assert_eq!(paths.len(), 988);
+    }
+
+    #[test]
+    fn test_get_full_path_independent_of_resolution_order() {
+        // Directory paths are cached as they are resolved, so make sure the cache never changes
+        // the result: resolving in MFT order and in reverse order must agree.
+        let sample = mft_sample();
+        let mut forward_parser = MftParser::from_path(&sample).unwrap();
+        let mut reverse_parser = MftParser::from_path(&sample).unwrap();
+
+        let entries: Vec<MftEntry> = forward_parser
+            .iter_entries()
+            .filter_map(Result::ok)
+            .collect();
+
+        let forward: Vec<_> = entries
+            .iter()
+            .map(|e| forward_parser.get_full_path_for_entry(e).unwrap())
+            .collect();
+        let mut reverse: Vec<_> = entries
+            .iter()
+            .rev()
+            .map(|e| reverse_parser.get_full_path_for_entry(e).unwrap())
+            .collect();
+        reverse.reverse();
+
+        assert_eq!(forward.len(), entries.len());
+        assert_eq!(forward, reverse);
     }
 
     #[test]

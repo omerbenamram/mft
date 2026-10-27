@@ -102,7 +102,7 @@ impl MftDump {
 
         let output: Option<Box<dyn Write>> = if let Some(path) = output_target {
             match Self::create_output_file(path, !matches.get_flag("no-confirm-overwrite")) {
-                Ok(f) => Some(Box::new(BufWriter::new(f))),
+                Ok(f) => Some(Box::new(BufWriter::with_capacity(1 << 16, f))),
                 Err(e) => {
                     return Err(anyhow!(
                         "An error occurred while creating output file at `{path}` - `{e}`"
@@ -110,7 +110,7 @@ impl MftDump {
                 }
             }
         } else {
-            Some(Box::new(BufWriter::new(io::stdout())))
+            Some(Box::new(BufWriter::with_capacity(1 << 16, io::stdout())))
         };
 
         let data_streams_output = if let Some(path) = data_streams_target {
