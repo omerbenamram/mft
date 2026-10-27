@@ -74,3 +74,37 @@ fn test_it_exports_resident_streams() {
         assert!(f.unwrap().metadata().unwrap().len() > 0);
     }
 }
+
+#[test]
+fn test_json_output_includes_full_path() {
+    for format in ["json", "jsonl"] {
+        let mut cmd = cargo_bin_cmd!("mft_dump");
+        cmd.arg("-o")
+            .arg(format)
+            .arg("-r")
+            .arg("0,8671")
+            .arg(mft_sample());
+        let output = cmd.output().unwrap();
+        assert!(output.status.success());
+
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let paths: Vec<String> = serde_json::Deserializer::from_str(&stdout)
+            .into_iter::<serde_json::Value>()
+            .map(|entry| {
+                entry.unwrap()["full_path"]
+                    .as_str()
+                    .unwrap()
+                    .replace('\\', "/")
+            })
+            .collect();
+
+        assert_eq!(
+            paths,
+            [
+                "$MFT",
+                "Documents and Settings/All Users/Documents/My Pictures/Sample Pictures/Thumbs.db"
+            ],
+            "unexpected paths for -o {format}"
+        );
+    }
+}
