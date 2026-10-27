@@ -2,6 +2,7 @@
 use clap::{Arg, ArgAction, ArgMatches};
 use indoc::indoc;
 use log::Level;
+use serde::Serialize;
 
 use mft::MftEntry;
 use mft::attribute::MftAttributeType;
@@ -77,6 +78,14 @@ impl FromStr for Ranges {
 
         Ok(Ranges(ranges))
     }
+}
+
+/// A JSON output record: the entry plus its full path, which only the parser can resolve.
+#[derive(Serialize)]
+struct JsonEntry<'a> {
+    full_path: Option<PathBuf>,
+    #[serde(flatten)]
+    entry: &'a MftEntry,
 }
 
 struct MftDump {
@@ -260,8 +269,10 @@ impl MftDump {
                 }
             };
 
+            let full_path = parser.get_full_path_for_entry(&entry).ok().flatten();
+
             if let Some(data_streams_dir) = &self.data_streams_output
-                && let Ok(Some(path)) = parser.get_full_path_for_entry(&entry)
+                && let Some(path) = &full_path
             {
                 let sanitized_path = sanitized(&path.to_string_lossy());
 
@@ -310,11 +321,13 @@ impl MftDump {
             }
 
             match self.output_format {
-                OutputFormat::JSON | OutputFormat::JSONL => self.print_json_entry(&entry)?,
+                OutputFormat::JSON | OutputFormat::JSONL => {
+                    self.print_json_entry(&entry, full_path)?
+                }
                 OutputFormat::Bodyfile => self.print_bodyfile_entry(&entry, &mut parser)?,
                 OutputFormat::CSV => self.print_csv_entry(
                     &entry,
-                    &mut parser,
+                    full_path,
                     csv_writer
                         .as_mut()
                         .expect("CSV Writer is for OutputFormat::CSV"),
@@ -338,18 +351,20 @@ impl MftDump {
         }
     }
 
-    pub fn print_json_entry(&mut self, entry: &MftEntry) -> Result<()> {
+    pub fn print_json_entry(&mut self, entry: &MftEntry, full_path: Option<PathBuf>) -> Result<()> {
         let out = self
             .output
             .as_mut()
             .expect("CSV Flow cannot occur, so `Mftdump` should still Own `output`");
 
+        let json_entry = JsonEntry { full_path, entry };
+
         self.json_buf.clear();
         if self.output_format == OutputFormat::JSON {
-            serde_json::to_writer_pretty(&mut self.json_buf, entry)?;
+            serde_json::to_writer_pretty(&mut self.json_buf, &json_entry)?;
         } else {
             // JSONL is the performance-critical mode; use a faster serializer.
-            sonic_json::to_writer(&mut self.json_buf, entry)?;
+            sonic_json::to_writer(&mut self.json_buf, &json_entry)?;
         }
         self.json_buf.push(b'\n');
         out.write_all(&self.json_buf)?;
@@ -376,10 +391,11 @@ impl MftDump {
     pub fn print_csv_entry<W: Write>(
         &self,
         entry: &MftEntry,
-        parser: &mut MftParser<impl Read + Seek>,
+        full_path: Option<PathBuf>,
         writer: &mut csv::Writer<W>,
     ) -> Result<()> {
-        let flat_entry = FlatMftEntryWithName::from_entry(entry, parser);
+        let flat_entry =
+            FlatMftEntryWithName::from_entry_with_path(entry, full_path.unwrap_or_default());
 
         writer.serialize(flat_entry)?;
 
