@@ -272,7 +272,12 @@ impl MftDump {
                         if a.header.type_code == MftAttributeType::DATA {
                             // resident
                             let name = a.header.name;
-                            a.data.as_data().copied().map(|data| (name, data))
+                            a.data
+                                .as_data()
+                                .copied()
+                                // Empty streams carry no content, don't litter the output with them.
+                                .filter(|data| !data.data().is_empty())
+                                .map(|data| (name, data))
                         } else {
                             None
                         }

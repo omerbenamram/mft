@@ -262,7 +262,7 @@ fn cmd_mft(fs: &FileSystem, entry_id: u64) -> Result<()> {
         let name = if attr.header.name.is_empty() {
             "<none>".to_string()
         } else {
-            attr.header.name.clone()
+            attr.header.name.to_string()
         };
         match &attr.header.residential_header {
             ResidentialHeader::Resident(r) => {
@@ -538,7 +538,8 @@ fn write_bodyfile_for_entry(
     })??;
     let si = si_attr
         .data
-        .into_standard_info()
+        .as_standard_info()
+        .cloned()
         .ok_or_else(|| Error::InvalidData {
             message: format!("failed to parse $STANDARD_INFORMATION for entry {entry_id}"),
         })?;
@@ -587,7 +588,7 @@ fn write_bodyfile_for_entry(
     let mut any = false;
     for attr in entry.iter_attributes_matching(Some(vec![MftAttributeType::DATA])) {
         let attr = attr?;
-        let stream_name = attr.header.name.clone();
+        let stream_name = attr.header.name.to_string();
         let size = match &attr.header.residential_header {
             ResidentialHeader::Resident(r) => r.data_size as u64,
             ResidentialHeader::NonResident(nr) => nr.file_size,
