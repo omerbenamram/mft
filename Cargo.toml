@@ -22,6 +22,12 @@ members = [
     "crates/dfxml",
 ]
 
+[profile.release]
+# A single codegen unit + thin LTO lets serde's deeply generic serialization code inline across
+# crate boundaries (see PERF.md, H7).
+codegen-units = 1
+lto = "thin"
+
 [dependencies]
 log = { version = "0.4", features = ["release_max_level_debug"] }
 byteorder = "1"
