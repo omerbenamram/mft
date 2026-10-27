@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Expand `FileAttributeFlags` with the latest Windows-defined bits for NTFS parsing.
 
 ### Changed
+- `FileNameAttr::logical_size` now holds the real size and `physical_size` the allocated size (see Fixed). Code that worked around the old swap needs to drop the workaround.
 - Upgrade the crate to the Rust 2024 edition and require Rust 1.90 for builds.
 - Forbid usage of `unsafe` code across the workspace and satisfy new Clippy lints.
 - Keep formatting and lint configuration aligned with Rust 2024 expectations.
