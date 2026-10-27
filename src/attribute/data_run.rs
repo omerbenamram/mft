@@ -37,6 +37,8 @@ fn decode_run_svalue<T: Iterator<Item = u8>>(it: &mut T, bytes: u8) -> Option<i6
 pub fn decode_data_runs(runs: &[u8]) -> Option<Vec<DataRun>> {
     let mut it = runs.iter().copied();
     let mut out: Vec<DataRun> = Vec::new();
+    // Offsets are relative to the LCN of the previous *allocated* run; sparse runs don't move it.
+    let mut base_lcn: i64 = 0;
 
     loop {
         let h = it.next()?;
@@ -53,12 +55,12 @@ pub fn decode_data_runs(runs: &[u8]) -> Option<Vec<DataRun>> {
         let run_type;
         if offset_size != 0 {
             // offset_size of 0 == sparse cluster
-            if let Some(last) = out.last() {
-                let rel_offset = decode_run_svalue(&mut it, offset_size)?;
-                abs_offset = (last.lcn_offset as i64 + rel_offset) as u64;
+            if out.is_empty() {
+                base_lcn = decode_run_value(&mut it, offset_size)? as i64;
             } else {
-                abs_offset = decode_run_value(&mut it, offset_size)?;
+                base_lcn = base_lcn.checked_add(decode_run_svalue(&mut it, offset_size)?)?;
             }
+            abs_offset = base_lcn as u64;
             run_type = RunType::Standard;
         } else {
             abs_offset = 0;
@@ -88,5 +90,24 @@ mod tests {
             Some(-0x20)
         );
         assert_eq!(decode_run_svalue(&mut vec![0xE0].into_iter(), 2), None);
+    }
+
+    #[test]
+    fn test_sparse_run_does_not_reset_lcn_base() {
+        // 1 cluster at 0x1000, 1 sparse cluster, 1 cluster at +0x100.
+        let runs = [
+            0x21, 0x01, 0x00, 0x10, 0x01, 0x01, 0x21, 0x01, 0x00, 0x01, 0x00,
+        ];
+        let decoded = decode_data_runs(&runs).unwrap();
+        let lcns: Vec<(u64, RunType)> =
+            decoded.iter().map(|r| (r.lcn_offset, r.run_type)).collect();
+        assert_eq!(
+            lcns,
+            vec![
+                (0x1000, RunType::Standard),
+                (0, RunType::Sparse),
+                (0x1100, RunType::Standard),
+            ]
+        );
     }
 }
