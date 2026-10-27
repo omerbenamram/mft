@@ -2,6 +2,7 @@ use std::borrow::Cow;
 
 use crate::attribute::raw::data_as_hex;
 use crate::impl_serialize_for_bitflags;
+use crate::utils::{read_u16, read_u32};
 use bitflags::bitflags;
 use byteorder::{ByteOrder, LittleEndian};
 use serde::Serialize;
@@ -82,12 +83,11 @@ impl<'a> EaAttr<'a> {
         let mut entries = Vec::new();
         let mut offset = 0;
         while offset < value.len() {
-            let entry = value.get(offset..)?;
-            let header = entry.get(..ENTRY_HEADER_LEN)?;
-            let next_entry_offset = LittleEndian::read_u32(&header[0..4]) as usize;
-            let flags = EaFlags::from_bits_retain(header[4]);
-            let name_len = header[5] as usize;
-            let value_len = LittleEndian::read_u16(&header[6..8]) as usize;
+            let entry = &value[offset..];
+            let next_entry_offset = read_u32(entry, 0)? as usize;
+            let flags = EaFlags::from_bits_retain(*entry.get(4)?);
+            let name_len = usize::from(*entry.get(5)?);
+            let value_len = usize::from(read_u16(entry, 6)?);
 
             // The name is followed by a NUL, then the value.
             let name = entry.get(ENTRY_HEADER_LEN..ENTRY_HEADER_LEN + name_len)?;
@@ -129,8 +129,8 @@ impl<'a> EaValue<'a> {
 
     /// A catalog hint is a version (1), the name's length, then the name.
     fn catalog_hint(data: &'a [u8]) -> Option<Self> {
-        let version = LittleEndian::read_u16(data.get(0..2)?);
-        let len = LittleEndian::read_u16(data.get(2..4)?) as usize;
+        let version = read_u16(data, 0)?;
+        let len = usize::from(read_u16(data, 2)?);
         if version != 1 {
             return None;
         }
@@ -143,8 +143,8 @@ impl<'a> EaValue<'a> {
 mod tests {
     use super::*;
 
-    fn entry(next: u32, flags: u8, name: &str, value: &[u8]) -> Vec<u8> {
-        let mut out = next.to_le_bytes().to_vec();
+    fn entry(flags: u8, name: &str, value: &[u8]) -> Vec<u8> {
+        let mut out = vec![0; 4];
         out.push(flags);
         out.push(name.len() as u8);
         out.extend_from_slice(&(value.len() as u16).to_le_bytes());
@@ -154,48 +154,56 @@ mod tests {
         out
     }
 
+    /// Chains entries the way `$EA` stores them: each one padded to 4 bytes and pointing at the
+    /// next, including the last.
+    fn link(entries: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for entry in entries {
+            let start = out.len();
+            out.extend(entry);
+            out.resize(out.len().next_multiple_of(4), 0);
+            let len = (out.len() - start) as u32;
+            out[start..start + 4].copy_from_slice(&len.to_le_bytes());
+        }
+        out
+    }
+
     #[test]
     fn parses_wsl_entries_padded_to_four_bytes() {
-        let mut value = Vec::new();
-        for (name, data) in [
-            ("$LXUID", 1000u32.to_le_bytes().to_vec()),
-            ("$LXGID", 1000u32.to_le_bytes().to_vec()),
-            ("$LXMOD", 0o100644u32.to_le_bytes().to_vec()),
-            ("$LXDEV", [8u32.to_le_bytes(), 1u32.to_le_bytes()].concat()),
-        ] {
-            let mut e = entry(0, 0, name, &data);
-            let padded = e.len().next_multiple_of(4);
-            e.resize(padded, 0);
-            e[0..4].copy_from_slice(&(padded as u32).to_le_bytes());
-            value.extend(e);
-        }
+        let value = link(&[
+            entry(0, "$LXUID", &1000u32.to_le_bytes()),
+            entry(0, "$LXGID", &1000u32.to_le_bytes()),
+            entry(0, "$LXMOD", &0o100644u32.to_le_bytes()),
+            entry(
+                0,
+                "$LXDEV",
+                &[8u32.to_le_bytes(), 1u32.to_le_bytes()].concat(),
+            ),
+        ]);
 
-        let values: Vec<_> = EaAttr::from_slice(&value)
-            .unwrap()
+        let attribute = EaAttr::from_slice(&value).unwrap();
+        let values: Vec<_> = attribute
             .entries
-            .into_iter()
-            .map(|e| (e.name.into_owned(), e.value))
+            .iter()
+            .map(|e| (e.name.as_ref(), &e.value))
             .collect();
         assert_eq!(
             values,
             [
-                ("$LXUID".to_string(), EaValue::LxInteger { value: 1000 }),
-                ("$LXGID".to_string(), EaValue::LxInteger { value: 1000 }),
-                ("$LXMOD".to_string(), EaValue::LxInteger { value: 0o100644 }),
-                (
-                    "$LXDEV".to_string(),
-                    EaValue::LxDevice { major: 8, minor: 1 }
-                ),
+                ("$LXUID", &EaValue::LxInteger { value: 1000 }),
+                ("$LXGID", &EaValue::LxInteger { value: 1000 }),
+                ("$LXMOD", &EaValue::LxInteger { value: 0o100644 }),
+                ("$LXDEV", &EaValue::LxDevice { major: 8, minor: 1 }),
             ]
         );
     }
 
     #[test]
     fn keeps_unknown_and_malformed_values_as_bytes() {
-        let mut value = entry(0, 0x80, "$LXUID", &[1, 2]);
-        let first_len = value.len() as u32;
-        value[0..4].copy_from_slice(&first_len.to_le_bytes());
-        value.extend(entry(0, 0, "$CI.CATALOGHINT", &[2, 0, 1, 0, b'x']));
+        let value = link(&[
+            entry(0x80, "$LXUID", &[1, 2]),
+            entry(0, "$CI.CATALOGHINT", &[2, 0, 1, 0, b'x']),
+        ]);
 
         let attribute = EaAttr::from_slice(&value).unwrap();
         assert_eq!(attribute.entries[0].flags, EaFlags::NEED_EA);
@@ -210,7 +218,7 @@ mod tests {
 
     #[test]
     fn rejects_entries_that_run_past_the_value_or_overlap() {
-        let value = entry(0, 0, "$LXUID", &1000u32.to_le_bytes());
+        let value = entry(0, "$LXUID", &1000u32.to_le_bytes());
         assert!(EaAttr::from_slice(&value[..value.len() - 1]).is_none());
 
         // A name length one short leaves the name's last byte where the NUL should be.

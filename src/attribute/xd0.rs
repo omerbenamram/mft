@@ -1,4 +1,4 @@
-use byteorder::{ByteOrder, LittleEndian};
+use crate::utils::{read_u16, read_u32};
 use serde::Serialize;
 
 /// $EA_INFORMATION Attribute: the sizes of the file's extended attributes in `$EA`.
@@ -29,11 +29,10 @@ impl EaInformationAttr {
     /// assert_eq!(attribute.unpacked_ea_size, 124);
     /// ```
     pub fn from_slice(value: &[u8]) -> Option<Self> {
-        let value = value.get(..8)?;
         Some(EaInformationAttr {
-            packed_ea_size: LittleEndian::read_u16(&value[0..2]),
-            need_ea_count: LittleEndian::read_u16(&value[2..4]),
-            unpacked_ea_size: LittleEndian::read_u32(&value[4..8]),
+            packed_ea_size: read_u16(value, 0)?,
+            need_ea_count: read_u16(value, 2)?,
+            unpacked_ea_size: read_u32(value, 4)?,
         })
     }
 }

@@ -61,41 +61,50 @@ impl<'a> MftAttributeContent<'a> {
                     .get(data_offset..end)
                     .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
 
-                match header.type_code {
-                    MftAttributeType::StandardInformation => Ok(MftAttributeContent::AttrX10(
+                // `None` keeps the value raw: a reparse point or extended attribute that doesn't
+                // parse stays in the output instead of erroring.
+                let parsed = match header.type_code {
+                    MftAttributeType::StandardInformation => Some(MftAttributeContent::AttrX10(
                         StandardInfoAttr::from_slice(value)?,
                     )),
-                    MftAttributeType::AttributeList => Ok(MftAttributeContent::AttrX20(
+                    MftAttributeType::AttributeList => Some(MftAttributeContent::AttrX20(
                         AttributeListAttr::from_slice(value)?,
                     )),
-                    MftAttributeType::FileName => Ok(MftAttributeContent::AttrX30(
+                    MftAttributeType::FileName => Some(MftAttributeContent::AttrX30(
                         FileNameAttr::from_slice(value)?,
                     )),
                     MftAttributeType::DATA => {
-                        Ok(MftAttributeContent::AttrX80(DataAttr::from_slice(value)))
+                        Some(MftAttributeContent::AttrX80(DataAttr::from_slice(value)))
                     }
-                    MftAttributeType::ObjectId => Ok(MftAttributeContent::AttrX40(
+                    MftAttributeType::ObjectId => Some(MftAttributeContent::AttrX40(
                         ObjectIdAttr::from_stream(&mut Cursor::new(value), value.len())?,
                     )),
-                    MftAttributeType::VolumeName => Ok(MftAttributeContent::AttrX60(
+                    MftAttributeType::VolumeName => Some(MftAttributeContent::AttrX60(
                         VolumeNameAttr::from_slice(value),
                     )),
-                    MftAttributeType::VolumeInformation => Ok(MftAttributeContent::AttrX70(
+                    MftAttributeType::VolumeInformation => Some(MftAttributeContent::AttrX70(
                         VolumeInformationAttr::from_slice(value)?,
                     )),
-                    // A reparse point or extended attribute value that doesn't parse stays raw
-                    // instead of erroring, so the attribute isn't dropped from output.
-                    MftAttributeType::ReparsePoint => Ok(ReparsePointAttr::from_slice(value)
-                        .map_or_else(|| Self::raw(header, value), MftAttributeContent::AttrXC0)),
-                    MftAttributeType::IndexRoot => Ok(MftAttributeContent::AttrX90(
+                    MftAttributeType::ReparsePoint => {
+                        ReparsePointAttr::from_slice(value).map(MftAttributeContent::AttrXC0)
+                    }
+                    MftAttributeType::IndexRoot => Some(MftAttributeContent::AttrX90(
                         IndexRootAttr::from_slice(value)?,
                     )),
-                    MftAttributeType::EaInformation => Ok(EaInformationAttr::from_slice(value)
-                        .map_or_else(|| Self::raw(header, value), MftAttributeContent::AttrXD0)),
-                    MftAttributeType::EA => Ok(EaAttr::from_slice(value)
-                        .map_or_else(|| Self::raw(header, value), MftAttributeContent::AttrXE0)),
-                    _ => Ok(Self::raw(header, value)),
-                }
+                    MftAttributeType::EaInformation => {
+                        EaInformationAttr::from_slice(value).map(MftAttributeContent::AttrXD0)
+                    }
+                    MftAttributeType::EA => {
+                        EaAttr::from_slice(value).map(MftAttributeContent::AttrXE0)
+                    }
+                    _ => None,
+                };
+                Ok(parsed.unwrap_or_else(|| {
+                    MftAttributeContent::Raw(RawAttribute::from_slice(
+                        header.type_code.clone(),
+                        value,
+                    ))
+                }))
             }
             ResidentialHeader::NonResident(nonresident) => {
                 let datarun_offset = nonresident.datarun_offset as usize;
@@ -119,10 +128,6 @@ impl<'a> MftAttributeContent<'a> {
                 Ok(MftAttributeContent::DataRun(NonResidentAttr { data_runs }))
             }
         }
-    }
-
-    fn raw(header: &MftAttributeHeader<'a>, value: &'a [u8]) -> Self {
-        MftAttributeContent::Raw(RawAttribute::from_slice(header.type_code.clone(), value))
     }
 
     pub fn as_attribute_list(&self) -> Option<&AttributeListAttr<'a>> {

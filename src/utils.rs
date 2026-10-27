@@ -1,3 +1,4 @@
+use byteorder::{ByteOrder, LittleEndian};
 use jiff::Timestamp;
 use serde::Serializer;
 
@@ -50,6 +51,18 @@ pub fn to_hex_string(bytes: &[u8]) -> String {
         s.push(LUT[(b & 0x0F) as usize] as char);
     }
     s
+}
+
+/// Reads a little-endian `u16` at `offset`, or `None` past the end of `buf`.
+pub(crate) fn read_u16(buf: &[u8], offset: usize) -> Option<u16> {
+    buf.get(offset..offset.checked_add(2)?)
+        .map(LittleEndian::read_u16)
+}
+
+/// Reads a little-endian `u32` at `offset`, or `None` past the end of `buf`.
+pub(crate) fn read_u32(buf: &[u8], offset: usize) -> Option<u32> {
+    buf.get(offset..offset.checked_add(4)?)
+        .map(LittleEndian::read_u32)
 }
 
 #[cfg(test)]
