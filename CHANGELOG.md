@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Parse `$VOLUME_NAME` (0x60) and `$VOLUME_INFORMATION` (0x70) into `VolumeNameAttr` and `VolumeInformationAttr` (label, NTFS version, volume flags) instead of raw hex.
 - Expand `FileAttributeFlags` with the latest Windows-defined bits for NTFS parsing.
+- Add `MftAttributeType::PropertySet` (`0xF0`, NT4-era `$PROPERTY_SET`).
 
 ### Changed
 - JSON output of `$VOLUME_NAME` and `$VOLUME_INFORMATION` attributes changes from `{attribute_type, data}` raw hex to the parsed fields; `MftAttributeContent` gains the `AttrX60` and `AttrX70` variants, which breaks exhaustive matches.
@@ -17,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep formatting and lint configuration aligned with Rust 2024 expectations.
 
 ### Fixed
+- `iter_attributes` keeps returning later attributes after one with an unknown type code, and
+  `iter_attributes_matching` skips unrequested attributes without parsing their headers.
 - Correct decoding of sparse non-resident data runs when reading MFT entries.
 - Resolve the LCN of a data run that follows a sparse run relative to the last allocated run (#152).
 - Serialize flags as `A | B` again instead of bitflags 2's `TypeName(A | B)` debug format.
