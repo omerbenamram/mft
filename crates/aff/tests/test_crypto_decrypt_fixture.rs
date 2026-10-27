@@ -1,14 +1,16 @@
 use aff::AffOpenOptions;
 use forensic_image::ReadAt;
 
+mod common;
+
 #[test]
 fn test_decrypt_afflib_encrypted_fixture_matches_raw() {
     // AFFLIBv3 fixture: encrypted.aff is encrypted with passphrase "password".
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-        "../../external/refs/repos/sshock__AFFLIBv3@f6e51a8367cff73ea24c0adf09e533483c80ecd4/tests",
-    );
-    let aff_path = root.join("encrypted.aff");
-    let raw_path = root.join("encrypted.raw");
+    let aff_path = common::afflib_fixture_path("encrypted.aff");
+    let raw_path = common::afflib_fixture_path("encrypted.raw");
+    if !common::ensure_fixture(&aff_path) || !common::ensure_fixture(&raw_path) {
+        return;
+    }
 
     let mut opts = AffOpenOptions::new();
     opts.passphrase = Some("password".to_string());

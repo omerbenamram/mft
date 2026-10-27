@@ -49,7 +49,7 @@ impl Volume {
             .filter_map(std::result::Result::ok)
             .filter(|a| a.header.name.is_empty())
         {
-            if let Some(dr) = attr.data.into_data_runs() {
+            if let Some(dr) = attr.data.as_data_runs().cloned() {
                 volume.mft_data_runs = dr.data_runs;
                 break;
             }

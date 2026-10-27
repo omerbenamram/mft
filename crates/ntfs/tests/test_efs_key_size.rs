@@ -37,7 +37,7 @@ fn test_efs_rsa_key_size_matches_ddf_ciphertext_size() {
             entry.data[start..end].to_vec()
         }
         ResidentialHeader::NonResident(nr) => {
-            let runs = attr.data.clone().into_data_runs().unwrap().data_runs;
+            let runs = attr.data.as_data_runs().unwrap().data_runs.clone();
             let mut buf = vec![0u8; nr.file_size as usize];
             ntfs::ntfs::data_stream::read_from_data_runs(fs.volume(), &runs, 0, &mut buf).unwrap();
             buf
@@ -48,7 +48,7 @@ fn test_efs_rsa_key_size_matches_ddf_ciphertext_size() {
     let first = meta.ddf.iter().find(|e| e.flags == 0).unwrap();
 
     assert_eq!(
-        rsa.size() as u32,
+        rsa.size(),
         first.encrypted_fek_length,
         "RSA modulus size should match Encrypted FEK length"
     );

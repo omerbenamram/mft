@@ -67,7 +67,9 @@ impl FileNameKey {
         debug_assert_eq!(name_bytes.len(), name_bytes_len);
 
         let name_utf16 = name_bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|two| u16::from_le_bytes([two[0], two[1]]))
             .collect::<Vec<_>>();
 

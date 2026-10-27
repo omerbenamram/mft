@@ -82,7 +82,7 @@ fn run() -> Result<()> {
     // --- Unix / FUSE ---
     #[cfg(all(feature = "fuse", target_os = "linux"))]
     {
-        return ntfs::tools::mount::fuse::mount(vfs, &cli.mountpoint).map_err(Error::Io);
+        ntfs::tools::mount::fuse::mount(vfs, &cli.mountpoint).map_err(Error::Io)
     }
 
     // --- Windows / Dokan ---

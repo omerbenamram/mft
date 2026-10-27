@@ -13,13 +13,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upgrade the crate to the Rust 2024 edition and require Rust 1.90 for builds.
 - Forbid usage of `unsafe` code across the workspace and satisfy new Clippy lints.
 - Keep formatting and lint configuration aligned with Rust 2024 expectations.
+- Update all workspace dependencies to their latest releases, including `rand` 0.10, `lru` 0.19,
+  `itertools` 0.15, `num-derive` 0.5, `criterion` 0.8, `quick-xml` 0.42, RustCrypto `md-5`/`sha1` 0.11
+  and `aes`/`des` 0.9, and `fuser` 0.18 (the FUSE frontend now uses fuser's `&self` callbacks).
 
 ### Fixed
 - Correct decoding of sparse non-resident data runs when reading MFT entries.
 - Address the `clippy::collapsible_if` warning emitted for the `mft_dump` CLI.
+- Restore compilation of the `ntfs` crate, its tools and the NTFS explorer GUI against the borrowed
+  UTF-16 attribute API.
 
 ### CI
-- Refresh CI workflows, add Apple Silicon release artifacts, and scope push triggers to `main` and `release/**`.
+- Refresh CI workflows, add Apple Silicon release artifacts, and scope push triggers to `master` and `release/**`.
+- Lint and test every workspace crate (previously only the root `mft` crate), build the GUI, and check
+  the 1.90 MSRV.
 
 ## [0.6.1] - 2023-02-18
 

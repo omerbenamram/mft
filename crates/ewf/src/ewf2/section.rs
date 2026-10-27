@@ -340,7 +340,7 @@ mod tests {
         bad[0] ^= 0x01;
 
         let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");
-        tmp.write_all(&vec![0u8; EWF2_FILE_HEADER_SIZE])
+        tmp.write_all(&[0u8; EWF2_FILE_HEADER_SIZE])
             .expect("write header");
         let descriptor_offset = EWF2_FILE_HEADER_SIZE as u64;
         tmp.write_all(&bad).expect("write descriptor");

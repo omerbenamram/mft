@@ -76,10 +76,7 @@ mod tests {
         while written < media.len() {
             let n = w.write(&media[written..]).map_err(ewf_error_to_io)?;
             if n == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "writer made no progress",
-                ));
+                return Err(io::Error::other("writer made no progress"));
             }
             written += n;
         }
