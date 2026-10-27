@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Correct decoding of sparse non-resident data runs when reading MFT entries.
+- Resolve the LCN of a data run that follows a sparse run relative to the last allocated run (#152).
+- Serialize flags as `A | B` again instead of bitflags 2's `TypeName(A | B)` debug format.
+- Break cycles in parent references instead of overflowing the stack while resolving paths.
+- Recover the entry size from later records when the first entry is zeroed, instead of dividing by zero.
+- `mft_dump -e` no longer writes empty files for zero-length resident streams (#23).
+
+### Added
+- JSON output includes `data_size` for resident attributes (#125).
 - Address the `clippy::collapsible_if` warning emitted for the `mft_dump` CLI.
 
 ### CI

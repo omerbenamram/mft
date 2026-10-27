@@ -33,7 +33,8 @@ fn test_runs() {
             },
             DataRun {
                 lcn_length: 0x10,
-                lcn_offset: 0x30,
+                // Relative to the last allocated run (0x20), not to the sparse run.
+                lcn_offset: 0x50,
                 run_type: RunType::Standard
             },
         ])

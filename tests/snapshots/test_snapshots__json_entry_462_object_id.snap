@@ -16,7 +16,7 @@ expression: json
     "sequence": 1,
     "hard_link_count": 1,
     "first_attribute_record_offset": 56,
-    "flags": "EntryFlags(ALLOCATED)",
+    "flags": "ALLOCATED",
     "used_entry_size": 392,
     "total_entry_size": 1024,
     "base_reference": {
@@ -33,12 +33,13 @@ expression: json
         "record_length": 96,
         "form_code": 0,
         "residential_header": {
+          "data_size": 72,
           "index_flag": 0,
           "padding": 0
         },
         "name_size": 0,
         "name_offset": null,
-        "data_flags": "AttributeDataFlags(0x0)",
+        "data_flags": "(empty)",
         "instance": 0,
         "name": "",
         "start_offset": 56
@@ -48,7 +49,7 @@ expression: json
         "modified": "2006-02-28T12:00:00Z",
         "mft_modified": "2007-06-30T22:34:46.979710Z",
         "accessed": "2007-06-30T22:43:04.194670Z",
-        "file_flags": "FileAttributeFlags(FILE_ATTRIBUTE_ARCHIVE)",
+        "file_flags": "FILE_ATTRIBUTE_ARCHIVE",
         "max_version": 0,
         "version": 0,
         "class_id": 0,
@@ -64,12 +65,13 @@ expression: json
         "record_length": 120,
         "form_code": 0,
         "residential_header": {
+          "data_size": 90,
           "index_flag": 1,
           "padding": 0
         },
         "name_size": 0,
         "name_offset": null,
-        "data_flags": "AttributeDataFlags(0x0)",
+        "data_flags": "(empty)",
         "instance": 4,
         "name": "",
         "start_offset": 152
@@ -85,7 +87,7 @@ expression: json
         "accessed": "2007-06-30T12:51:19.701865Z",
         "logical_size": 38912,
         "physical_size": 38302,
-        "flags": "FileAttributeFlags(FILE_ATTRIBUTE_ARCHIVE)",
+        "flags": "FILE_ATTRIBUTE_ARCHIVE",
         "reparse_value": 0,
         "name_length": 12,
         "namespace": "Win32AndDos",
@@ -98,12 +100,13 @@ expression: json
         "record_length": 40,
         "form_code": 0,
         "residential_header": {
+          "data_size": 16,
           "index_flag": 0,
           "padding": 0
         },
         "name_size": 0,
         "name_offset": null,
-        "data_flags": "AttributeDataFlags(0x0)",
+        "data_flags": "(empty)",
         "instance": 5,
         "name": "",
         "start_offset": 272
@@ -131,7 +134,7 @@ expression: json
         },
         "name_size": 0,
         "name_offset": null,
-        "data_flags": "AttributeDataFlags(0x0)",
+        "data_flags": "(empty)",
         "instance": 3,
         "name": "",
         "start_offset": 312

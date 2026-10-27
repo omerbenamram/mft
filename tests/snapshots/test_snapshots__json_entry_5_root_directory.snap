@@ -16,7 +16,7 @@ expression: json
     "sequence": 5,
     "hard_link_count": 1,
     "first_attribute_record_offset": 56,
-    "flags": "EntryFlags(ALLOCATED | INDEX_PRESENT)",
+    "flags": "ALLOCATED | INDEX_PRESENT",
     "used_entry_size": 512,
     "total_entry_size": 1024,
     "base_reference": {
@@ -33,12 +33,13 @@ expression: json
         "record_length": 72,
         "form_code": 0,
         "residential_header": {
+          "data_size": 48,
           "index_flag": 0,
           "padding": 0
         },
         "name_size": 0,
         "name_offset": null,
-        "data_flags": "AttributeDataFlags(0x0)",
+        "data_flags": "(empty)",
         "instance": 0,
         "name": "",
         "start_offset": 56
@@ -48,7 +49,7 @@ expression: json
         "modified": "2009-01-19T04:17:44.726832Z",
         "mft_modified": "2009-01-19T04:17:44.726832Z",
         "accessed": "2009-01-19T16:53:21.187460Z",
-        "file_flags": "FileAttributeFlags(FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)",
+        "file_flags": "FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM",
         "max_version": 0,
         "version": 0,
         "class_id": 0,
@@ -64,12 +65,13 @@ expression: json
         "record_length": 96,
         "form_code": 0,
         "residential_header": {
+          "data_size": 68,
           "index_flag": 1,
           "padding": 0
         },
         "name_size": 0,
         "name_offset": null,
-        "data_flags": "AttributeDataFlags(0x0)",
+        "data_flags": "(empty)",
         "instance": 1,
         "name": "",
         "start_offset": 128
@@ -85,7 +87,7 @@ expression: json
         "accessed": "2007-06-30T12:50:52.252395Z",
         "logical_size": 0,
         "physical_size": 0,
-        "flags": "FileAttributeFlags(FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_IS_DIRECTORY)",
+        "flags": "FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_IS_DIRECTORY",
         "reparse_value": 0,
         "name_length": 1,
         "namespace": "Win32AndDos",
@@ -108,7 +110,7 @@ expression: json
         },
         "name_size": 0,
         "name_offset": null,
-        "data_flags": "AttributeDataFlags(0x0)",
+        "data_flags": "(empty)",
         "instance": 2,
         "name": "",
         "start_offset": 224
@@ -129,12 +131,13 @@ expression: json
         "record_length": 88,
         "form_code": 0,
         "residential_header": {
+          "data_size": 56,
           "index_flag": 0,
           "padding": 0
         },
         "name_size": 4,
         "name_offset": 24,
-        "data_flags": "AttributeDataFlags(0x0)",
+        "data_flags": "(empty)",
         "instance": 6,
         "name": "$I30",
         "start_offset": 296
@@ -147,7 +150,7 @@ expression: json
         "relative_offset_to_index_node": 16,
         "index_node_length": 40,
         "index_node_allocation_length": 40,
-        "index_root_flags": "IndexRootFlags(LARGE_INDEX)",
+        "index_root_flags": "LARGE_INDEX",
         "index_entries": {
           "index_entries": []
         }
@@ -169,7 +172,7 @@ expression: json
         },
         "name_size": 4,
         "name_offset": 64,
-        "data_flags": "AttributeDataFlags(0x0)",
+        "data_flags": "(empty)",
         "instance": 8,
         "name": "$I30",
         "start_offset": 384
@@ -190,12 +193,13 @@ expression: json
         "record_length": 40,
         "form_code": 0,
         "residential_header": {
+          "data_size": 8,
           "index_flag": 0,
           "padding": 0
         },
         "name_size": 4,
         "name_offset": 24,
-        "data_flags": "AttributeDataFlags(0x0)",
+        "data_flags": "(empty)",
         "instance": 7,
         "name": "$I30",
         "start_offset": 464
