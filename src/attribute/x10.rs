@@ -11,13 +11,13 @@ use std::io::{Cursor, ErrorKind};
 
 #[derive(Serialize, Debug, Clone)]
 pub struct StandardInfoAttr {
-    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_timestamp")]
     pub created: Timestamp,
-    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_timestamp")]
     pub modified: Timestamp,
-    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_timestamp")]
     pub mft_modified: Timestamp,
-    #[serde(serialize_with = "crate::utils::serialize_timestamp_chrono_compat")]
+    #[serde(serialize_with = "crate::utils::serialize_timestamp")]
     pub accessed: Timestamp,
     /// DOS File Permissions
     pub file_flags: FileAttributeFlags,
