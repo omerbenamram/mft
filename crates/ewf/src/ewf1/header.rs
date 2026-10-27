@@ -173,8 +173,10 @@ impl<'a> Ewf1Header2Utf16Le<'a> {
             ));
         }
         let u16s: Vec<u16> = bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes(c.try_into().expect("len=2")))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .collect();
         let s = String::from_utf16_lossy(&u16s);
 
@@ -228,12 +230,12 @@ impl<'a> EwfxXHeaderXml<'a> {
         reader.config_mut().trim_text(true);
 
         let mut buf: Vec<u8> = Vec::new();
-        let mut current_tag: Option<Vec<u8>> = None;
+        let mut current_tag: Option<String> = None;
 
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) => {
-                    current_tag = Some(e.name().as_ref().to_vec());
+                    current_tag = Some(e.name().as_ref().to_owned());
                 }
                 Ok(Event::End(_)) => {
                     current_tag = None;
@@ -244,26 +246,21 @@ impl<'a> EwfxXHeaderXml<'a> {
                         continue;
                     };
 
-                    let decoded = e
-                        .decode()
-                        .map_err(|e| Error::Invalid(format!("invalid xheader XML: {e}")))?;
-                    let text = quick_xml::escape::unescape(decoded.as_ref())
+                    let text = quick_xml::escape::unescape(&e.xml10_content())
                         .map_err(|e| Error::Invalid(format!("invalid xheader XML: {e}")))?
                         .into_owned();
 
                     match tag {
-                        b"case_number" => out.case_number = Some(text),
-                        b"evidence_number" => out.evidence_number = Some(text),
-                        b"description" => out.description = Some(text),
-                        b"examiner_name" => out.examiner_name = Some(text),
-                        b"notes" => out.notes = Some(text),
-                        b"acquiry_date" => out.acquisition_datetime = Some(text),
-                        b"system_date" => out.system_datetime = Some(text),
-                        b"acquiry_operating_system" => out.acquisition_os = Some(text),
-                        b"acquiry_software" => out.acquisition_software = Some(text),
-                        b"acquiry_software_version" => {
-                            out.acquisition_software_version = Some(text)
-                        }
+                        "case_number" => out.case_number = Some(text),
+                        "evidence_number" => out.evidence_number = Some(text),
+                        "description" => out.description = Some(text),
+                        "examiner_name" => out.examiner_name = Some(text),
+                        "notes" => out.notes = Some(text),
+                        "acquiry_date" => out.acquisition_datetime = Some(text),
+                        "system_date" => out.system_datetime = Some(text),
+                        "acquiry_operating_system" => out.acquisition_os = Some(text),
+                        "acquiry_software" => out.acquisition_software = Some(text),
+                        "acquiry_software_version" => out.acquisition_software_version = Some(text),
                         _ => {}
                     }
                 }

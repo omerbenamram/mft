@@ -35,7 +35,7 @@ use crate::util::{adler32_rfc1950, read_exact_at, read_file_range};
 use crate::{Error, Result};
 use flate2::{Compression, write::ZlibEncoder};
 use md5::{Digest as _, Md5};
-use rand::RngCore as _;
+use rand::Rng as _;
 use sha1::Sha1;
 use std::fs::File;
 use std::io::{self, Read as _, Seek, SeekFrom, Write as _};
@@ -1577,8 +1577,8 @@ fn parse_table_section_v1(
     let mut entries_data = vec![0u8; entries_bytes];
     read_exact_at(file, entries_offset, &mut entries_data)?;
     let mut entries = Vec::with_capacity(entries_len);
-    for c in entries_data.chunks_exact(4) {
-        entries.push(u32::from_le_bytes(c.try_into().expect("len=4")));
+    for c in entries_data.as_chunks::<4>().0 {
+        entries.push(u32::from_le_bytes(*c));
     }
     Ok(TableV1 {
         base_offset,

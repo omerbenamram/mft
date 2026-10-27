@@ -31,12 +31,12 @@ serde_json = "1"
 csv = "1"
 thiserror = "2"
 num-traits = "0.2"
-num-derive = "0.4"
+num-derive = "0.5"
 winstructs = "0.3.2"
-lru = "0.16.1"
-itertools = "0.14"
-rand = "0.9"
-jiff = { version = "0.2.16", default-features = false, features = ["std", "alloc", "serde", "perf-inline"] }
+lru = "0.19.0"
+itertools = "0.15"
+rand = "0.10"
+jiff = { version = "0.2.38", default-features = false, features = ["std", "alloc", "serde", "perf-inline"] }
 
 # `mft_dump` dependencies
 clap = { version = "4", optional = true }
@@ -44,25 +44,25 @@ anyhow = { version = "1.0", optional = true }
 simplelog = { version = "0.12", optional = true }
 dialoguer = { version = "0.12", optional = true }
 indoc = { version = "2.0", optional = true }
-sonic-rs = { version = "0.5.6", optional = true }
-utf16-simd = "0.1.0"
+sonic-rs = { version = "0.5.10", optional = true }
+utf16-simd = "0.1.1"
 
 [features]
 default = ["mft_dump"]
 mft_dump = ["anyhow", "simplelog", "dialoguer", "indoc", "clap", "sonic-rs", "log/release_max_level_debug"]
 
 [dev-dependencies]
-criterion = "0.7"
+criterion = "0.8"
 doc-comment = "0.3"
-assert_cmd = "2.1.1"
+assert_cmd = "2.2.2"
 predicates = "3.1"
 env_logger = "0.11"
-tempfile = "3.23"
-insta = "1.42"
+tempfile = "3.27"
+insta = "1.49"
 
 # rexpect relies on unix process semantics, but it's only used for process interaction tests.
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]
-rexpect = "0.6"
+rexpect = "0.7"
 
 
 [[bin]]
