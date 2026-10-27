@@ -7,10 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Parse `$VOLUME_NAME` (0x60) and `$VOLUME_INFORMATION` (0x70) into `VolumeNameAttr` and `VolumeInformationAttr` (label, NTFS version, volume flags) instead of raw hex.
 - `mft_dump -o bodyfile` writes Sleuth Kit bodyfile lines in the `fls -m` layout, for timelining with `mactime`: one line per `$DATA` stream and `$INDEX_ROOT` with the `$STANDARD_INFORMATION` times, and a `($FILE_NAME)` line with the `$FILE_NAME` times.
 - Expand `FileAttributeFlags` with the latest Windows-defined bits for NTFS parsing.
 
 ### Changed
+- JSON output of `$VOLUME_NAME` and `$VOLUME_INFORMATION` attributes changes from `{attribute_type, data}` raw hex to the parsed fields; `MftAttributeContent` gains the `AttrX60` and `AttrX70` variants, which breaks exhaustive matches.
 - Upgrade the crate to the Rust 2024 edition and require Rust 1.90 for builds.
 - Forbid usage of `unsafe` code across the workspace and satisfy new Clippy lints.
 - Keep formatting and lint configuration aligned with Rust 2024 expectations.
