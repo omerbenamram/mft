@@ -83,6 +83,7 @@ impl FromStr for Ranges {
 /// A JSON output record: the entry plus its full path, which only the parser can resolve.
 #[derive(Serialize)]
 struct JsonEntry<'a> {
+    #[serde(serialize_with = "mft::serialize_option_windows_path")]
     full_path: Option<PathBuf>,
     #[serde(flatten)]
     entry: &'a MftEntry,
@@ -113,7 +114,7 @@ impl MftDump {
 
         let output: Option<Box<dyn Write>> = if let Some(path) = output_target {
             match Self::create_output_file(path, !matches.get_flag("no-confirm-overwrite")) {
-                Ok(f) => Some(Box::new(BufWriter::new(f))),
+                Ok(f) => Some(Box::new(BufWriter::with_capacity(1 << 16, f))),
                 Err(e) => {
                     return Err(anyhow!(
                         "An error occurred while creating output file at `{path}` - `{e}`"
@@ -121,7 +122,7 @@ impl MftDump {
                 }
             }
         } else {
-            Some(Box::new(BufWriter::new(io::stdout())))
+            Some(Box::new(BufWriter::with_capacity(1 << 16, io::stdout())))
         };
 
         let data_streams_output = if let Some(path) = data_streams_target {
@@ -379,7 +380,7 @@ impl MftDump {
 
         self.json_buf.clear();
         if self.output_format == OutputFormat::JSON {
-            serde_json::to_writer_pretty(&mut self.json_buf, &json_entry)?;
+            sonic_json::to_writer_pretty(&mut self.json_buf, &json_entry)?;
         } else {
             // JSONL is the performance-critical mode; use a faster serializer.
             sonic_json::to_writer(&mut self.json_buf, &json_entry)?;

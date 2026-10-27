@@ -1042,11 +1042,11 @@ fn decode_utf16_with_bom(bytes: &[u8]) -> Result<String> {
     };
 
     let mut u16s = Vec::with_capacity((bytes.len() - start) / 2);
-    for chunk in bytes[start..].chunks_exact(2) {
+    for chunk in bytes[start..].as_chunks::<2>().0 {
         let v = if le {
-            u16::from_le_bytes([chunk[0], chunk[1]])
+            u16::from_le_bytes(*chunk)
         } else {
-            u16::from_be_bytes([chunk[0], chunk[1]])
+            u16::from_be_bytes(*chunk)
         };
         u16s.push(v);
     }
@@ -1190,7 +1190,7 @@ fn parse_ewf2_sector_table_section(
     }
 
     let mut entries: Vec<Ewf2TableEntry> = Vec::with_capacity(number_of_entries as usize);
-    for chunk in entries_bytes.chunks_exact(EWF2_TABLE_ENTRY_SIZE) {
+    for chunk in entries_bytes.as_chunks::<EWF2_TABLE_ENTRY_SIZE>().0 {
         let offset_raw: [u8; 8] = chunk[0..8].try_into().expect("len=8");
         let size = u32::from_le_bytes(chunk[8..12].try_into().expect("len=4"));
         let flags_raw = u32::from_le_bytes(chunk[12..16].try_into().expect("len=4"));
@@ -1926,8 +1926,8 @@ fn parse_table_section_v1(
     }
 
     let mut out = Vec::with_capacity(entries_len);
-    for chunk in entries_data.chunks_exact(4) {
-        out.push(u32::from_le_bytes(chunk.try_into().expect("len=4")));
+    for chunk in entries_data.as_chunks::<4>().0 {
+        out.push(u32::from_le_bytes(*chunk));
     }
 
     Ok(TableV1 {
@@ -2716,8 +2716,8 @@ fn decode_utf16le_no_bom_lossy(bytes: &[u8]) -> Result<String> {
         return Err(Error::Invalid("UTF-16LE byte length is odd".to_string()));
     }
     let mut units: Vec<u16> = Vec::with_capacity(bytes.len() / 2);
-    for chunk in bytes.chunks_exact(2) {
-        units.push(u16::from_le_bytes([chunk[0], chunk[1]]));
+    for chunk in bytes.as_chunks::<2>().0 {
+        units.push(u16::from_le_bytes(*chunk));
     }
     Ok(String::from_utf16_lossy(&units))
 }

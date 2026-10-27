@@ -1234,7 +1234,7 @@ fn should_hide_dos_alias(entry: &mft::MftEntry, parent_dir_id: u64, dir_entry_na
         .iter_attributes_matching(Some(vec![MftAttributeType::FileName]))
         .filter_map(std::result::Result::ok)
     {
-        let Some(fname) = attr.data.as_file_name().cloned() else {
+        let Some(fname) = attr.data.as_file_name() else {
             continue;
         };
         if fname.parent.entry != parent_dir_id {
@@ -1262,7 +1262,7 @@ fn is_entry_efs_encrypted(entry: &mft::MftEntry) -> bool {
         ]))
         .filter_map(std::result::Result::ok)
     {
-        if let Some(si) = attr.data.as_standard_info().cloned()
+        if let Some(si) = attr.data.as_standard_info()
             && si
                 .file_flags
                 .contains(mft::attribute::FileAttributeFlags::FILE_ATTRIBUTE_ENCRYPTED)

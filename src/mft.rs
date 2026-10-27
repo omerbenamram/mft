@@ -54,7 +54,7 @@ impl MftParser<BufReader<File>> {
         let mft_fh = File::open(f).map_err(|e| Error::failed_to_open_file(f, e))?;
         let size = fs::metadata(f)?.len();
 
-        Self::from_read_seek(BufReader::with_capacity(4096, mft_fh), Some(size))
+        Self::from_read_seek(BufReader::with_capacity(32 * 1024, mft_fh), Some(size))
     }
 }
 
@@ -611,6 +611,34 @@ mod tests {
         }
 
         assert_eq!(paths.len(), 988);
+    }
+
+    #[test]
+    fn test_get_full_path_independent_of_resolution_order() {
+        // Directory paths are cached as they are resolved, so make sure the cache never changes
+        // the result: resolving in MFT order and in reverse order must agree.
+        let sample = mft_sample();
+        let mut forward_parser = MftParser::from_path(&sample).unwrap();
+        let mut reverse_parser = MftParser::from_path(&sample).unwrap();
+
+        let entries: Vec<MftEntry> = forward_parser
+            .iter_entries()
+            .filter_map(Result::ok)
+            .collect();
+
+        let forward: Vec<_> = entries
+            .iter()
+            .map(|e| forward_parser.get_full_path_for_entry(e).unwrap())
+            .collect();
+        let mut reverse: Vec<_> = entries
+            .iter()
+            .rev()
+            .map(|e| reverse_parser.get_full_path_for_entry(e).unwrap())
+            .collect();
+        reverse.reverse();
+
+        assert_eq!(forward.len(), entries.len());
+        assert_eq!(forward, reverse);
     }
 
     #[test]

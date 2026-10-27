@@ -32,7 +32,9 @@ impl UpcaseTable {
         }
 
         let map = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|two| u16::from_le_bytes([two[0], two[1]]))
             .collect::<Vec<_>>();
 

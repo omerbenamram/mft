@@ -10,17 +10,13 @@
 //! - append-only records: (chunk_index, data_len, flags, data_bytes)
 //! - the last record for a chunk wins; the in-memory index is rebuilt by scanning the file
 
+use crate::util::read_exact_at;
 use crate::{Error, Result};
 use md5::{Digest as _, Md5};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-
-#[cfg(unix)]
-use std::os::unix::fs::FileExt as _;
-#[cfg(windows)]
-use std::os::windows::fs::FileExt as _;
 
 const DELTA_MAGIC: [u8; 8] = *b"EWFDELTA";
 const DELTA_VERSION: u32 = 1;
@@ -399,18 +395,6 @@ fn scan_delta_records(file: &File) -> Result<(HashMap<u64, RecordLoc>, u64)> {
     }
 
     Ok((index, off))
-}
-
-fn read_exact_at(file: &File, offset: u64, buf: &mut [u8]) -> io::Result<()> {
-    let mut done = 0usize;
-    while done < buf.len() {
-        let n = file.read_at(&mut buf[done..], offset + done as u64)?;
-        if n == 0 {
-            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
-        }
-        done += n;
-    }
-    Ok(())
 }
 
 fn div_ceil_u64(n: u64, d: u64) -> u64 {
