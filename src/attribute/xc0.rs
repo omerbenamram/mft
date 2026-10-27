@@ -1,8 +1,9 @@
-use crate::Utf16LeStr;
-use crate::err::{Error, Result};
-use crate::utils;
+use std::borrow::Cow;
 
-use serde::{Serialize, ser};
+use crate::Utf16LeStr;
+use crate::attribute::raw::data_as_hex;
+use byteorder::{ByteOrder, LittleEndian};
+use serde::Serialize;
 use winstructs::guid::Guid;
 
 /// $REPARSE_POINT Attribute.
@@ -43,7 +44,7 @@ pub enum ReparseData<'a> {
         target_path: Utf16LeStr<'a>,
     },
     /// `IO_REPARSE_TAG_LX_SYMLINK`: a symbolic link created from WSL.
-    LxSymlink { target: String },
+    LxSymlink { target: Cow<'a, str> },
     /// Any other tag, or data that doesn't match its tag's layout.
     Other {
         #[serde(serialize_with = "data_as_hex")]
@@ -64,7 +65,9 @@ const SYMLINK_FLAG_RELATIVE: u32 = 0x1;
 
 impl<'a> ReparsePointAttr<'a> {
     /// Parses a reparse point value: a tag, the data length, 2 reserved bytes, a GUID for
-    /// third-party tags, then the tag-specific data.
+    /// third-party tags, then the tag-specific data. Returns `None` when the value is too short
+    /// for that header; data that doesn't match the tag's layout is kept as
+    /// [`ReparseData::Other`].
     ///
     /// # Example
     ///
@@ -88,19 +91,12 @@ impl<'a> ReparsePointAttr<'a> {
     ///     other => panic!("unexpected {other:?}"),
     /// }
     /// ```
-    pub fn from_slice(value: &'a [u8]) -> Result<ReparsePointAttr<'a>> {
-        let too_short = || Error::Any {
-            detail: format!("$REPARSE_POINT is {} bytes, too short", value.len()),
-        };
-
-        let header = value.get(..8).ok_or_else(too_short)?;
-        let tag = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
-        let data_length = usize::from(u16::from_le_bytes([header[4], header[5]]));
+    pub fn from_slice(value: &'a [u8]) -> Option<ReparsePointAttr<'a>> {
+        let tag = read_u32(value, 0)?;
+        let data_length = usize::from(read_u16(value, 4)?);
 
         let (guid, data_offset) = if tag & TAG_MICROSOFT_BIT == 0 {
-            let guid_bytes = value.get(8..24).ok_or_else(too_short)?;
-            let guid = Guid::from_buffer(guid_bytes).map_err(Error::failed_to_read_guid)?;
-            (Some(guid), 24)
+            (Some(Guid::from_buffer(value.get(8..24)?).ok()?), 24)
         } else {
             (None, 8)
         };
@@ -111,7 +107,7 @@ impl<'a> ReparsePointAttr<'a> {
             .map(|rest| &rest[..data_length.min(rest.len())])
             .unwrap_or_default();
 
-        Ok(ReparsePointAttr {
+        Some(ReparsePointAttr {
             tag,
             tag_name: tag_name(tag),
             guid,
@@ -126,7 +122,7 @@ impl<'a> ReparseData<'a> {
         match tag {
             TAG_SYMLINK => {
                 let (substitute_name, print_name) = name_pair(data, 12)?;
-                let flags = u32::from_le_bytes(data.get(8..12)?.try_into().ok()?);
+                let flags = read_u32(data, 8)?;
                 Some(ReparseData::SymbolicLink {
                     substitute_name,
                     print_name,
@@ -144,9 +140,9 @@ impl<'a> ReparseData<'a> {
                 // A version (3), then NUL-terminated UTF-16 strings.
                 let mut rest = data.get(4..)?;
                 let mut next = || {
-                    let end = rest.as_chunks::<2>().0.iter().position(|c| *c == [0, 0])? * 2;
-                    let s = Utf16LeStr::from_utf16le_bytes(&rest[..end]);
-                    rest = &rest[end + 2..];
+                    let s = Utf16LeStr::from_utf16le_bytes_until_nul(rest);
+                    // `None` when the string has no NUL terminator.
+                    rest = rest.get(s.as_utf16le_bytes().len() + 2..)?;
                     Some(s)
                 };
                 Some(ReparseData::AppExecLink {
@@ -159,7 +155,7 @@ impl<'a> ReparseData<'a> {
                 // A version (2), then the target as UTF-8.
                 let target = data.get(4..)?;
                 Some(ReparseData::LxSymlink {
-                    target: String::from_utf8_lossy(target).into_owned(),
+                    target: String::from_utf8_lossy(target),
                 })
             }
             _ => None,
@@ -170,11 +166,7 @@ impl<'a> ReparseData<'a> {
 /// Reads the substitute and print names of a symlink or mount point. `path_buffer` is the
 /// offset of the path buffer within `data`; the name offsets are relative to it.
 fn name_pair(data: &[u8], path_buffer: usize) -> Option<(Utf16LeStr<'_>, Utf16LeStr<'_>)> {
-    let field = |i: usize| -> Option<usize> {
-        Some(usize::from(u16::from_le_bytes(
-            data.get(i..i + 2)?.try_into().ok()?,
-        )))
-    };
+    let field = |i: usize| read_u16(data, i).map(usize::from);
     let name = |offset: usize, length: usize| -> Option<Utf16LeStr<'_>> {
         let start = path_buffer.checked_add(offset)?;
         Some(Utf16LeStr::from_utf16le_bytes(
@@ -185,22 +177,38 @@ fn name_pair(data: &[u8], path_buffer: usize) -> Option<(Utf16LeStr<'_>, Utf16Le
     Some((name(field(0)?, field(2)?)?, name(field(4)?, field(6)?)?))
 }
 
+fn read_u16(buf: &[u8], offset: usize) -> Option<u16> {
+    buf.get(offset..offset + 2).map(LittleEndian::read_u16)
+}
+
+fn read_u32(buf: &[u8], offset: usize) -> Option<u32> {
+    buf.get(offset..offset + 4).map(LittleEndian::read_u32)
+}
+
 /// Names for the documented reparse tags.
 /// <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/c8e77b37-3909-4fe6-a4ea-2b9d423b1ee4>
 pub fn tag_name(tag: u32) -> Option<&'static str> {
     Some(match tag {
+        0x0000_0000 => "RESERVED_ZERO",
+        0x0000_0001 => "RESERVED_ONE",
+        0x0000_0002 => "RESERVED_TWO",
         TAG_MOUNT_POINT => "MOUNT_POINT",
         0xC000_0004 => "HSM",
+        0x8000_0005 => "DRIVE_EXTENDER",
         0x8000_0006 => "HSM2",
         0x8000_0007 => "SIS",
         0x8000_0008 => "WIM",
         0x8000_0009 => "CSV",
         0x8000_000A => "DFS",
+        0x8000_000B => "FILTER_MANAGER",
         TAG_SYMLINK => "SYMLINK",
+        0xA000_0010 => "IIS_CACHE",
         0x8000_0012 => "DFSR",
         0x8000_0013 => "DEDUP",
+        0xC000_0014 => "APPXSTRM",
         0x8000_0014 => "NFS",
         0x8000_0015 => "FILE_PLACEHOLDER",
+        0x8000_0016 => "DFM",
         0x8000_0017 => "WOF",
         0x8000_0018 => "WCI",
         0x9000_1018 => "WCI_1",
@@ -223,13 +231,6 @@ pub fn tag_name(tag: u32) -> Option<&'static str> {
         0xA000_1027 => "WCI_LINK_1",
         _ => return None,
     })
-}
-
-fn data_as_hex<S>(x: &[u8], s: S) -> std::result::Result<S::Ok, S::Error>
-where
-    S: ser::Serializer,
-{
-    s.serialize_str(&utils::to_hex_string(x))
 }
 
 #[cfg(test)]
@@ -351,10 +352,10 @@ mod tests {
     }
 
     #[test]
-    fn short_value_is_error() {
-        assert!(ReparsePointAttr::from_slice(&[0x03, 0x00, 0x00, 0xA0]).is_err());
+    fn short_value_is_none() {
+        assert!(ReparsePointAttr::from_slice(&[0x03, 0x00, 0x00, 0xA0]).is_none());
         // Third-party tags need room for the GUID.
-        assert!(ReparsePointAttr::from_slice(&reparse_value(0x1234, None, &[])).is_err());
+        assert!(ReparsePointAttr::from_slice(&reparse_value(0x1234, None, &[])).is_none());
     }
 
     #[test]
