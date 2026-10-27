@@ -139,6 +139,31 @@ fn test_out_of_range_filetime_is_error_not_panic() {
 }
 
 #[test]
+fn test_bitflags_serialize_as_flag_names() {
+    use mft::attribute::x90::IndexRootFlags;
+    use mft::attribute::{AttributeDataFlags, FileAttributeFlags};
+    use mft::entry::EntryFlags;
+
+    let flags =
+        FileAttributeFlags::FILE_ATTRIBUTE_HIDDEN | FileAttributeFlags::FILE_ATTRIBUTE_SYSTEM;
+    assert_eq!(
+        serde_json::to_string(&flags).unwrap(),
+        r#""FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM""#
+    );
+    assert_eq!(
+        serde_json::to_string(&EntryFlags::ALLOCATED).unwrap(),
+        r#""ALLOCATED""#
+    );
+    assert_eq!(
+        serde_json::to_string(&AttributeDataFlags::empty()).unwrap(),
+        r#""(empty)""#
+    );
+    // A zero-valued flag names the empty set.
+    assert_eq!(IndexRootFlags::empty().to_string(), "SMALL_INDEX");
+    assert_eq!(IndexRootFlags::LARGE_INDEX.to_string(), "LARGE_INDEX");
+}
+
+#[test]
 fn test_volume_attributes_are_parsed() {
     let mut parser = MftParser::from_path(mft_sample()).unwrap();
     let volume = parser.get_entry(3).unwrap();

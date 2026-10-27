@@ -1171,7 +1171,7 @@ impl FileSystem {
                 what: format!("missing $STANDARD_INFORMATION in entry {dir_entry_id}"),
             })??;
 
-        let Some(si) = attr.data.into_standard_info() else {
+        let Some(si) = attr.data.as_standard_info().cloned() else {
             return Err(Error::InvalidData {
                 message: format!(
                     "$STANDARD_INFORMATION attribute had unexpected content in entry {dir_entry_id}"
@@ -1254,7 +1254,7 @@ impl FileSystem {
             what: "missing $I30 $INDEX_ALLOCATION".to_string(),
         })?;
 
-        let NonResidentAttr { data_runs } = match attr.data.into_data_runs() {
+        let NonResidentAttr { data_runs } = match attr.data.as_data_runs().cloned() {
             Some(dr) => dr,
             None => {
                 return Err(Error::InvalidData {
@@ -1295,8 +1295,8 @@ impl FileSystem {
             if let ResidentialHeader::NonResident(nr) = &attr.header.residential_header {
                 let runs = attr
                     .data
-                    .clone()
-                    .into_data_runs()
+                    .as_data_runs()
+                    .cloned()
                     .ok_or_else(|| Error::InvalidData {
                         message: "expected data runs".to_string(),
                     })?
@@ -1349,8 +1349,8 @@ impl FileSystem {
                 };
                 let runs = attr
                     .data
-                    .clone()
-                    .into_data_runs()
+                    .as_data_runs()
+                    .cloned()
                     .ok_or_else(|| Error::InvalidData {
                         message: "expected data runs".to_string(),
                     })?
@@ -1373,7 +1373,7 @@ fn is_entry_efs_encrypted(entry: &mft::MftEntry) -> bool {
         .iter_attributes_matching(Some(vec![MftAttributeType::StandardInformation]))
         .filter_map(std::result::Result::ok)
     {
-        if let Some(si) = attr.data.into_standard_info()
+        if let Some(si) = attr.data.as_standard_info().cloned()
             && si
                 .file_flags
                 .contains(mft::attribute::FileAttributeFlags::FILE_ATTRIBUTE_ENCRYPTED)
@@ -1413,8 +1413,8 @@ fn read_efs_attribute_blob(volume: &Volume, entry: &mft::MftEntry) -> Result<Vec
             }
             let runs = attr
                 .data
-                .clone()
-                .into_data_runs()
+                .as_data_runs()
+                .cloned()
                 .ok_or_else(|| Error::InvalidData {
                     message: "expected data runs for $EFS".to_string(),
                 })?
@@ -1795,12 +1795,12 @@ impl DataExtent {
     }
 }
 
-fn find_attribute_list(entry: &mft::MftEntry) -> Result<Option<AttributeListAttr>> {
+fn find_attribute_list(entry: &mft::MftEntry) -> Result<Option<AttributeListAttr<'_>>> {
     for attr in entry
         .iter_attributes_matching(Some(vec![MftAttributeType::AttributeList]))
         .filter_map(std::result::Result::ok)
     {
-        if let Some(list) = attr.data.into_attribute_list() {
+        if let Some(list) = attr.data.as_attribute_list().cloned() {
             return Ok(Some(list));
         }
     }

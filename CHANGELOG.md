@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Parse `$VOLUME_NAME` (0x60) and `$VOLUME_INFORMATION` (0x70) into `VolumeNameAttr` and `VolumeInformationAttr` (label, NTFS version, volume flags) instead of raw hex.
 - Expand `FileAttributeFlags` with the latest Windows-defined bits for NTFS parsing.
+- Add `MftAttributeType::PropertySet` (`0xF0`, NT4-era `$PROPERTY_SET`).
 
 ### Changed
 - JSON output of `$VOLUME_NAME` and `$VOLUME_INFORMATION` attributes changes from `{attribute_type, data}` raw hex to the parsed fields; `MftAttributeContent` gains the `AttrX60` and `AttrX70` variants, which breaks exhaustive matches.
@@ -20,7 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `$FILE_NAME` `logical_size` and `physical_size` were swapped: the allocated size (offset 0x28) was reported as the logical size and the real size (0x30) as the physical size. JSON output and index entries change accordingly.
+- `iter_attributes` keeps returning later attributes after one with an unknown type code, and
+  `iter_attributes_matching` skips unrequested attributes without parsing their headers.
 - Correct decoding of sparse non-resident data runs when reading MFT entries.
+- Resolve the LCN of a data run that follows a sparse run relative to the last allocated run (#152).
+- Serialize flags as `A | B` again instead of bitflags 2's `TypeName(A | B)` debug format.
+- Break cycles in parent references instead of overflowing the stack while resolving paths.
+- Recover the entry size from later records when the first entry is zeroed, instead of dividing by zero.
+- `mft_dump -e` no longer writes empty files for zero-length resident streams (#23).
+
+### Added
+- JSON output includes `data_size` for resident attributes (#125).
 - Address the `clippy::collapsible_if` warning emitted for the `mft_dump` CLI.
 
 ### CI
