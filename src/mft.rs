@@ -147,6 +147,14 @@ impl<T: Read + Seek> MftParser<T> {
     pub fn get_entry(&mut self, entry_number: u64) -> Result<MftEntry> {
         debug!("Reading entry {entry_number}");
 
+        let mut entry_buffer = vec![0; self.entry_size as usize];
+        self.read_entry_bytes(entry_number, &mut entry_buffer)?;
+
+        MftEntry::from_buffer(entry_buffer, entry_number)
+    }
+
+    /// Reads the raw bytes of an entry into `buffer`, which is one entry long.
+    fn read_entry_bytes(&mut self, entry_number: u64, buffer: &mut [u8]) -> Result<()> {
         let entry_size = u64::from(self.entry_size);
         let desired_offset = entry_number * entry_size;
 
@@ -157,12 +165,9 @@ impl<T: Read + Seek> MftParser<T> {
             self.next_read_offset = desired_offset;
         }
 
-        let mut entry_buffer = vec![0; self.entry_size as usize];
-
-        self.data.read_exact(&mut entry_buffer)?;
+        self.data.read_exact(buffer)?;
         self.next_read_offset = self.next_read_offset.saturating_add(entry_size);
-
-        MftEntry::from_buffer(entry_buffer, entry_number)
+        Ok(())
     }
 
     /// Iterates over all the entries in the MFT.
@@ -210,33 +215,46 @@ impl<T: Read + Seek> MftParser<T> {
         ids.sort_unstable();
         ids.dedup();
 
-        let mut extensions = Vec::with_capacity(ids.len());
-        for id in ids {
-            match self.get_entry(id) {
-                Ok(extension)
-                    if extension.header.base_reference.entry == record_number
-                        && extension.header.base_reference.sequence == entry.header.sequence =>
-                {
-                    extensions.push(extension)
+        ids.into_iter()
+            .filter_map(|id| match self.get_entry(id) {
+                Ok(record) if Self::is_extension_of(&record, entry) => Some(record),
+                Ok(_) => {
+                    trace!("Entry {id} is not an extension of entry {record_number}");
+                    None
                 }
-                Ok(_) => trace!("Entry {id} is not an extension of entry {record_number}"),
                 Err(e) => {
-                    warn!("Failed to read extension record {id} of entry {record_number}: {e}")
+                    warn!("Failed to read extension record {id} of entry {record_number}: {e}");
+                    None
                 }
-            }
-        }
-        extensions
+            })
+            .collect()
+    }
+
+    /// Whether `record` is a current extension record of `base`. A record freed with a deleted
+    /// file keeps pointing at the sequence number the file had before Windows bumped it on
+    /// deletion. A freed record pointing at a live file was dropped from its attribute list.
+    fn is_extension_of(record: &MftEntry, base: &MftEntry) -> bool {
+        let reference = &record.header.base_reference;
+        let sequence = base.header.sequence;
+        let sequence_matches = reference.sequence == sequence
+            || (!base.is_allocated() && reference.sequence == sequence.wrapping_sub(1));
+        reference.entry == base.header.record_number
+            && record.is_allocated() == base.is_allocated()
+            && sequence_matches
     }
 
     fn extensions_index(&mut self) -> &HashMap<u64, Vec<u64>> {
         if self.extensions_index.is_none() {
             let mut index: HashMap<u64, Vec<u64>> = HashMap::new();
+            let mut buffer = vec![0; self.entry_size as usize];
             for id in 0..self.get_entry_count() {
-                if let Ok(entry) = self.get_entry(id)
-                    && entry.header.base_reference.entry != 0
+                // Only the header is needed, which the update sequence array doesn't touch.
+                if self.read_entry_bytes(id, &mut buffer).is_ok()
+                    && let Ok(header) = EntryHeader::from_reader(&mut buffer.as_slice(), id)
+                    && !header.is_base_record()
                 {
                     index
-                        .entry(entry.header.base_reference.entry)
+                        .entry(header.base_reference.entry)
                         .or_default()
                         .push(id);
                 }
@@ -263,7 +281,13 @@ impl<T: Read + Seek> MftParser<T> {
 
     /// Classifies an entry for path resolution, as the parent of another entry.
     fn path_step(&mut self, entry: &MftEntry) -> PathStep {
-        match self.best_name(entry) {
+        let name = self.best_name(entry);
+        Self::path_step_named(entry, name)
+    }
+
+    /// [`MftParser::path_step`], given the entry's [`MftParser::best_name`].
+    fn path_step_named(entry: &MftEntry, name: Option<(String, u64)>) -> PathStep {
+        match name {
             // A parent that isn't a directory can't be trusted.
             Some(_) if !entry.is_dir() => PathStep::Final(PathBuf::from("[Unknown]")),
             Some((name, parent)) => {
@@ -402,7 +426,7 @@ impl<T: Read + Seek> MftParser<T> {
             if let Some(cached) = self.entries_cache.get(&entry_id) {
                 return Ok(Some(cached.clone()));
             }
-            let step = self.path_step(entry);
+            let step = Self::path_step_named(entry, filename_header);
             return Ok(Some(self.resolve_directory_path(entry_id, step)));
         }
 
@@ -589,5 +613,35 @@ mod tests {
 
         let e = parser.get_entry(5).unwrap();
         parser.get_full_path_for_entry(&e).unwrap();
+    }
+
+    /// Records 76746 and 77871 of the CFReDS 2015 Data Leakage Case `$MFT` (NIST, public
+    /// domain): a deleted file (sequence 4) and its freed extension record, which still points
+    /// at sequence 3.
+    #[test]
+    fn test_deleted_file_keeps_its_extension_record() {
+        let base = MftEntry::from_buffer(
+            include_bytes!("../samples/entry_76746_deleted_base").to_vec(),
+            76746,
+        )
+        .unwrap();
+        let extension = MftEntry::from_buffer(
+            include_bytes!("../samples/entry_77871_deleted_extension").to_vec(),
+            77871,
+        )
+        .unwrap();
+        assert!(!base.is_allocated() && !extension.is_allocated());
+        assert_eq!(base.header.sequence, 4);
+        assert_eq!(extension.header.base_reference.sequence, 3);
+        assert!(MftParser::<std::io::Cursor<Vec<u8>>>::is_extension_of(
+            &extension, &base
+        ));
+
+        // Once the file is live again (the record was reused), an old extension is stale.
+        let mut reused = base.clone();
+        reused.header.flags |= crate::entry::EntryFlags::ALLOCATED;
+        assert!(!MftParser::<std::io::Cursor<Vec<u8>>>::is_extension_of(
+            &extension, &reused
+        ));
     }
 }

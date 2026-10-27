@@ -124,9 +124,7 @@ pub fn write_entry<W: Write>(
             MftAttributeType::DATA | MftAttributeType::IndexRoot => {
                 // A non-resident attribute split over several records repeats in each of them,
                 // and only the one starting at VCN 0 has the stream's size.
-                if let ResidentialHeader::NonResident(nr) = &header.residential_header
-                    && nr.vnc_first != 0
-                {
+                if header.is_continuation() {
                     continue;
                 }
                 let name = &header.name;

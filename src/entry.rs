@@ -189,6 +189,12 @@ impl EntryHeader {
         })
     }
 
+    /// Whether this is a base record, as opposed to an extension record holding attributes moved
+    /// out of one. An extension record of `$MFT` (entry 0) is told apart by its non-zero sequence.
+    pub fn is_base_record(&self) -> bool {
+        self.base_reference.entry == 0 && self.base_reference.sequence == 0
+    }
+
     pub fn is_valid(&self) -> bool {
         self.signature == *FILE_HEADER
     }
@@ -261,7 +267,7 @@ impl MftEntry {
     }
 
     /// Retrieves most human-readable representation of a file path entry.
-    /// Will prefer `Win32` file name attributes, and fallback to `Dos` paths.
+    /// Will prefer `Win32` file name attributes, then `POSIX` ones, and fallback to `Dos` paths.
     ///
     /// Only this record's own attributes are considered. Use [`find_best_name_attribute_in`]
     /// with the entry's extension records (see [`crate::MftParser::get_extension_entries`]) to
@@ -463,6 +469,7 @@ pub(crate) fn is_long_name(name: &FileNameAttr<'_>) -> bool {
 
 fn best_name_of<'a>(entries: impl IntoIterator<Item = &'a MftEntry>) -> Option<FileNameAttr<'a>> {
     let mut first: Option<FileNameAttr<'a>> = None;
+    let mut first_long: Option<FileNameAttr<'a>> = None;
     let mut best_win32: Option<FileNameAttr<'a>> = None;
 
     for attr in entries.into_iter().flat_map(|entry| {
@@ -476,6 +483,9 @@ fn best_name_of<'a>(entries: impl IntoIterator<Item = &'a MftEntry>) -> Option<F
 
         if first.is_none() {
             first = Some(fname.clone());
+        }
+        if first_long.is_none() && is_long_name(fname) {
+            first_long = Some(fname.clone());
         }
 
         if matches!(
@@ -491,7 +501,8 @@ fn best_name_of<'a>(entries: impl IntoIterator<Item = &'a MftEntry>) -> Option<F
         }
     }
 
-    best_win32.or(first)
+    // A `POSIX` name is still a long name, better than the `Dos` one.
+    best_win32.or(first_long).or(first)
 }
 
 #[cfg(test)]

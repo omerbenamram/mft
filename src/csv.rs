@@ -106,9 +106,16 @@ impl FlatMftEntryWithName {
             .and_then(|a| a.data.as_standard_info())
             .cloned();
 
-        let data_attr = entry_attributes
+        // The unnamed stream, or a named one if there is none. Records that continue a stream
+        // started elsewhere don't hold its size.
+        let data_streams: Vec<&MftAttribute> = entry_attributes
             .iter()
-            .find(|a| a.header.type_code == MftAttributeType::DATA);
+            .filter(|a| a.header.type_code == MftAttributeType::DATA && !a.header.is_continuation())
+            .collect();
+        let data_attr = data_streams
+            .iter()
+            .find(|a| a.header.name.is_empty())
+            .or(data_streams.first());
 
         let file_size = match data_attr {
             Some(attr) => match &attr.header.residential_header {
