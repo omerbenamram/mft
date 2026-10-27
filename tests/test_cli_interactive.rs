@@ -43,12 +43,18 @@ mod tests {
             .unwrap();
         p.send_line("y").unwrap();
         p.flush().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(100));
         // .expect_eof doesn't work any more :(
-
+        // Poll instead of sleeping for a fixed time, slow CI runners can take a while to write.
         let mut expected = vec![];
-
-        File::open(&f).unwrap().read_to_end(&mut expected).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            expected.clear();
+            File::open(&f).unwrap().read_to_end(&mut expected).unwrap();
+            if expected.len() > 100 || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         assert!(
             expected.len() > 100,
             "Expected output to be printed to file"
