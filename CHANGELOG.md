@@ -18,7 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `FlatMftEntryWithName::from_entry_with_path` builds a CSV row from an already-resolved path and the entry's extension records.
 - `MftParser::get_extension_entries` reads the extension records that hold attributes an `$ATTRIBUTE_LIST` moved out of a base record, `MftEntry::has_attribute_list` says whether there are any, and `entry::find_best_name_attribute_in` picks a file's name across its base and extension records (#148).
 - JSON output lists attributes that failed to parse in a per-entry `errors` array (only present when non-empty). Previously they were dropped silently.
-- Expand `FileAttributeFlags` with the latest Windows-defined bits for NTFS parsing.
 - Add `MftAttributeType::PropertySet` (`0xF0`, NT4-era `$PROPERTY_SET`).
 - JSON output includes `data_size` for resident attributes (#125).
 
@@ -30,9 +29,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MftAttributeContent` has a new `AttrXC0` variant, and `$REPARSE_POINT` JSON output changes from raw hex to the parsed structure.
 - Timestamps keep NTFS's full 100ns resolution and are always written with 7 fractional digits (`2007-06-30T12:50:52.2523952Z`). They were truncated to microseconds and printed with 0, 3, 6 or 9 digits, chrono style. This changes every timestamp in JSON and CSV output. `serialize_timestamp_chrono_compat` and `serialize_option_timestamp_chrono_compat` are renamed to `serialize_timestamp` and `serialize_option_timestamp`.
 - `FileNameAttr::logical_size` now holds the real size and `physical_size` the allocated size (see Fixed). Code that worked around the old swap needs to drop the workaround.
-- Upgrade the crate to the Rust 2024 edition and require Rust 1.90 for builds.
-- Forbid usage of `unsafe` code across the workspace and satisfy new Clippy lints.
-- Keep formatting and lint configuration aligned with Rust 2024 expectations.
 - Update all workspace dependencies to their latest releases, including `rand` 0.10, `lru` 0.19,
   `itertools` 0.15, `num-derive` 0.5, `criterion` 0.8, `quick-xml` 0.42, RustCrypto `md-5`/`sha1` 0.11
   and `aes`/`des` 0.9, and `fuser` 0.18 (the FUSE frontend now uses fuser's `&self` callbacks).
@@ -43,7 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `$FILE_NAME` `logical_size` and `physical_size` were swapped: the allocated size (offset 0x28) was reported as the logical size and the real size (0x30) as the physical size. JSON output and index entries change accordingly.
 - `iter_attributes` keeps returning later attributes after one with an unknown type code, and
   `iter_attributes_matching` skips unrequested attributes without parsing their headers.
-- Correct decoding of sparse non-resident data runs when reading MFT entries.
 - Resolve the LCN of a data run that follows a sparse run relative to the last allocated run (#152).
 - Serialize flags as `A | B` again instead of bitflags 2's `TypeName(A | B)` debug format.
 - Break cycles in parent references instead of overflowing the stack while resolving paths.
@@ -52,9 +47,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `ntfs` crate, its tools and the NTFS explorer GUI build again against the borrowed attribute API.
 
 ### CI
-- Refresh CI workflows, add Apple Silicon release artifacts, and scope push triggers to `master` and `release/**`.
+- Push triggers name `master` (they said `main`, so pushes to master didn't run CI).
 - Lint and test every workspace crate (previously only the root `mft` crate), build the GUI, and check
   the 1.90 MSRV.
+
+## [0.7.0] - 2025-12-23
+
+### Added
+- Expand `FileAttributeFlags` with the latest Windows-defined bits for NTFS parsing.
+
+### Changed
+- Upgrade the crate to the Rust 2024 edition and require Rust 1.90 for builds.
+- Forbid usage of `unsafe` code across the workspace and satisfy new Clippy lints.
+- Keep formatting and lint configuration aligned with Rust 2024 expectations.
+
+### Fixed
+- Correct decoding of sparse non-resident data runs when reading MFT entries.
+- Address the `clippy::collapsible_if` warning emitted for the `mft_dump` CLI.
+
+### CI
+- Refresh CI workflows, add Apple Silicon release artifacts, and scope push triggers to `main` and `release/**`.
 
 ## [0.6.1] - 2023-02-18
 

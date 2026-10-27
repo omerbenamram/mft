@@ -10,22 +10,9 @@ version = "0.8.0"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2024"
 rust-version = "1.90"
-# Keep the published crate under crates.io's 10MB limit: the disk images and big sample MFTs are
-# only needed by the repo's tests and benchmarks.
-exclude = [
-    ".cursor/",
-    ".cursorignore",
-    ".github/",
-    "external/",
-    "fuzz/",
-    "scripts/",
-    "testdata/",
-    "tests/",
-    "samples/MFT",
-    "samples/*.MFT",
-    "src/benches/",
-    "release.py",
-]
+# Keep the published crate under crates.io's 10MB limit: the disk images under testdata/ are only
+# needed by the repo's integration tests. samples/ stays, since unit tests and the benchmark read it.
+include = ["/src/", "/samples/", "/README.md", "/CHANGELOG.md", "/LICENSE-*"]
 
 [workspace]
 members = [

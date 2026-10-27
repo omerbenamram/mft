@@ -6,8 +6,29 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
 
 jobs:
+  # Fails a bad tag or a missing crates.io token before anything is built or published.
+  preflight:
+    name: Check tag and secrets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Check tag matches Cargo.toml
+        run: |
+          CRATE="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          [ "$CRATE" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != Cargo.toml $CRATE"; exit 1; }
+
+      - name: Check CRATES_IO_TOKEN is set
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: '[ -n "$CARGO_REGISTRY_TOKEN" ] || { echo "CRATES_IO_TOKEN secret is not set"; exit 1; }'
+
   build-release:
     name: Build release binaries
+    needs: preflight
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -128,17 +149,14 @@ jobs:
     # Last: crates.io is irreversible, so only publish once every binary built and the release exists.
     needs: publish-release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Check tag matches Cargo.toml
-        run: |
-          CRATE="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
-          [ "$CRATE" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != Cargo.toml $CRATE"; exit 1; }
 
       - name: Publish mft
         env:
