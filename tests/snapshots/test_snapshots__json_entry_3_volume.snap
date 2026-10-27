@@ -136,31 +136,36 @@ expression: json
         "start_offset": 272
       },
       "data": {
-        "owner_sid": "S-1-5-32-544",
-        "group_sid": "S-1-5-32-544",
+        "revision": 1,
+        "control": "SE_DACL_PRESENT | SE_SELF_RELATIVE",
+        "owner": "S-1-5-32-544",
+        "group": "S-1-5-32-544",
+        "sacl": null,
         "dacl": {
           "revision": 2,
-          "count": 2,
           "entries": [
             {
-              "ace_type": "ACCESS_ALLOWED",
-              "ace_flags": "(empty)",
-              "data": {
-                "access_rights": 1180063,
-                "sid": "S-1-5-18"
-              }
+              "ace_type": 0,
+              "ace_type_name": "ACCESS_ALLOWED",
+              "flags": "(empty)",
+              "access_mask": 1180063,
+              "object_type": null,
+              "inherited_object_type": null,
+              "sid": "S-1-5-18",
+              "data": ""
             },
             {
-              "ace_type": "ACCESS_ALLOWED",
-              "ace_flags": "(empty)",
-              "data": {
-                "access_rights": 1180063,
-                "sid": "S-1-5-32-544"
-              }
+              "ace_type": 0,
+              "ace_type_name": "ACCESS_ALLOWED",
+              "flags": "(empty)",
+              "access_mask": 1180063,
+              "object_type": null,
+              "inherited_object_type": null,
+              "sid": "S-1-5-32-544",
+              "data": ""
             }
           ]
-        },
-        "sacl": null
+        }
       }
     },
     {

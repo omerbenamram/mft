@@ -31,7 +31,7 @@ use crate::attribute::data_run::decode_data_runs;
 use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
 use crate::attribute::non_resident_attr::NonResidentAttr;
 use crate::attribute::x40::ObjectIdAttr;
-use crate::attribute::x50::parse_security_descriptor;
+use crate::attribute::x50::SecurityDescriptorAttr;
 use crate::attribute::x60::VolumeNameAttr;
 use crate::attribute::x70::VolumeInformationAttr;
 use crate::attribute::x80::DataAttr;
@@ -40,7 +40,6 @@ use crate::attribute::xc0::ReparsePointAttr;
 use crate::attribute::xd0::EaInformationAttr;
 use crate::attribute::xe0::EaAttr;
 use serde::Serialize;
-use winstructs::security::SecurityDescriptor;
 
 #[derive(Serialize, Clone, Debug)]
 pub struct MftAttribute<'a> {
@@ -83,7 +82,7 @@ impl<'a> MftAttributeContent<'a> {
                         ObjectIdAttr::from_stream(&mut Cursor::new(value), value.len())?,
                     )),
                     MftAttributeType::SecurityDescriptor => {
-                        parse_security_descriptor(value).map(MftAttributeContent::AttrX50)
+                        SecurityDescriptorAttr::from_slice(value).map(MftAttributeContent::AttrX50)
                     }
                     MftAttributeType::VolumeName => Some(MftAttributeContent::AttrX60(
                         VolumeNameAttr::from_slice(value),
@@ -157,7 +156,7 @@ impl<'a> MftAttributeContent<'a> {
         }
     }
 
-    pub fn as_security_descriptor(&self) -> Option<&SecurityDescriptor> {
+    pub fn as_security_descriptor(&self) -> Option<&SecurityDescriptorAttr<'a>> {
         match self {
             MftAttributeContent::AttrX50(content) => Some(content),
             _ => None,
@@ -236,7 +235,7 @@ pub enum MftAttributeContent<'a> {
     AttrX20(AttributeListAttr<'a>),
     AttrX30(FileNameAttr<'a>),
     AttrX40(ObjectIdAttr),
-    AttrX50(SecurityDescriptor),
+    AttrX50(SecurityDescriptorAttr<'a>),
     AttrX60(VolumeNameAttr<'a>),
     AttrX70(VolumeInformationAttr),
     AttrX80(DataAttr<'a>),

@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - JSON output lists attributes that failed to parse in a per-entry `errors` array (only present when non-empty). Previously they were dropped silently.
 - Expand `FileAttributeFlags` with the latest Windows-defined bits for NTFS parsing.
 - Add `MftAttributeType::PropertySet` (`0xF0`, NT4-era `$PROPERTY_SET`).
-- Parse resident `$SECURITY_DESCRIPTOR` (0x50) attributes into `winstructs::security::SecurityDescriptor`: owner and group SIDs and the DACL/SACL entries. Non-resident ones keep their data runs.
+- Parse resident `$SECURITY_DESCRIPTOR` (0x50) attributes into `SecurityDescriptorAttr`: the control flags, owner and group SIDs, and the SACL and DACL with each ACE's type, flags, access mask, object types and SID. Non-resident ones keep their data runs.
 - Parse `$EA_INFORMATION` (0xD0) and `$EA` (0xE0) into `EaInformationAttr` and `EaAttr`: each extended attribute's flags, name and value. WSL's `$LXUID`, `$LXGID`, `$LXMOD` and `$LXDEV` and code integrity's `$CI.CATALOGHINT` are decoded, and other values keep their data as hex.
 
 ### Changed
