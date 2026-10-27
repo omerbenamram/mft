@@ -149,3 +149,38 @@ fn test_out_of_range_filetime_is_error_not_panic() {
     // `MftEntry` serialization drops attribute parse errors; it should never panic.
     serde_json::to_value(&entry).expect("entry should serialize");
 }
+
+#[test]
+fn test_json_lists_attribute_errors() {
+    let mut parser = MftParser::from_path(mft_sample()).unwrap();
+    let mut entry = parser.get_entry(0).unwrap();
+
+    let clean: serde_json::Value = serde_json::to_value(&entry).unwrap();
+    assert!(
+        clean.get("errors").is_none(),
+        "entries that parse cleanly should not carry an errors field"
+    );
+    let clean_attribute_count = clean["attributes"].as_array().unwrap().len();
+
+    // Corrupt the form code of the second attribute ($FILE_NAME) so its header fails to parse.
+    let first = entry.header.first_attribute_record_offset as usize;
+    let first_len =
+        u32::from_le_bytes(entry.data[first + 4..first + 8].try_into().unwrap()) as usize;
+    entry.data[first + first_len + 8] = 0x7F;
+
+    let json: serde_json::Value = serde_json::to_value(&entry).unwrap();
+    let errors = json["errors"].as_array().expect("expected an errors field");
+    assert_eq!(errors.len(), 1);
+    assert!(
+        errors[0]
+            .as_str()
+            .unwrap()
+            .contains("Unhandled resident flag: 127"),
+        "unexpected error message: {}",
+        errors[0]
+    );
+    // The attribute before the corrupt one is still emitted.
+    let attributes = json["attributes"].as_array().unwrap();
+    assert_eq!(attributes.len(), 1);
+    assert!(attributes.len() < clean_attribute_count);
+}

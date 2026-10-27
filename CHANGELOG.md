@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- JSON output lists attributes that failed to parse in a per-entry `errors` array (only present when non-empty), and logs them as warnings. Previously they were dropped silently.
 - Expand `FileAttributeFlags` with the latest Windows-defined bits for NTFS parsing.
 
 ### Changed
