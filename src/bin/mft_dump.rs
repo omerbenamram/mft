@@ -338,7 +338,7 @@ impl MftDump {
 
         self.json_buf.clear();
         if self.output_format == OutputFormat::JSON {
-            serde_json::to_writer_pretty(&mut self.json_buf, entry)?;
+            sonic_json::to_writer_pretty(&mut self.json_buf, entry)?;
         } else {
             // JSONL is the performance-critical mode; use a faster serializer.
             sonic_json::to_writer(&mut self.json_buf, entry)?;
