@@ -1,0 +1,214 @@
+---
+source: tests/test_snapshots.rs
+expression: json
+---
+{
+  "header": {
+    "signature": [
+      70,
+      73,
+      76,
+      69
+    ],
+    "usa_offset": 48,
+    "usa_size": 3,
+    "metadata_transaction_journal": 214379886,
+    "sequence": 5,
+    "hard_link_count": 1,
+    "first_attribute_record_offset": 56,
+    "flags": "ALLOCATED | INDEX_PRESENT",
+    "used_entry_size": 512,
+    "total_entry_size": 1024,
+    "base_reference": {
+      "entry": 0,
+      "sequence": 0
+    },
+    "first_attribute_id": 9,
+    "record_number": 5
+  },
+  "attributes": [
+    {
+      "header": {
+        "type_code": "StandardInformation",
+        "record_length": 72,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 48,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 0,
+        "name": "",
+        "start_offset": 56
+      },
+      "data": {
+        "created": "2007-06-30T12:50:52.2523952Z",
+        "modified": "2009-01-19T04:17:44.7268320Z",
+        "mft_modified": "2009-01-19T04:17:44.7268320Z",
+        "accessed": "2009-01-19T16:53:21.1874608Z",
+        "file_flags": "FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM",
+        "max_version": 0,
+        "version": 0,
+        "class_id": 0,
+        "owner_id": 0,
+        "security_id": 0,
+        "quota": 0,
+        "usn": 0
+      }
+    },
+    {
+      "header": {
+        "type_code": "FileName",
+        "record_length": 96,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 68,
+          "index_flag": 1,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 1,
+        "name": "",
+        "start_offset": 128
+      },
+      "data": {
+        "parent": {
+          "entry": 5,
+          "sequence": 5
+        },
+        "created": "2007-06-30T12:50:52.2523952Z",
+        "modified": "2007-06-30T12:50:52.2523952Z",
+        "mft_modified": "2007-06-30T12:50:52.2523952Z",
+        "accessed": "2007-06-30T12:50:52.2523952Z",
+        "logical_size": 0,
+        "physical_size": 0,
+        "flags": "FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_IS_DIRECTORY",
+        "reparse_value": 0,
+        "name_length": 1,
+        "namespace": "Win32AndDos",
+        "name": "."
+      }
+    },
+    {
+      "header": {
+        "type_code": "SecurityDescriptor",
+        "record_length": 72,
+        "form_code": 1,
+        "residential_header": {
+          "vnc_first": 0,
+          "vnc_last": 2,
+          "unit_compression_size": 0,
+          "allocated_length": 6144,
+          "file_size": 4144,
+          "valid_data_length": 4144,
+          "total_allocated": null
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 2,
+        "name": "",
+        "start_offset": 224
+      },
+      "data": {
+        "data_runs": [
+          {
+            "lcn_offset": 308084,
+            "lcn_length": 3,
+            "run_type": "Standard"
+          }
+        ]
+      }
+    },
+    {
+      "header": {
+        "type_code": "IndexRoot",
+        "record_length": 88,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 56,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 4,
+        "name_offset": 24,
+        "data_flags": "(empty)",
+        "instance": 6,
+        "name": "$I30",
+        "start_offset": 296
+      },
+      "data": {
+        "attribute_type": 48,
+        "collation_rule": "CollationFilename",
+        "index_entry_size": 4096,
+        "index_entry_number_of_cluster_blocks": 2,
+        "relative_offset_to_index_node": 16,
+        "index_node_length": 40,
+        "index_node_allocation_length": 40,
+        "index_root_flags": "LARGE_INDEX",
+        "index_entries": {
+          "index_entries": []
+        }
+      }
+    },
+    {
+      "header": {
+        "type_code": "IndexAllocation",
+        "record_length": 80,
+        "form_code": 1,
+        "residential_header": {
+          "vnc_first": 0,
+          "vnc_last": 1,
+          "unit_compression_size": 0,
+          "allocated_length": 4096,
+          "file_size": 4096,
+          "valid_data_length": 4096,
+          "total_allocated": null
+        },
+        "name_size": 4,
+        "name_offset": 64,
+        "data_flags": "(empty)",
+        "instance": 8,
+        "name": "$I30",
+        "start_offset": 384
+      },
+      "data": {
+        "data_runs": [
+          {
+            "lcn_offset": 688,
+            "lcn_length": 2,
+            "run_type": "Standard"
+          }
+        ]
+      }
+    },
+    {
+      "header": {
+        "type_code": "BITMAP",
+        "record_length": 40,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 8,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 4,
+        "name_offset": 24,
+        "data_flags": "(empty)",
+        "instance": 7,
+        "name": "$I30",
+        "start_offset": 464
+      },
+      "data": {
+        "attribute_type": "BITMAP",
+        "data": "0100000000000000"
+      }
+    }
+  ],
+  "valid_fixup": true
+}

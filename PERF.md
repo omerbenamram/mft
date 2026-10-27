@@ -427,7 +427,7 @@ After (`target/samply/h2_after.profile.json.gz`, inverted call tree):
   - `FileNameAttr` (`0x30`)
   - `FlatMftEntryWithName` (CSV)
   with `jiff::Timestamp` (re-exported as `mft::Timestamp`).
-- Convert Windows FILETIME directly in `mft::utils::windows_filetime_to_timestamp` (truncate to microseconds to match historical behavior).
+- Convert Windows FILETIME directly in `mft::utils::windows_filetime_to_timestamp` (truncate to microseconds to match historical behavior). Superseded: timestamps now keep the full 100ns resolution and always print 7 fractional digits (see CHANGELOG).
 - Preserve the exact JSON/CSV timestamp string format by forcing chrono-compatible RFC3339 precision using `jiff::fmt::temporal::DateTimePrinter` (via `#[serde(serialize_with = ...)]`).
 - Enable `jiff`’s `perf-inline` feature (important when using `default-features = false`; it’s enabled by default otherwise).
 
