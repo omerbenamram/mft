@@ -83,6 +83,7 @@ impl FromStr for Ranges {
 /// A JSON output record: the entry plus its full path, which only the parser can resolve.
 #[derive(Serialize)]
 struct JsonEntry<'a> {
+    #[serde(serialize_with = "mft::serialize_option_windows_path")]
     full_path: Option<PathBuf>,
     #[serde(flatten)]
     entry: &'a MftEntry,
