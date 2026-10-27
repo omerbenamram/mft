@@ -76,6 +76,53 @@ fn test_it_exports_resident_streams() {
 }
 
 #[test]
+fn test_bodyfile_output() {
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.arg("-o")
+        .arg("bodyfile")
+        .arg("-r")
+        .arg("0,8671,11600")
+        .arg(mft_sample());
+    let output = cmd.output().unwrap();
+    assert!(output.status.success());
+
+    let thumbs =
+        "/Documents and Settings/All Users/Documents/My Pictures/Sample Pictures/Thumbs.db";
+    let gif = "/Documents and Settings/Donald Blake/Local Settings/Temporary Internet Files/Content.IE5/B70NJDCZ/online[1].gif";
+    // Same layout as `fls -m /`: a `$FILE_NAME` line, then one line per `$DATA` stream.
+    let expected = [
+        "0|/$MFT ($FILE_NAME)|0-48-3|r/rr-xr-xr-x|0|0|74|1183207852|1183207852|1183207852|1183207852".to_string(),
+        "0|/$MFT|0-128-1|r/rr-xr-xr-x|0|0|13402112|1183207852|1183207852|1183207852|1183207852".to_string(),
+        format!("0|{thumbs} ($FILE_NAME)|8671-48-2|r/rr-xr-xr-x|0|0|84|1183244062|1183244062|1183244062|1183244062"),
+        format!("0|{thumbs}|8671-128-3|r/rr-xr-xr-x|0|0|7680|1183244062|1183244062|1183244062|1183244062"),
+        format!("0|{thumbs}:encryptable|8671-128-4|r/rr-xr-xr-x|0|0|0|1183244062|1183244062|1183244062|1183244062"),
+        format!("0|{gif} ($FILE_NAME) (deleted)|11600-48-2|-/rrwxrwxrwx|0|0|92|1232382084|1232382084|1232382084|1232382084"),
+        format!("0|{gif} (deleted)|11600-128-1|-/rrwxrwxrwx|0|0|84|1232382084|1232382084|1232382084|1232382084"),
+    ];
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), expected);
+}
+
+#[test]
+fn test_bodyfile_lines_have_eleven_fields() {
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.arg("-o").arg("bodyfile").arg(mft_sample());
+    let output = cmd.output().unwrap();
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.lines().count() > 10_000);
+    for line in stdout.lines() {
+        assert_eq!(
+            line.split('|').count(),
+            11,
+            "malformed bodyfile line: {line}"
+        );
+    }
+}
+
+#[test]
 fn test_json_output_includes_full_path() {
     for format in ["json", "jsonl"] {
         let mut cmd = cargo_bin_cmd!("mft_dump");
@@ -107,4 +154,33 @@ fn test_json_output_includes_full_path() {
             "unexpected paths for -o {format}"
         );
     }
+}
+
+#[test]
+fn test_bodyfile_follows_extension_records() {
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.arg("-o")
+        .arg("bodyfile")
+        .arg("-r")
+        .arg("47,48")
+        .arg(mft_sample_name("ntfs1-gen2.MFT"));
+    let output = cmd.output().unwrap();
+    assert!(output.status.success());
+
+    // `$DATA` of both files lives in extension records (48's `$ATTRIBUTE_LIST` is non-resident).
+    // Sizes match `fls -m` on `testdata/ntfs/ntfs1-gen2.E01`. `fls` renumbers the attribute ids
+    // of merged attributes; these are the ids on disk.
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let data_lines: Vec<&str> = stdout
+        .lines()
+        .filter(|l| l.contains("-128-"))
+        .map(|l| l.rsplitn(5, '|').last().unwrap())
+        .collect();
+    assert_eq!(
+        data_lines,
+        [
+            "0|/RAW/logfile1.txt|47-128-0|r/rrwxrwxrwx|0|0|21888890",
+            "0|/Compressed/logfile1.txt|48-128-0|r/rrwxrwxrwx|0|0|21888890",
+        ]
+    );
 }

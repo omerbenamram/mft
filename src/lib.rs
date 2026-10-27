@@ -15,6 +15,7 @@ pub use crate::mft::MftParser;
 pub use entry::{EntryHeader, MftEntry};
 
 pub mod attribute;
+pub mod bodyfile;
 pub mod csv;
 pub mod entry;
 pub mod err;
