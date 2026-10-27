@@ -51,21 +51,17 @@ pub fn decode_data_runs(runs: &[u8]) -> Option<Vec<DataRun>> {
             return None;
         }
         let length = decode_run_value(&mut it, length_size)?;
-        let abs_offset;
-        let run_type;
-        if offset_size != 0 {
-            // offset_size of 0 == sparse cluster
+        // offset_size of 0 == sparse cluster
+        let (abs_offset, run_type) = if offset_size != 0 {
             if out.is_empty() {
                 base_lcn = decode_run_value(&mut it, offset_size)? as i64;
             } else {
                 base_lcn = base_lcn.checked_add(decode_run_svalue(&mut it, offset_size)?)?;
             }
-            abs_offset = base_lcn as u64;
-            run_type = RunType::Standard;
+            (base_lcn as u64, RunType::Standard)
         } else {
-            abs_offset = 0;
-            run_type = RunType::Sparse;
-        }
+            (0, RunType::Sparse)
+        };
         out.push(DataRun {
             lcn_offset: abs_offset,
             lcn_length: length,
