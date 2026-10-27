@@ -76,11 +76,17 @@ impl<'a> MftAttributeContent<'a> {
                     MftAttributeType::VolumeName => Ok(MftAttributeContent::AttrX60(
                         VolumeNameAttr::from_slice(value),
                     )),
-                    MftAttributeType::VolumeInformation => Ok(MftAttributeContent::AttrX70(
-                        VolumeInformationAttr::from_slice(value)?,
-                    )),
-                    // A value too short for the reparse header stays raw instead of erroring,
-                    // so the attribute isn't dropped from output.
+                    // A value too short for its fixed fields stays raw instead of erroring, so
+                    // the attribute isn't dropped from output.
+                    MftAttributeType::VolumeInformation => {
+                        Ok(match VolumeInformationAttr::from_slice(value) {
+                            Ok(info) => MftAttributeContent::AttrX70(info),
+                            Err(_) => MftAttributeContent::Raw(RawAttribute::from_slice(
+                                header.type_code.clone(),
+                                value,
+                            )),
+                        })
+                    }
                     MftAttributeType::ReparsePoint => {
                         Ok(match ReparsePointAttr::from_slice(value) {
                             Some(reparse_point) => MftAttributeContent::AttrXC0(reparse_point),
@@ -361,6 +367,23 @@ mod tests {
         let header = MftAttributeHeader::from_slice(&record, 0).unwrap().unwrap();
         match MftAttributeContent::from_record(&record, &header).unwrap() {
             MftAttributeContent::Raw(raw) => assert_eq!(raw.data, [0x03, 0x00, 0x00, 0xA0]),
+            other => panic!("expected Raw content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn truncated_volume_information_stays_raw() {
+        // A resident $VOLUME_INFORMATION whose 4-byte value can't hold the version and flags.
+        let mut record = vec![0u8; 32];
+        record[0..4].copy_from_slice(&(MftAttributeType::VolumeInformation as u32).to_le_bytes());
+        record[4..8].copy_from_slice(&32u32.to_le_bytes());
+        record[16..20].copy_from_slice(&4u32.to_le_bytes()); // data size
+        record[20..22].copy_from_slice(&24u16.to_le_bytes()); // data offset
+        record[24..28].copy_from_slice(&[1, 2, 3, 4]);
+
+        let header = MftAttributeHeader::from_slice(&record, 0).unwrap().unwrap();
+        match MftAttributeContent::from_record(&record, &header).unwrap() {
+            MftAttributeContent::Raw(raw) => assert_eq!(raw.data, [1, 2, 3, 4]),
             other => panic!("expected Raw content, got {other:?}"),
         }
     }
