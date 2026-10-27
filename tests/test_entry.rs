@@ -134,8 +134,53 @@ fn test_out_of_range_filetime_is_error_not_panic() {
         "expected an out-of-range timestamp error while parsing attributes"
     );
 
-    // `MftEntry` serialization drops attribute parse errors; it should never panic.
-    serde_json::to_value(&entry).expect("entry should serialize");
+    // `MftEntry` serialization reports attribute parse errors instead of panicking.
+    let json = serde_json::to_value(&entry).expect("entry should serialize");
+    let errors = json["errors"].as_array().expect("expected an errors field");
+    assert!(
+        errors.iter().any(|e| e
+            .as_str()
+            .is_some_and(|s| s.contains("out of range for jiff::Timestamp"))),
+        "unexpected errors: {errors:?}"
+    );
+}
+
+#[test]
+fn test_json_lists_attribute_errors() {
+    let mut parser = MftParser::from_path(mft_sample()).unwrap();
+    let mut entry = parser.get_entry(0).unwrap();
+
+    let clean: serde_json::Value = serde_json::to_value(&entry).unwrap();
+    assert!(
+        clean.get("errors").is_none(),
+        "entries that parse cleanly should not carry an errors field"
+    );
+
+    // Corrupt the form code (byte 8 of the header) of the second attribute ($FILE_NAME) so its
+    // header fails to parse.
+    let second = entry
+        .iter_attributes()
+        .nth(1)
+        .unwrap()
+        .unwrap()
+        .header
+        .start_offset as usize;
+    entry.data[second + 8] = 0x7F;
+
+    let json: serde_json::Value = serde_json::to_value(&entry).unwrap();
+    let errors = json["errors"].as_array().expect("expected an errors field");
+    assert_eq!(errors.len(), 1);
+    assert!(
+        errors[0]
+            .as_str()
+            .unwrap()
+            .contains("Unhandled resident flag: 127"),
+        "unexpected error message: {}",
+        errors[0]
+    );
+    // The attribute before the corrupt one is still emitted.
+    let attributes = json["attributes"].as_array().unwrap();
+    assert_eq!(attributes.len(), 1);
 }
 
 #[test]
