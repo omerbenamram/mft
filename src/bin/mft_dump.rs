@@ -282,13 +282,10 @@ impl MftDump {
                 Vec::new()
             };
 
-            // An extension record's streams are exported with its base entry, under the file's
-            // path. Only an extension that its base entry doesn't list exports its own.
-            let exports_streams =
-                entry.header.is_base_record() || !is_listed_by_its_base(&mut parser, &entry);
-
             if let Some(data_streams_dir) = &self.data_streams_output
-                && exports_streams
+                // An extension record's streams are exported with its base entry, under the
+                // file's path. Only an extension that its base entry doesn't list exports its own.
+                && (entry.header.is_base_record() || !is_listed_by_its_base(&mut parser, &entry))
                 && let Some(path) = &full_path
             {
                 let sanitized_path = sanitized(&path.to_string_lossy());
