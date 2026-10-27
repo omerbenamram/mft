@@ -215,13 +215,13 @@ impl UsnRecordV2 {
 fn decode_utf16le_strict(bytes: &[u8], base_offset: u64) -> Result<String> {
     debug_assert!(bytes.len().is_multiple_of(2), "validated by caller");
     let mut u16s = Vec::with_capacity(bytes.len() / 2);
-    for chunk in bytes.chunks_exact(2) {
+    for chunk in bytes.as_chunks::<2>().0 {
         u16s.push(u16::from_le_bytes([chunk[0], chunk[1]]));
     }
 
     // Strict: treat invalid surrogate pairs as invalid data.
     let mut out = String::new();
-    for ch in decode_utf16(u16s.into_iter()) {
+    for ch in decode_utf16(u16s) {
         let ch = ch.map_err(|_| Error::InvalidData {
             message: format!("invalid UTF-16LE in USN record name at offset 0x{base_offset:x}"),
         })?;

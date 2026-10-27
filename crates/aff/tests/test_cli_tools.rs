@@ -1,6 +1,8 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 
+mod common;
+
 #[cfg(feature = "crypto")]
 fn build_aff_with_signed_segment(segname: &str, arg: u32, data: &[u8]) -> Vec<u8> {
     use openssl::asn1::{Asn1Integer, Asn1Time};
@@ -72,11 +74,11 @@ fn build_aff_with_signed_segment(segname: &str, arg: u32, data: &[u8]) -> Vec<u8
 
 #[test]
 fn test_aff_cat_decrypts_afflib_fixture() {
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-        "../../external/refs/repos/sshock__AFFLIBv3@f6e51a8367cff73ea24c0adf09e533483c80ecd4/tests",
-    );
-    let aff_path = root.join("encrypted.aff");
-    let raw_path = root.join("encrypted.raw");
+    let aff_path = common::afflib_fixture_path("encrypted.aff");
+    let raw_path = common::afflib_fixture_path("encrypted.raw");
+    if !common::ensure_fixture(&aff_path) || !common::ensure_fixture(&raw_path) {
+        return;
+    }
     let raw = std::fs::read(&raw_path).unwrap();
 
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("aff-cat"));
@@ -87,10 +89,10 @@ fn test_aff_cat_decrypts_afflib_fixture() {
 
 #[test]
 fn test_aff_info_runs_and_reports_len() {
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-        "../../external/refs/repos/sshock__AFFLIBv3@f6e51a8367cff73ea24c0adf09e533483c80ecd4/tests",
-    );
-    let aff_path = root.join("encrypted.aff");
+    let aff_path = common::afflib_fixture_path("encrypted.aff");
+    if !common::ensure_fixture(&aff_path) {
+        return;
+    }
 
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("aff-info"));
     cmd.arg(&aff_path);

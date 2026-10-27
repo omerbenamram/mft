@@ -66,7 +66,7 @@ impl MftOnlySnapshot {
                 .iter_attributes_matching(Some(vec![MftAttributeType::FileName]))
                 .filter_map(std::result::Result::ok)
             {
-                let Some(fname) = attr.data.as_file_name().cloned() else {
+                let Some(fname) = attr.data.as_file_name() else {
                     continue;
                 };
 
@@ -75,7 +75,7 @@ impl MftOnlySnapshot {
                     .entry((entry_id, parent_id))
                     .or_default()
                     .push(DirChild {
-                        name: fname.name,
+                        name: fname.name.to_string(),
                         entry_id,
                         namespace: fname.namespace,
                         logical_size: fname.logical_size,
@@ -157,7 +157,7 @@ impl MftOnlySnapshot {
                     }
                     let key = (
                         meta.is_allocated,
-                        namespace_rank(c.namespace.clone()),
+                        namespace_rank(c.namespace),
                         Reverse(c.entry_id),
                     );
                     Some((c.entry_id, key))
@@ -187,7 +187,7 @@ fn is_entry_efs_encrypted(entry: &mft::MftEntry) -> bool {
         .iter_attributes_matching(Some(vec![MftAttributeType::StandardInformation]))
         .filter_map(std::result::Result::ok)
     {
-        if let Some(si) = attr.data.as_standard_info().cloned()
+        if let Some(si) = attr.data.as_standard_info()
             && si
                 .file_flags
                 .contains(FileAttributeFlags::FILE_ATTRIBUTE_ENCRYPTED)

@@ -10,11 +10,11 @@ liveview = ["dioxus/liveview", "dep:dioxus-liveview"]
 web = ["dioxus/web"]
 
 [dependencies]
-dioxus = { version = "0.7.0" }
-dioxus-liveview = { version = "0.7.2", optional = true, features = ["axum"] }
+dioxus = { version = "0.7.10" }
+dioxus-liveview = { version = "0.7.10", optional = true, features = ["axum"] }
 
 # Native file dialogs (desktop only)
-rfd = { version = "0.16.0", optional = true }
+rfd = { version = "0.17.2", optional = true }
 
 # Background work / async
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -30,12 +30,12 @@ mft = { path = "../.." }
 linkme = "0.3"
 
 # Human-readable sizes / dates
-jiff = { version = "0.2.16", default-features = false, features = ["std", "alloc", "tz-system", "tz-fat", "tzdb-zoneinfo", "tzdb-concatenated", "tzdb-bundle-platform", "perf-inline"] }
+jiff = { version = "0.2.38", default-features = false, features = ["std", "alloc", "tz-system", "tz-fat", "tzdb-zoneinfo", "tzdb-concatenated", "tzdb-bundle-platform", "perf-inline"] }
 bytesize = "2"
 
 # Settings persistence
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tempfile = "3.23"
+tempfile = "3.27"
 
 

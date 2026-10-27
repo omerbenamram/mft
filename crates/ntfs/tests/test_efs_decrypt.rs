@@ -41,7 +41,7 @@ fn test_efs_decrypt_reports_thumbprint_mismatch_against_fixture_pfx() {
             entry.data[start..end].to_vec()
         }
         ResidentialHeader::NonResident(nr) => {
-            let runs = attr.data.as_data_runs().cloned().unwrap().data_runs;
+            let runs = attr.data.as_data_runs().unwrap().data_runs.clone();
             let mut buf = vec![0u8; nr.file_size as usize];
             ntfs::ntfs::data_stream::read_from_data_runs(fs.volume(), &runs, 0, &mut buf).unwrap();
             buf

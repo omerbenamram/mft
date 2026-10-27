@@ -13,6 +13,15 @@ pub fn ntfs_fixture_path(name: &str) -> PathBuf {
     ntfs_fixture_root().join(name)
 }
 
+/// AFFLIBv3 test fixtures, from the clone pinned in `external/refs/repos/sshock__AFFLIBv3.commit`.
+pub fn afflib_fixture_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(
+            "../../external/refs/repos/sshock__AFFLIBv3@f6e51a8367cff73ea24c0adf09e533483c80ecd4/tests",
+        )
+        .join(name)
+}
+
 fn is_git_lfs_pointer(path: &Path) -> bool {
     let Ok(mut f) = File::open(path) else {
         return false;
