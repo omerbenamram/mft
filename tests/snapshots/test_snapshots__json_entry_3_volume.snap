@@ -1,0 +1,208 @@
+---
+source: tests/test_snapshots.rs
+expression: json
+---
+{
+  "header": {
+    "signature": [
+      70,
+      73,
+      76,
+      69
+    ],
+    "usa_offset": 48,
+    "usa_size": 3,
+    "metadata_transaction_journal": 23209794,
+    "sequence": 3,
+    "hard_link_count": 1,
+    "first_attribute_record_offset": 56,
+    "flags": "ALLOCATED",
+    "used_entry_size": 496,
+    "total_entry_size": 1024,
+    "base_reference": {
+      "entry": 0,
+      "sequence": 0
+    },
+    "first_attribute_id": 7,
+    "record_number": 3
+  },
+  "attributes": [
+    {
+      "header": {
+        "type_code": "StandardInformation",
+        "record_length": 72,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 48,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 0,
+        "name": "",
+        "start_offset": 56
+      },
+      "data": {
+        "created": "2007-06-30T12:50:52.252395Z",
+        "modified": "2007-06-30T12:50:52.252395Z",
+        "mft_modified": "2007-06-30T12:50:52.252395Z",
+        "accessed": "2007-06-30T12:50:52.252395Z",
+        "file_flags": "FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM",
+        "max_version": 0,
+        "version": 0,
+        "class_id": 0,
+        "owner_id": 0,
+        "security_id": 0,
+        "quota": 0,
+        "usn": 0
+      }
+    },
+    {
+      "header": {
+        "type_code": "FileName",
+        "record_length": 104,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 80,
+          "index_flag": 1,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 1,
+        "name": "",
+        "start_offset": 128
+      },
+      "data": {
+        "parent": {
+          "entry": 5,
+          "sequence": 5
+        },
+        "created": "2007-06-30T12:50:52.252395Z",
+        "modified": "2007-06-30T12:50:52.252395Z",
+        "mft_modified": "2007-06-30T12:50:52.252395Z",
+        "accessed": "2007-06-30T12:50:52.252395Z",
+        "logical_size": 0,
+        "physical_size": 0,
+        "flags": "FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM",
+        "reparse_value": 0,
+        "name_length": 7,
+        "namespace": "Win32AndDos",
+        "name": "$Volume"
+      }
+    },
+    {
+      "header": {
+        "type_code": "ObjectId",
+        "record_length": 40,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 16,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 6,
+        "name": "",
+        "start_offset": 232
+      },
+      "data": {
+        "object_id": "CC80E6BA-4C45-4742-B372-24956C937B9D",
+        "birth_volume_id": null,
+        "birth_object_id": null,
+        "domain_id": null
+      }
+    },
+    {
+      "header": {
+        "type_code": "SecurityDescriptor",
+        "record_length": 128,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 104,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 2,
+        "name": "",
+        "start_offset": 272
+      },
+      "data": {
+        "attribute_type": "SecurityDescriptor",
+        "data": "01000480480000005800000000000000140000000200340002000000000014009F011200010100000000000512000000000018009F011200010200000000000520000000200200000102000000000005200000002002000001020000000000052000000020020000"
+      }
+    },
+    {
+      "header": {
+        "type_code": "VolumeName",
+        "record_length": 24,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 0,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 4,
+        "name": "",
+        "start_offset": 400
+      },
+      "data": {
+        "name": ""
+      }
+    },
+    {
+      "header": {
+        "type_code": "VolumeInformation",
+        "record_length": 40,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 12,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 5,
+        "name": "",
+        "start_offset": 424
+      },
+      "data": {
+        "major_version": 3,
+        "minor_version": 1,
+        "flags": "(empty)"
+      }
+    },
+    {
+      "header": {
+        "type_code": "DATA",
+        "record_length": 24,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 0,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 3,
+        "name": "",
+        "start_offset": 464
+      },
+      "data": ""
+    }
+  ],
+  "valid_fixup": true
+}

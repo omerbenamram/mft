@@ -174,3 +174,28 @@ fn test_bitflags_serialize_as_flag_names() {
     assert_eq!(IndexRootFlags::empty().to_string(), "SMALL_INDEX");
     assert_eq!(IndexRootFlags::LARGE_INDEX.to_string(), "LARGE_INDEX");
 }
+
+#[test]
+fn test_volume_attributes_are_parsed() {
+    let mut parser = MftParser::from_path(mft_sample()).unwrap();
+    let volume = parser.get_entry(3).unwrap();
+
+    let name = volume
+        .iter_attributes_matching(Some(vec![MftAttributeType::VolumeName]))
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        name.data.as_volume_name().unwrap().name.to_utf8_string(),
+        ""
+    );
+
+    let info = volume
+        .iter_attributes_matching(Some(vec![MftAttributeType::VolumeInformation]))
+        .next()
+        .unwrap()
+        .unwrap();
+    let info = info.data.as_volume_information().unwrap();
+    assert_eq!((info.major_version, info.minor_version), (3, 1));
+    assert!(info.flags.is_empty());
+}
