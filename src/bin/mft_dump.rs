@@ -30,6 +30,7 @@ enum OutputFormat {
     JSON,
     JSONL,
     CSV,
+    Bodyfile,
 }
 
 impl OutputFormat {
@@ -38,6 +39,7 @@ impl OutputFormat {
             "json" => Some(OutputFormat::JSON),
             "jsonl" => Some(OutputFormat::JSONL),
             "csv" => Some(OutputFormat::CSV),
+            "bodyfile" => Some(OutputFormat::Bodyfile),
             _ => None,
         }
     }
@@ -304,6 +306,7 @@ impl MftDump {
 
             match self.output_format {
                 OutputFormat::JSON | OutputFormat::JSONL => self.print_json_entry(&entry)?,
+                OutputFormat::Bodyfile => self.print_bodyfile_entry(&entry, &mut parser)?,
                 OutputFormat::CSV => self.print_csv_entry(
                     &entry,
                     &mut parser,
@@ -345,6 +348,22 @@ impl MftDump {
         }
         self.json_buf.push(b'\n');
         out.write_all(&self.json_buf)?;
+
+        Ok(())
+    }
+
+    pub fn print_bodyfile_entry(
+        &mut self,
+        entry: &MftEntry,
+        parser: &mut MftParser<impl Read + Seek>,
+    ) -> Result<()> {
+        let out = self
+            .output
+            .as_mut()
+            .expect("Bodyfile flow keeps `output`, it is only taken by the CSV writer");
+        let full_path = parser.get_full_path_for_entry(entry)?.unwrap_or_default();
+
+        mft::bodyfile::write_entry(out, entry, &full_path)?;
 
         Ok(())
     }
@@ -404,9 +423,9 @@ fn main() -> Result<()> {
                 .short('o')
                 .long("output-format")
                 .action(ArgAction::Set)
-                .value_parser(clap::builder::PossibleValuesParser::new(["csv", "json", "jsonl"]))
+                .value_parser(clap::builder::PossibleValuesParser::new(["csv", "json", "jsonl", "bodyfile"]))
                 .default_value("json")
-                .help("Output format."),
+                .help("Output format. `bodyfile` writes Sleuth Kit bodyfile lines (like `fls -m`) for mactime."),
         )
         .arg(
             Arg::new("entry-range")
