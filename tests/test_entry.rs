@@ -146,8 +146,15 @@ fn test_out_of_range_filetime_is_error_not_panic() {
         "expected an out-of-range timestamp error while parsing attributes"
     );
 
-    // `MftEntry` serialization drops attribute parse errors; it should never panic.
-    serde_json::to_value(&entry).expect("entry should serialize");
+    // `MftEntry` serialization reports attribute parse errors instead of panicking.
+    let json = serde_json::to_value(&entry).expect("entry should serialize");
+    let errors = json["errors"].as_array().expect("expected an errors field");
+    assert!(
+        errors.iter().any(|e| e
+            .as_str()
+            .is_some_and(|s| s.contains("out of range for jiff::Timestamp"))),
+        "unexpected errors: {errors:?}"
+    );
 }
 
 #[test]
@@ -160,13 +167,17 @@ fn test_json_lists_attribute_errors() {
         clean.get("errors").is_none(),
         "entries that parse cleanly should not carry an errors field"
     );
-    let clean_attribute_count = clean["attributes"].as_array().unwrap().len();
 
-    // Corrupt the form code of the second attribute ($FILE_NAME) so its header fails to parse.
-    let first = entry.header.first_attribute_record_offset as usize;
-    let first_len =
-        u32::from_le_bytes(entry.data[first + 4..first + 8].try_into().unwrap()) as usize;
-    entry.data[first + first_len + 8] = 0x7F;
+    // Corrupt the form code (byte 8 of the header) of the second attribute ($FILE_NAME) so its
+    // header fails to parse.
+    let second = entry
+        .iter_attributes()
+        .nth(1)
+        .unwrap()
+        .unwrap()
+        .header
+        .start_offset as usize;
+    entry.data[second + 8] = 0x7F;
 
     let json: serde_json::Value = serde_json::to_value(&entry).unwrap();
     let errors = json["errors"].as_array().expect("expected an errors field");
@@ -182,5 +193,4 @@ fn test_json_lists_attribute_errors() {
     // The attribute before the corrupt one is still emitted.
     let attributes = json["attributes"].as_array().unwrap();
     assert_eq!(attributes.len(), 1);
-    assert!(attributes.len() < clean_attribute_count);
 }

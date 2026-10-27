@@ -53,14 +53,7 @@ impl ser::Serialize for MftEntry {
                 for attr in self.entry.iter_attributes() {
                     match attr {
                         Ok(attr) => seq.serialize_element(&attr)?,
-                        Err(e) => {
-                            let message = error_chain_message(&e);
-                            warn!(
-                                "[entry: {}] failed to parse attribute: {message}",
-                                self.entry.header.record_number
-                            );
-                            self.errors.borrow_mut().push(message);
-                        }
+                        Err(e) => self.errors.borrow_mut().push(error_chain_message(&e)),
                     }
                 }
                 seq.end()
