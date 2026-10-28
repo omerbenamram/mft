@@ -278,13 +278,15 @@ mod tests {
     use super::MftAttributeHeader;
     use crate::attribute::MftAttributeType;
 
+    const RESIDENT_SI: &[u8] = &[
+        0x10, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x48, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00,
+    ];
+
     #[test]
     fn data_flags_keep_unknown_bits() {
-        let mut raw = [0u8; 24];
-        raw[0..4].copy_from_slice(&0x80u32.to_le_bytes());
-        raw[4..8].copy_from_slice(&24u32.to_le_bytes());
+        let mut raw = RESIDENT_SI.to_vec();
         raw[12..14].copy_from_slice(&0x0101u16.to_le_bytes());
-        raw[20..22].copy_from_slice(&24u16.to_le_bytes());
 
         let header = MftAttributeHeader::from_slice(&raw, 0).unwrap().unwrap();
 
@@ -293,12 +295,7 @@ mod tests {
 
     #[test]
     fn attribute_test_01_resident() {
-        let raw: &[u8] = &[
-            0x10, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x48, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00,
-        ];
-
-        let attribute_header = MftAttributeHeader::from_slice(raw, 0)
+        let attribute_header = MftAttributeHeader::from_slice(RESIDENT_SI, 0)
             .expect("Shold parse correctly")
             .expect("Should not be $End");
 

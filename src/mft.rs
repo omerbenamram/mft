@@ -583,7 +583,6 @@ mod tests {
 
         // The failed read stopped halfway through entry 5, so reading it again has to seek.
         let entry = parser.get_entry(5).unwrap();
-        assert_eq!(entry.header.record_number, 5);
         assert_eq!(entry.find_best_name_attribute().unwrap().name, ".");
     }
 

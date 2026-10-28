@@ -80,8 +80,9 @@ impl<'a> IndexRootAttr<'a> {
         let relative_offset_to_index_node = stream.read_u32::<LittleEndian>()?;
         let index_node_length = stream.read_u32::<LittleEndian>()?;
         let index_node_allocation_length = stream.read_u32::<LittleEndian>()?;
+        // The flags are one byte, followed by three reserved bytes.
         let index_root_flags =
-            IndexRootFlags::from_bits_truncate(stream.read_u32::<LittleEndian>()?);
+            IndexRootFlags::from_bits_retain(stream.read_u32::<LittleEndian>()? & 0xFF);
         let index_entries = IndexEntries::from_slice(
             value,
             index_node_length,
@@ -153,7 +154,9 @@ impl<'a> IndexEntryHeader<'a> {
                     detail: "index entry offset overflow".to_string(),
                 })?;
             let attr_fname_length = stream.read_u16::<LittleEndian>()?;
-            let flags = IndexEntryFlags::from_bits_truncate(stream.read_u32::<LittleEndian>()?);
+            // The flags are two bytes, followed by two reserved bytes.
+            let flags =
+                IndexEntryFlags::from_bits_retain(stream.read_u32::<LittleEndian>()? & 0xFFFF);
 
             let fname_start = stream.position() as usize;
             if fname_start > end_pos || end_pos > value.len() {
