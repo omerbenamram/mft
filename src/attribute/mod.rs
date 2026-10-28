@@ -11,6 +11,8 @@ pub mod x70;
 pub mod x80;
 pub mod x90;
 pub mod xc0;
+pub mod xd0;
+pub mod xe0;
 
 use crate::err::Result;
 use crate::impl_serialize_for_bitflags;
@@ -33,6 +35,8 @@ use crate::attribute::x70::VolumeInformationAttr;
 use crate::attribute::x80::DataAttr;
 use crate::attribute::x90::IndexRootAttr;
 use crate::attribute::xc0::ReparsePointAttr;
+use crate::attribute::xd0::EaInformationAttr;
+use crate::attribute::xe0::EaAttr;
 use serde::Serialize;
 
 #[derive(Serialize, Clone, Debug)]
@@ -46,45 +50,51 @@ impl<'a> MftAttributeContent<'a> {
         match &header.residential_header {
             ResidentialHeader::Resident(resident) => {
                 let value = resident.value(record)?;
-                // A value too short for its fixed fields stays raw instead of erroring, so the
-                // attribute isn't dropped from output.
-                let raw = || {
+                // `None` keeps the value raw: a value too short for its fixed fields, or a reparse
+                // point or extended attribute that doesn't parse, stays in the output instead of
+                // erroring.
+                let parsed = match header.type_code {
+                    MftAttributeType::StandardInformation => Some(MftAttributeContent::AttrX10(
+                        StandardInfoAttr::from_slice(value)?,
+                    )),
+                    MftAttributeType::AttributeList => Some(MftAttributeContent::AttrX20(
+                        AttributeListAttr::from_slice(value)?,
+                    )),
+                    MftAttributeType::FileName => Some(MftAttributeContent::AttrX30(
+                        FileNameAttr::from_slice(value)?,
+                    )),
+                    MftAttributeType::DATA => {
+                        Some(MftAttributeContent::AttrX80(DataAttr::from_slice(value)))
+                    }
+                    MftAttributeType::ObjectId => Some(MftAttributeContent::AttrX40(
+                        ObjectIdAttr::from_stream(&mut Cursor::new(value), value.len())?,
+                    )),
+                    MftAttributeType::VolumeName => Some(MftAttributeContent::AttrX60(
+                        VolumeNameAttr::from_slice(value),
+                    )),
+                    MftAttributeType::VolumeInformation => VolumeInformationAttr::from_slice(value)
+                        .ok()
+                        .map(MftAttributeContent::AttrX70),
+                    MftAttributeType::ReparsePoint => {
+                        ReparsePointAttr::from_slice(value).map(MftAttributeContent::AttrXC0)
+                    }
+                    MftAttributeType::IndexRoot => Some(MftAttributeContent::AttrX90(
+                        IndexRootAttr::from_slice(value)?,
+                    )),
+                    MftAttributeType::EaInformation => {
+                        EaInformationAttr::from_slice(value).map(MftAttributeContent::AttrXD0)
+                    }
+                    MftAttributeType::EA => {
+                        EaAttr::from_slice(value).map(MftAttributeContent::AttrXE0)
+                    }
+                    _ => None,
+                };
+                Ok(parsed.unwrap_or_else(|| {
                     MftAttributeContent::Raw(RawAttribute::from_slice(
                         header.type_code.clone(),
                         value,
                     ))
-                };
-
-                match header.type_code {
-                    MftAttributeType::StandardInformation => Ok(MftAttributeContent::AttrX10(
-                        StandardInfoAttr::from_slice(value)?,
-                    )),
-                    MftAttributeType::AttributeList => Ok(MftAttributeContent::AttrX20(
-                        AttributeListAttr::from_slice(value)?,
-                    )),
-                    MftAttributeType::FileName => Ok(MftAttributeContent::AttrX30(
-                        FileNameAttr::from_slice(value)?,
-                    )),
-                    MftAttributeType::DATA => {
-                        Ok(MftAttributeContent::AttrX80(DataAttr::from_slice(value)))
-                    }
-                    MftAttributeType::ObjectId => Ok(MftAttributeContent::AttrX40(
-                        ObjectIdAttr::from_stream(&mut Cursor::new(value), value.len())?,
-                    )),
-                    MftAttributeType::VolumeName => Ok(MftAttributeContent::AttrX60(
-                        VolumeNameAttr::from_slice(value),
-                    )),
-                    MftAttributeType::VolumeInformation => {
-                        Ok(VolumeInformationAttr::from_slice(value)
-                            .map_or_else(|_| raw(), MftAttributeContent::AttrX70))
-                    }
-                    MftAttributeType::ReparsePoint => Ok(ReparsePointAttr::from_slice(value)
-                        .map_or_else(raw, MftAttributeContent::AttrXC0)),
-                    MftAttributeType::IndexRoot => Ok(MftAttributeContent::AttrX90(
-                        IndexRootAttr::from_slice(value)?,
-                    )),
-                    _ => Ok(raw()),
-                }
+                }))
             }
             ResidentialHeader::NonResident(nonresident) => {
                 let datarun_offset = nonresident.datarun_offset as usize;
@@ -152,6 +162,20 @@ impl<'a> MftAttributeContent<'a> {
         }
     }
 
+    pub fn as_ea_information(&self) -> Option<&EaInformationAttr> {
+        match self {
+            MftAttributeContent::AttrXD0(content) => Some(content),
+            _ => None,
+        }
+    }
+
+    pub fn as_ea(&self) -> Option<&EaAttr<'a>> {
+        match self {
+            MftAttributeContent::AttrXE0(content) => Some(content),
+            _ => None,
+        }
+    }
+
     pub fn as_standard_info(&self) -> Option<&StandardInfoAttr> {
         match self {
             MftAttributeContent::AttrX10(content) => Some(content),
@@ -194,6 +218,8 @@ pub enum MftAttributeContent<'a> {
     AttrX80(DataAttr<'a>),
     AttrX90(IndexRootAttr<'a>),
     AttrXC0(ReparsePointAttr<'a>),
+    AttrXD0(EaInformationAttr),
+    AttrXE0(EaAttr<'a>),
     DataRun(NonResidentAttr),
 }
 

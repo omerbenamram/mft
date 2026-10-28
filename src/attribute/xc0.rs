@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use crate::Utf16LeStr;
 use crate::attribute::raw::data_as_hex;
-use byteorder::{ByteOrder, LittleEndian};
+use crate::utils::{read_u16, read_u32};
 use serde::Serialize;
 use winstructs::guid::Guid;
 
@@ -175,14 +175,6 @@ fn name_pair(data: &[u8], path_buffer: usize) -> Option<(Utf16LeStr<'_>, Utf16Le
     };
 
     Some((name(field(0)?, field(2)?)?, name(field(4)?, field(6)?)?))
-}
-
-fn read_u16(buf: &[u8], offset: usize) -> Option<u16> {
-    buf.get(offset..offset + 2).map(LittleEndian::read_u16)
-}
-
-fn read_u32(buf: &[u8], offset: usize) -> Option<u32> {
-    buf.get(offset..offset + 4).map(LittleEndian::read_u32)
 }
 
 /// Names for the documented reparse tags.

@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Parse `$EA_INFORMATION` (0xD0) and `$EA` (0xE0) into `EaInformationAttr` and `EaAttr`: each extended attribute's flags, name and value. WSL's `$LXUID`, `$LXGID`, `$LXMOD` and `$LXDEV` and code integrity's `$CI.CATALOGHINT` are decoded, and other values keep their data as hex.
+
+### Changed
+- `MftAttributeContent` has new `AttrXD0` and `AttrXE0` variants, and `$EA_INFORMATION` and `$EA` JSON output changes from raw hex to the parsed structures.
+
 ## [0.8.0] - 2026-10-27
 
 ### Added
@@ -17,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parse `$REPARSE_POINT` (0xC0) into `ReparsePointAttr`: the tag, its documented name, the GUID for third-party tags, and decoded symlink, junction/mount point, AppExecLink and WSL symlink targets. Other tags keep their data as hex.
 - `mft_dump` JSON and JSONL output include each entry's `full_path` (previously only CSV had it).
 - `FlatMftEntryWithName::from_entry_with_path` builds a CSV row from an already-resolved path and the entry's extension records.
-- `MftParser::get_extension_entries` reads the extension records that hold attributes an `$ATTRIBUTE_LIST` moved out of a base record, `MftEntry::has_attribute_list` says whether there are any, and `entry::find_best_name_attribute_in` picks a file's name across its base and extension records (#148).
+- `MftParser::get_extension_entries` reads the extension records that hold attributes an `$ATTRIBUTE_LIST` moved out of a base record, and `entry::find_best_name_attribute_in` picks a file's name across its base and extension records (#148).
 - JSON output lists attributes that failed to parse in a per-entry `errors` array (only present when non-empty). Previously they were dropped silently.
 - Add `MftAttributeType::PropertySet` (`0xF0`, NT4-era `$PROPERTY_SET`).
 - JSON output includes `data_size` for resident attributes (#125).
