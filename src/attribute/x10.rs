@@ -63,7 +63,7 @@ impl StandardInfoAttr {
         let accessed =
             crate::utils::windows_filetime_to_timestamp(reader.read_u64::<LittleEndian>()?)?;
 
-        let file_flags = FileAttributeFlags::from_bits_truncate(reader.read_u32::<LittleEndian>()?);
+        let file_flags = FileAttributeFlags::from_bits_retain(reader.read_u32::<LittleEndian>()?);
         let max_version = reader.read_u32::<LittleEndian>()?;
         let version = reader.read_u32::<LittleEndian>()?;
         let class_id = reader.read_u32::<LittleEndian>()?;
@@ -144,7 +144,7 @@ impl StandardInfoAttr {
             modified,
             mft_modified,
             accessed,
-            file_flags: FileAttributeFlags::from_bits_truncate(reader.read_u32::<LittleEndian>()?),
+            file_flags: FileAttributeFlags::from_bits_retain(reader.read_u32::<LittleEndian>()?),
             max_version: reader.read_u32::<LittleEndian>()?,
             version: reader.read_u32::<LittleEndian>()?,
             class_id: reader.read_u32::<LittleEndian>()?,
@@ -170,6 +170,17 @@ mod tests {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xB0, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x68, 0x58, 0xA0, 0x0A, 0x02, 0x00, 0x00, 0x00,
     ];
+
+    #[test]
+    fn file_flags_keep_unknown_bits() {
+        // 0x80000000 is set on `$Extend\$RmMetadata\$Txf`, and has no documented name.
+        let mut buf = STDINFO_72.to_vec();
+        buf[32..36].copy_from_slice(&0x8000_0020u32.to_le_bytes());
+
+        let attr = StandardInfoAttr::from_slice(&buf).unwrap();
+
+        assert_eq!(attr.file_flags.bits(), 0x8000_0020);
+    }
 
     #[test]
     fn from_slice_len_48_treats_extended_fields_as_absent() {

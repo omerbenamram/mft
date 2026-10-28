@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MftAttributeContent` has a new `AttrX50` variant, and resident `$SECURITY_DESCRIPTOR` JSON output changes from raw hex to the parsed descriptor.
 - `MftAttributeContent` has new `AttrXD0` and `AttrXE0` variants, and `$EA_INFORMATION` and `$EA` JSON output changes from raw hex to the parsed structures.
 
+### Fixed
+- Flag fields keep bits that have no name (entry flags, attribute data flags, `$STANDARD_INFORMATION` and `$FILE_NAME` file attributes, and index flags) instead of dropping them, and JSON and CSV print them as hex, such as the `0x80000000` set on `$Extend\$RmMetadata\$Txf`.
+- A read error partway through an entry no longer makes the next `get_entry` read from the wrong offset.
+
 ## [0.8.0] - 2026-10-27
 
 ### Added

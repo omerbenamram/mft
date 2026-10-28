@@ -96,7 +96,7 @@ impl<'a> FileNameAttr<'a> {
         // The allocated size comes first (0x28), then the real size (0x30).
         let physical_size = stream.read_u64::<LittleEndian>()?;
         let logical_size = stream.read_u64::<LittleEndian>()?;
-        let flags = FileAttributeFlags::from_bits_truncate(stream.read_u32::<LittleEndian>()?);
+        let flags = FileAttributeFlags::from_bits_retain(stream.read_u32::<LittleEndian>()?);
         let reparse_value = stream.read_u32::<LittleEndian>()?;
         let name_length = stream.read_u8()?;
         let namespace = stream.read_u8()?;

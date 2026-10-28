@@ -105,7 +105,7 @@ impl<'a> MftAttributeHeader<'a> {
         let name_offset_raw = read_u16_le(record, 10)?;
         let name_offset = (name_size > 0).then_some(name_offset_raw);
 
-        let data_flags = AttributeDataFlags::from_bits_truncate(read_u16_le(record, 12)?);
+        let data_flags = AttributeDataFlags::from_bits_retain(read_u16_le(record, 12)?);
         let instance = read_u16_le(record, 14)?;
 
         let residential_header = match form_code {

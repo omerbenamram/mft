@@ -163,7 +163,7 @@ impl EntryHeader {
         let sequence = reader.read_u16::<LittleEndian>()?;
         let hard_link_count = reader.read_u16::<LittleEndian>()?;
         let first_attribute_offset = reader.read_u16::<LittleEndian>()?;
-        let flags = EntryFlags::from_bits_truncate(reader.read_u16::<LittleEndian>()?);
+        let flags = EntryFlags::from_bits_retain(reader.read_u16::<LittleEndian>()?);
         let entry_size_real = reader.read_u32::<LittleEndian>()?;
         let entry_size_allocated = reader.read_u32::<LittleEndian>()?;
 
@@ -208,7 +208,7 @@ impl EntryHeader {
             sequence: 0,
             hard_link_count: 0,
             first_attribute_record_offset: 0,
-            flags: EntryFlags::from_bits_truncate(0),
+            flags: EntryFlags::empty(),
             used_entry_size: 0,
             total_entry_size: 0,
             base_reference: MftReference {
@@ -531,6 +531,21 @@ pub(crate) mod tests {
         assert_eq!(entry_header.base_reference.entry, 0);
         assert_eq!(entry_header.first_attribute_id, 6);
         assert_eq!(entry_header.record_number, 38357);
+    }
+
+    #[test]
+    fn entry_flags_keep_unknown_bits() {
+        let mut header_buffer = vec![0u8; 56];
+        header_buffer[0..4].copy_from_slice(b"FILE");
+        header_buffer[22..24].copy_from_slice(&0x8011u16.to_le_bytes());
+
+        let entry_header = EntryHeader::from_reader(&mut Cursor::new(header_buffer), 0).unwrap();
+
+        assert_eq!(entry_header.flags.bits(), 0x8011);
+        assert_eq!(
+            serde_json::to_string(&entry_header.flags).unwrap(),
+            r#""ALLOCATED | 0x8010""#
+        );
     }
 
     #[test]
