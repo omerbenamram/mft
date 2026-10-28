@@ -105,7 +105,7 @@ impl<'a> MftAttributeHeader<'a> {
         let name_offset_raw = read_u16_le(record, 10)?;
         let name_offset = (name_size > 0).then_some(name_offset_raw);
 
-        let data_flags = AttributeDataFlags::from_bits_truncate(read_u16_le(record, 12)?);
+        let data_flags = AttributeDataFlags::from_bits_retain(read_u16_le(record, 12)?);
         let instance = read_u16_le(record, 14)?;
 
         let residential_header = match form_code {
@@ -278,14 +278,24 @@ mod tests {
     use super::MftAttributeHeader;
     use crate::attribute::MftAttributeType;
 
+    const RESIDENT_SI: &[u8] = &[
+        0x10, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x48, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00,
+    ];
+
+    #[test]
+    fn data_flags_keep_unknown_bits() {
+        let mut raw = RESIDENT_SI.to_vec();
+        raw[12..14].copy_from_slice(&0x0101u16.to_le_bytes());
+
+        let header = MftAttributeHeader::from_slice(&raw, 0).unwrap().unwrap();
+
+        assert_eq!(header.data_flags.bits(), 0x0101);
+    }
+
     #[test]
     fn attribute_test_01_resident() {
-        let raw: &[u8] = &[
-            0x10, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x48, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00,
-        ];
-
-        let attribute_header = MftAttributeHeader::from_slice(raw, 0)
+        let attribute_header = MftAttributeHeader::from_slice(RESIDENT_SI, 0)
             .expect("Shold parse correctly")
             .expect("Should not be $End");
 

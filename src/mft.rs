@@ -40,9 +40,9 @@ pub struct MftParser<T: Read + Seek> {
     /// Only needed for entries whose `$ATTRIBUTE_LIST` is non-resident, since the clusters
     /// holding it aren't in the MFT.
     extensions_index: Option<HashMap<u64, Vec<u64>>>,
-    // Next expected read offset in the underlying stream. Used to avoid a seek syscall when
+    // Where the underlying stream is positioned, if known. Used to avoid a seek syscall when
     // reading entries sequentially.
-    next_read_offset: u64,
+    next_read_offset: Option<u64>,
 }
 
 impl MftParser<BufReader<File>> {
@@ -86,7 +86,7 @@ impl<T: Read + Seek> MftParser<T> {
             size,
             entries_cache: LruCache::new(NonZeroUsize::new(1000).expect("1000 > 0")),
             extensions_index: None,
-            next_read_offset: 0,
+            next_read_offset: Some(0),
         })
     }
 
@@ -160,13 +160,13 @@ impl<T: Read + Seek> MftParser<T> {
 
         // Avoid seeking when reading sequential entries; this keeps the BufReader hot and
         // removes a large number of __lseek syscalls in tight loops.
-        if self.next_read_offset != desired_offset {
+        // A failed seek or read leaves the stream somewhere unknown, so the position is only
+        // set again once the whole entry has been read.
+        if self.next_read_offset.take() != Some(desired_offset) {
             self.data.seek(SeekFrom::Start(desired_offset))?;
-            self.next_read_offset = desired_offset;
         }
-
         self.data.read_exact(buffer)?;
-        self.next_read_offset = self.next_read_offset.saturating_add(entry_size);
+        self.next_read_offset = Some(desired_offset + entry_size);
         Ok(())
     }
 
@@ -466,6 +466,7 @@ impl<T: Read + Seek> MftParser<T> {
 mod tests {
     use crate::tests::fixtures::mft_sample;
     use crate::{MftEntry, MftParser};
+    use std::io::{self, Cursor, Read, Seek, SeekFrom};
     use std::path::PathBuf;
 
     const ENTRY_SIZE: usize = 1024;
@@ -544,6 +545,45 @@ mod tests {
             .collect();
         paths.sort();
         paths
+    }
+
+    /// Reads at most half an entry per call, and fails once mid-entry when `fail` is set.
+    struct FlakyReader {
+        inner: Cursor<Vec<u8>>,
+        fail: bool,
+    }
+
+    impl Read for FlakyReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.fail && self.inner.position() % ENTRY_SIZE as u64 == ENTRY_SIZE as u64 / 2 {
+                self.fail = false;
+                return Err(io::Error::other("flaky read"));
+            }
+            let len = buf.len().min(ENTRY_SIZE / 2);
+            self.inner.read(&mut buf[..len])
+        }
+    }
+
+    impl Seek for FlakyReader {
+        fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+
+    #[test]
+    fn test_read_after_a_failed_read_seeks_back_to_the_entry() {
+        let reader = FlakyReader {
+            inner: Cursor::new(cyclic_mft()),
+            fail: false,
+        };
+        let mut parser = MftParser::from_read_seek(reader, None).unwrap();
+
+        parser.data.fail = true;
+        assert!(parser.get_entry(5).is_err());
+
+        // The failed read stopped halfway through entry 5, so reading it again has to seek.
+        let entry = parser.get_entry(5).unwrap();
+        assert_eq!(entry.find_best_name_attribute().unwrap().name, ".");
     }
 
     #[test]

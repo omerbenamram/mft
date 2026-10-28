@@ -163,7 +163,7 @@ impl EntryHeader {
         let sequence = reader.read_u16::<LittleEndian>()?;
         let hard_link_count = reader.read_u16::<LittleEndian>()?;
         let first_attribute_offset = reader.read_u16::<LittleEndian>()?;
-        let flags = EntryFlags::from_bits_truncate(reader.read_u16::<LittleEndian>()?);
+        let flags = EntryFlags::from_bits_retain(reader.read_u16::<LittleEndian>()?);
         let entry_size_real = reader.read_u32::<LittleEndian>()?;
         let entry_size_allocated = reader.read_u32::<LittleEndian>()?;
 
@@ -208,7 +208,7 @@ impl EntryHeader {
             sequence: 0,
             hard_link_count: 0,
             first_attribute_record_offset: 0,
-            flags: EntryFlags::from_bits_truncate(0),
+            flags: EntryFlags::empty(),
             used_entry_size: 0,
             total_entry_size: 0,
             base_reference: MftReference {
@@ -506,17 +506,16 @@ pub(crate) mod tests {
     use crate::err::{Error, Result};
     use std::io::Cursor;
 
+    const HEADER_38357: &[u8] = &[
+        0x46, 0x49, 0x4C, 0x45, 0x30, 0x00, 0x03, 0x00, 0xCC, 0xB3, 0x7D, 0x84, 0x0C, 0x00, 0x00,
+        0x00, 0x05, 0x00, 0x01, 0x00, 0x38, 0x00, 0x05, 0x00, 0x48, 0x03, 0x00, 0x00, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0xD5,
+        0x95, 0x00, 0x00, 0x53, 0x57, 0x81, 0x37, 0x00, 0x00, 0x00, 0x00,
+    ];
+
     #[test]
     fn mft_header_test_01() {
-        let header_buffer: &[u8] = &[
-            0x46, 0x49, 0x4C, 0x45, 0x30, 0x00, 0x03, 0x00, 0xCC, 0xB3, 0x7D, 0x84, 0x0C, 0x00,
-            0x00, 0x00, 0x05, 0x00, 0x01, 0x00, 0x38, 0x00, 0x05, 0x00, 0x48, 0x03, 0x00, 0x00,
-            0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x00,
-            0x00, 0x00, 0xD5, 0x95, 0x00, 0x00, 0x53, 0x57, 0x81, 0x37, 0x00, 0x00, 0x00, 0x00,
-        ];
-
-        let entry_header =
-            EntryHeader::from_reader(&mut Cursor::new(header_buffer), 38357).unwrap();
+        let entry_header = EntryHeader::from_reader(&mut Cursor::new(HEADER_38357), 38357).unwrap();
 
         assert_eq!(&entry_header.signature, b"FILE");
         assert_eq!(entry_header.usa_offset, 48);
@@ -531,6 +530,17 @@ pub(crate) mod tests {
         assert_eq!(entry_header.base_reference.entry, 0);
         assert_eq!(entry_header.first_attribute_id, 6);
         assert_eq!(entry_header.record_number, 38357);
+    }
+
+    #[test]
+    fn entry_flags_keep_unknown_bits() {
+        let mut header_buffer = HEADER_38357.to_vec();
+        header_buffer[22..24].copy_from_slice(&0x8011u16.to_le_bytes());
+
+        let entry_header =
+            EntryHeader::from_reader(&mut Cursor::new(header_buffer), 38357).unwrap();
+
+        assert_eq!(entry_header.flags.bits(), 0x8011);
     }
 
     #[test]
