@@ -126,3 +126,18 @@ impl<'a> FileNameAttr<'a> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::FileNameAttr;
+
+    #[test]
+    fn flags_keep_unknown_bits() {
+        let mut value = vec![0u8; 66];
+        value[0x38..0x3C].copy_from_slice(&0x8000_0006u32.to_le_bytes());
+
+        let attr = FileNameAttr::from_slice(&value).unwrap();
+
+        assert_eq!(attr.flags.bits(), 0x8000_0006);
+    }
+}

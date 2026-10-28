@@ -40,9 +40,9 @@ pub struct MftParser<T: Read + Seek> {
     /// Only needed for entries whose `$ATTRIBUTE_LIST` is non-resident, since the clusters
     /// holding it aren't in the MFT.
     extensions_index: Option<HashMap<u64, Vec<u64>>>,
-    // Next expected read offset in the underlying stream. Used to avoid a seek syscall when
+    // Where the underlying stream is positioned, if known. Used to avoid a seek syscall when
     // reading entries sequentially.
-    next_read_offset: u64,
+    next_read_offset: Option<u64>,
 }
 
 impl MftParser<BufReader<File>> {
@@ -86,7 +86,7 @@ impl<T: Read + Seek> MftParser<T> {
             size,
             entries_cache: LruCache::new(NonZeroUsize::new(1000).expect("1000 > 0")),
             extensions_index: None,
-            next_read_offset: 0,
+            next_read_offset: Some(0),
         })
     }
 
@@ -160,17 +160,13 @@ impl<T: Read + Seek> MftParser<T> {
 
         // Avoid seeking when reading sequential entries; this keeps the BufReader hot and
         // removes a large number of __lseek syscalls in tight loops.
-        if self.next_read_offset != desired_offset {
+        // A failed seek or read leaves the stream somewhere unknown, so the position is only
+        // set again once the whole entry has been read.
+        if self.next_read_offset.take() != Some(desired_offset) {
             self.data.seek(SeekFrom::Start(desired_offset))?;
-            self.next_read_offset = desired_offset;
         }
-
-        if let Err(e) = self.data.read_exact(buffer) {
-            // The stream stopped somewhere inside the entry, so the next read has to seek.
-            self.next_read_offset = u64::MAX;
-            return Err(e.into());
-        }
-        self.next_read_offset = self.next_read_offset.saturating_add(entry_size);
+        self.data.read_exact(buffer)?;
+        self.next_read_offset = Some(desired_offset + entry_size);
         Ok(())
     }
 

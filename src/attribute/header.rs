@@ -279,6 +279,19 @@ mod tests {
     use crate::attribute::MftAttributeType;
 
     #[test]
+    fn data_flags_keep_unknown_bits() {
+        let mut raw = [0u8; 24];
+        raw[0..4].copy_from_slice(&0x80u32.to_le_bytes());
+        raw[4..8].copy_from_slice(&24u32.to_le_bytes());
+        raw[12..14].copy_from_slice(&0x0101u16.to_le_bytes());
+        raw[20..22].copy_from_slice(&24u16.to_le_bytes());
+
+        let header = MftAttributeHeader::from_slice(&raw, 0).unwrap().unwrap();
+
+        assert_eq!(header.data_flags.bits(), 0x0101);
+    }
+
+    #[test]
     fn attribute_test_01_resident() {
         let raw: &[u8] = &[
             0x10, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
