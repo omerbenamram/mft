@@ -6,6 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A file whose parent directory's record was reused for another file is now `[Orphaned]\<name>`, instead of getting a path through the record's new file (or `[Unknown]\<name>` when that file isn't a directory). Path resolution now checks the sequence number in each `$FILE_NAME` parent reference and base record reference. A deleted directory still holds the paths of the deleted files in it: Windows bumps a record's sequence number by one when it frees the record, so a freed parent one ahead of the reference still matches. In three of our sample images, this changes the paths of 43–99% of the deleted files, almost all of them from `[Unknown]\<name>`, and of no allocated files. Thanks @mcardonaes (#150).
+
 ## [0.9.1] - 2026-10-29
 
 ### Changed

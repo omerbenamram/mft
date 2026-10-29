@@ -853,8 +853,8 @@ pub(crate) mod tests {
                 .find_best_name_in_parent()
                 .map(|n| (n.parent, n.namespace, n.name));
             // Parses each attribute whole, unlike the lookups on `MftEntry`.
-            let full = find_best_name_attribute_in(&entry, &[])
-                .map(|f| (f.parent.entry, f.namespace, f.name));
+            let full =
+                find_best_name_attribute_in(&entry, &[]).map(|f| (f.parent, f.namespace, f.name));
             named += usize::from(full.is_some());
             assert_eq!(name, full, "entry {}", entry.header.record_number);
         }

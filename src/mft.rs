@@ -12,13 +12,14 @@ use std::fs::{self, File};
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use winstructs::ntfs::mft_reference::MftReference;
 
 /// How an entry contributes to the paths of its children.
 enum PathStep {
     /// The entry's full path is known without looking further.
     Final(PathBuf),
     /// The entry has no name, and takes the path of its base entry.
-    Alias(u64),
+    Alias(MftReference),
     /// The entry's path is its parent's path joined with `name`.
     Named { name: String, parent: PathParent },
 }
@@ -26,7 +27,49 @@ enum PathStep {
 enum PathParent {
     Root,
     Orphan,
-    Entry(u64),
+    Entry(MftReference),
+}
+
+/// The sequence number and allocation of a record, which tell whether a reference points at the
+/// file the record holds now.
+#[derive(Clone, Copy)]
+struct Generation {
+    sequence: u16,
+    allocated: bool,
+}
+
+impl Generation {
+    fn of(entry: &MftEntry) -> Self {
+        Generation {
+            sequence: entry.header.sequence,
+            allocated: entry.is_allocated(),
+        }
+    }
+
+    /// Whether a reference with sequence number `sequence` points at this record, rather than at
+    /// an earlier file the record held before it was reused. Windows bumps a record's sequence
+    /// number when it frees it, so references to a deleted file are one behind its freed record.
+    fn is_referenced_by(self, sequence: u16) -> bool {
+        sequence == self.sequence || (!self.allocated && sequence.wrapping_add(1) == self.sequence)
+    }
+}
+
+/// A directory's path, as cached by the parser.
+struct CachedPath {
+    path: PathBuf,
+    /// The directory's record, which references to it are checked against. `None` for a record
+    /// that couldn't be read, whose path is `[Unknown]` whichever reference reaches it.
+    generation: Option<Generation>,
+}
+
+/// The path of a file whose parent reference is stale: the parent's record now holds another
+/// file.
+fn stale_parent_path(reference: MftReference) -> PathBuf {
+    trace!(
+        "Found stale parent reference to entry ID {} (sequence {})",
+        reference.entry, reference.sequence
+    );
+    PathBuf::from("[Orphaned]")
 }
 
 /// A copy of `path` with room for `extra` more bytes, so pushing them doesn't copy it again.
@@ -46,7 +89,7 @@ pub struct MftParser<T: Read + Seek> {
     /// Instead this will be guessed from the entry headers, see `guess_entry_size`.
     entry_size: u32,
     size: u64,
-    entries_cache: LruCache<u64, PathBuf>,
+    entries_cache: LruCache<u64, CachedPath>,
     /// The directories that parent loops were cut at, which resolve as orphans. Kept outside
     /// `entries_cache`, so a loop stays cut after its paths leave it.
     cycle_cuts: BTreeSet<u64>,
@@ -264,12 +307,9 @@ impl<T: Read + Seek> MftParser<T> {
     /// deletion. A freed record pointing at a live file was dropped from its attribute list.
     fn is_extension_of(record: &MftEntry, base: &MftEntry) -> bool {
         let reference = &record.header.base_reference;
-        let sequence = base.header.sequence;
-        let sequence_matches = reference.sequence == sequence
-            || (!base.is_allocated() && reference.sequence == sequence.wrapping_sub(1));
         reference.entry == base.header.record_number
             && record.is_allocated() == base.is_allocated()
-            && sequence_matches
+            && Generation::of(base).is_referenced_by(reference.sequence)
     }
 
     fn extensions_index(&mut self) -> &HashMap<u64, Vec<u64>> {
@@ -293,10 +333,10 @@ impl<T: Read + Seek> MftParser<T> {
         self.extensions_index.get_or_insert_default()
     }
 
-    /// The name and parent ID of an entry for path resolution, from
+    /// The name and parent of an entry for path resolution, from
     /// [`find_best_name_attribute_in`]. Extension records are only read when the base record has
     /// no long name.
-    fn best_name(&mut self, entry: &MftEntry) -> Option<(String, u64)> {
+    fn best_name(&mut self, entry: &MftEntry) -> Option<(String, MftReference)> {
         if let Some(name) = entry.find_best_name_in_parent()
             && name.namespace.is_long()
         {
@@ -306,7 +346,7 @@ impl<T: Read + Seek> MftParser<T> {
         // Without an `$ATTRIBUTE_LIST`, there are no extension records and nothing is read.
         let extensions = self.get_extension_entries(entry);
         find_best_name_attribute_in(entry, &extensions)
-            .map(|fname| (fname.name.to_utf8_string(), fname.parent.entry))
+            .map(|fname| (fname.name.to_utf8_string(), fname.parent))
     }
 
     /// Classifies an entry for path resolution, as the parent of another entry.
@@ -316,12 +356,12 @@ impl<T: Read + Seek> MftParser<T> {
     }
 
     /// [`MftParser::path_step`], given the entry's [`MftParser::best_name`].
-    fn path_step_named(&self, entry: &MftEntry, name: Option<(String, u64)>) -> PathStep {
+    fn path_step_named(&self, entry: &MftEntry, name: Option<(String, MftReference)>) -> PathStep {
         match name {
             // A parent that isn't a directory can't be trusted.
             Some(_) if !entry.is_dir() => PathStep::Final(PathBuf::from("[Unknown]")),
             Some((name, parent)) => {
-                let parent = match parent {
+                let parent = match parent.entry {
                     // MFT entry 5 is the root path.
                     5 => PathParent::Root,
                     0 => PathParent::Orphan,
@@ -332,7 +372,7 @@ impl<T: Read + Seek> MftParser<T> {
                     _ if self.cycle_cuts.contains(&entry.header.record_number) => {
                         PathParent::Orphan
                     }
-                    id => PathParent::Entry(id),
+                    _ => PathParent::Entry(parent),
                 };
                 PathStep::Named { name, parent }
             }
@@ -340,7 +380,7 @@ impl<T: Read + Seek> MftParser<T> {
             None => match entry.header.base_reference.entry {
                 0 => PathStep::Final(PathBuf::new()),
                 _ if !entry.is_dir() => PathStep::Final(PathBuf::from("[Unknown]")),
-                base => PathStep::Alias(base),
+                _ => PathStep::Alias(entry.header.base_reference),
             },
         }
     }
@@ -352,34 +392,41 @@ impl<T: Read + Seek> MftParser<T> {
     /// A cycle is cut at its named entry with the lowest ID, which becomes `[Orphaned]/<name>`
     /// (in a cycle without names, every entry is `[Orphaned]`). This keeps paths independent of
     /// the order in which entries are resolved.
-    fn resolve_directory_path(&mut self, entry_id: u64, first_step: PathStep) -> PathBuf {
+    ///
+    /// A directory whose parent reference is stale (the parent's record was reused for another
+    /// file) becomes `[Orphaned]/<name>` too.
+    fn resolve_directory_path(
+        &mut self,
+        entry_id: u64,
+        generation: Option<Generation>,
+        first_step: PathStep,
+    ) -> PathBuf {
         // Most directories' parents are cached.
         if let PathStep::Named {
             name,
-            parent: PathParent::Entry(parent_id),
+            parent: PathParent::Entry(parent),
         } = &first_step
-            && let Some(cached) = self.entries_cache.get(parent_id)
+            && let Some(mut path) = self.cached_directory_path(*parent, 1 + name.len())
         {
-            let mut path = path_with_room(cached, 1 + name.len());
             path.push(name);
-            self.entries_cache.put(entry_id, path.clone());
+            self.cache_path(entry_id, generation, path.clone());
             return path;
         }
 
-        // Directories from `entry_id` upwards, each with its name, or none if it takes its base
-        // entry's path.
-        let mut chain: Vec<(u64, Option<String>)> = Vec::new();
+        // Directories from `entry_id` upwards, each with its record and its name, or none if it
+        // takes its base entry's path.
+        let mut chain: Vec<(u64, Option<Generation>, Option<String>)> = Vec::new();
         // The length of their names, joined into a path.
         let mut names_len = 0;
         // Where each directory is in `chain`.
         let mut positions: HashMap<u64, usize> = HashMap::new();
-        let mut current_id = entry_id;
+        let mut current = (entry_id, generation);
         let mut step = first_step;
 
         let mut prefix = loop {
             let (name, parent) = match step {
                 PathStep::Final(path) => {
-                    self.entries_cache.put(current_id, path.clone());
+                    self.cache_path(current.0, current.1, path.clone());
                     break path;
                 }
                 PathStep::Alias(base) => (None, PathParent::Entry(base)),
@@ -388,25 +435,34 @@ impl<T: Read + Seek> MftParser<T> {
                     (Some(name), parent)
                 }
             };
-            chain.push((current_id, name));
-            let next_id = match parent {
+            chain.push((current.0, current.1, name));
+            let next = match parent {
                 PathParent::Root => break PathBuf::with_capacity(names_len),
                 PathParent::Orphan => break PathBuf::from("[Orphaned]"),
-                PathParent::Entry(id) => id,
+                PathParent::Entry(reference) => reference,
             };
 
-            if let Some(cached) = self.entries_cache.get(&next_id) {
-                break path_with_room(cached, names_len);
+            if let Some(path) = self.cached_directory_path(next, names_len) {
+                break path;
             }
 
             // Most directories' parents are cached, so this is only built past a miss.
-            positions.insert(current_id, chain.len() - 1);
-            if let Some(&cycle_start) = positions.get(&next_id) {
-                trace!("Found a cycle in parent references at entry ID {next_id}");
+            positions.insert(current.0, chain.len() - 1);
+            if let Some(&cycle_start) = positions.get(&next.entry) {
+                if chain[cycle_start]
+                    .1
+                    .is_some_and(|g| !g.is_referenced_by(next.sequence))
+                {
+                    break stale_parent_path(next);
+                }
+                trace!(
+                    "Found a cycle in parent references at entry ID {}",
+                    next.entry
+                );
                 // Cut at the named directory with the lowest ID, which becomes an orphan. The ones
                 // past it resolve through it when they are asked for.
                 if let Some(cut) = (cycle_start..chain.len())
-                    .filter(|&i| chain[i].1.is_some())
+                    .filter(|&i| chain[i].2.is_some())
                     .min_by_key(|&i| chain[i].0)
                 {
                     self.cycle_cuts.insert(chain[cut].0);
@@ -415,33 +471,67 @@ impl<T: Read + Seek> MftParser<T> {
                 break PathBuf::from("[Orphaned]");
             }
 
-            current_id = next_id;
-            step = match self.get_entry(current_id) {
-                Ok(parent) => self.path_step(&parent),
+            step = match self.get_entry(next.entry) {
+                Ok(parent) => {
+                    let generation = Generation::of(&parent);
+                    if !generation.is_referenced_by(next.sequence) {
+                        break stale_parent_path(next);
+                    }
+                    current = (next.entry, Some(generation));
+                    self.path_step(&parent)
+                }
                 // Parent is maybe corrupted or incomplete, use a sentinel instead.
-                Err(_) => PathStep::Final(PathBuf::from("[Unknown]")),
+                Err(_) => {
+                    current = (next.entry, None);
+                    PathStep::Final(PathBuf::from("[Unknown]"))
+                }
             };
         };
 
-        for (id, name) in chain.iter().rev() {
+        for (id, generation, name) in chain.into_iter().rev() {
             prefix.extend(name);
-            self.entries_cache.put(*id, prefix.clone());
+            self.cache_path(id, generation, prefix.clone());
         }
         prefix
     }
 
-    /// Gets the full path of the directory with the given entry ID.
-    fn get_directory_path(&mut self, entry_id: u64) -> PathBuf {
-        if let Some(cached) = self.entries_cache.get(&entry_id) {
-            return cached.clone();
+    fn cache_path(&mut self, entry_id: u64, generation: Option<Generation>, path: PathBuf) {
+        self.entries_cache
+            .put(entry_id, CachedPath { path, generation });
+    }
+
+    /// The cached path of the directory `reference` points at, with room for `extra` more bytes,
+    /// or `None` if it isn't cached. A stale reference gets `[Orphaned]`.
+    fn cached_directory_path(&mut self, reference: MftReference, extra: usize) -> Option<PathBuf> {
+        let cached = self.entries_cache.get(&reference.entry)?;
+        if cached
+            .generation
+            .is_some_and(|g| !g.is_referenced_by(reference.sequence))
+        {
+            return Some(stale_parent_path(reference));
+        }
+        Some(path_with_room(&cached.path, extra))
+    }
+
+    /// Gets the full path of the directory `reference` points at, or `[Orphaned]` if the
+    /// reference is stale.
+    fn get_directory_path(&mut self, reference: MftReference) -> PathBuf {
+        if let Some(path) = self.cached_directory_path(reference, 0) {
+            return path;
         }
 
-        let step = match self.get_entry(entry_id) {
-            Ok(entry) => self.path_step(&entry),
+        let (generation, step) = match self.get_entry(reference.entry) {
+            Ok(entry) => {
+                let generation = Generation::of(&entry);
+                if !generation.is_referenced_by(reference.sequence) {
+                    return stale_parent_path(reference);
+                }
+                (Some(generation), self.path_step(&entry))
+            }
             // Parent is maybe corrupted or incomplete, use a sentinel instead.
-            Err(_) => PathStep::Final(PathBuf::from("[Unknown]")),
+            Err(_) => (None, PathStep::Final(PathBuf::from("[Unknown]"))),
         };
-        self.resolve_directory_path(entry_id, step)
+        self.resolve_directory_path(reference.entry, generation, step)
     }
 
     /// Gets the full path of a file under one of its names, such as one of its hard links, which
@@ -450,13 +540,14 @@ impl<T: Read + Seek> MftParser<T> {
         self.path_in_parent(
             entry.header.record_number,
             name.name.to_utf8_string(),
-            name.parent.entry,
+            name.parent,
         )
     }
 
-    /// The path of the file `entry_id` named `name` in the directory `parent_entry_id`.
-    fn path_in_parent(&mut self, entry_id: u64, name: String, parent_entry_id: u64) -> PathBuf {
-        match parent_entry_id {
+    /// The path of the file `entry_id` named `name` in the directory `parent` points at.
+    /// A stale `parent` (its record now holds another file) gives `[Orphaned]/<name>`.
+    fn path_in_parent(&mut self, entry_id: u64, name: String, parent: MftReference) -> PathBuf {
+        match parent.entry {
             // MFT entry 5 is the root path.
             5 => PathBuf::from(name),
             0 => {
@@ -467,11 +558,11 @@ impl<T: Read + Seek> MftParser<T> {
                 trace!("Found self-referential file path, for entry ID {entry_id}");
                 PathBuf::from("[Orphaned]").join(name)
             }
-            id => {
+            _ => {
                 // Most parents are cached.
-                let mut path = match self.entries_cache.get(&id) {
-                    Some(parent) => path_with_room(parent, 1 + name.len()),
-                    None => self.get_directory_path(id),
+                let mut path = match self.cached_directory_path(parent, 1 + name.len()) {
+                    Some(path) => path,
+                    None => self.get_directory_path(parent),
                 };
                 path.push(name);
                 path
@@ -489,20 +580,22 @@ impl<T: Read + Seek> MftParser<T> {
         // matches the prefix of its children's paths.
         if entry.is_dir() && filename_header.is_some() {
             if let Some(cached) = self.entries_cache.get(&entry_id) {
-                return Ok(Some(cached.clone()));
+                return Ok(Some(cached.path.clone()));
             }
             let step = self.path_step_named(entry, filename_header);
-            return Ok(Some(self.resolve_directory_path(entry_id, step)));
+            return Ok(Some(self.resolve_directory_path(
+                entry_id,
+                Some(Generation::of(entry)),
+                step,
+            )));
         }
 
         match filename_header {
-            Some((name, parent_entry_id)) => {
-                Ok(Some(self.path_in_parent(entry_id, name, parent_entry_id)))
-            }
+            Some((name, parent)) => Ok(Some(self.path_in_parent(entry_id, name, parent))),
             None => match entry.header.base_reference.entry {
                 // I don't have a parent reference, and no X30 attribute. Though luck.
                 0 => Ok(None),
-                base_entry_id => Ok(Some(self.get_directory_path(base_entry_id))),
+                _ => Ok(Some(self.get_directory_path(entry.header.base_reference))),
             },
         }
     }
@@ -591,6 +684,32 @@ mod tests {
         let mut e = synthetic_entry(true, None);
         e[0x20..0x28].copy_from_slice(&mft_reference_bytes(base, 1)); // base record
         e
+    }
+
+    /// `entry` with its record's sequence number set to `sequence`. Parent references in
+    /// [`synthetic_entry`]s point at sequence 1.
+    fn with_sequence(mut entry: Vec<u8>, sequence: u16) -> Vec<u8> {
+        entry[16..18].copy_from_slice(&sequence.to_le_bytes());
+        entry
+    }
+
+    /// `entry` with its record freed, as when its file is deleted.
+    fn freed(mut entry: Vec<u8>) -> Vec<u8> {
+        entry[22] &= !0x1;
+        entry
+    }
+
+    /// An MFT where 6 is a directory "A" with sequence number `sequence` and allocation
+    /// `allocated`, holding a file (7) and a directory "B" (8) with a file of its own (9), all of
+    /// which point at sequence 1 of 6.
+    fn mft_with_parent_generation(sequence: u16, allocated: bool) -> Vec<u8> {
+        let a = with_sequence(synthetic_entry(true, Some(("A", 5))), sequence);
+        mft_of([
+            if allocated { a } else { freed(a) },
+            synthetic_entry(false, Some(("f.txt", 6))),
+            synthetic_entry(true, Some(("B", 6))),
+            synthetic_entry(false, Some(("g.txt", 8))),
+        ])
     }
 
     fn full_path(parser: &mut MftParser<Cursor<Vec<u8>>>, id: u64) -> PathBuf {
@@ -748,6 +867,53 @@ mod tests {
                 (7, "[Orphaned]"),
                 (8, "[Orphaned]/f.txt"),
             ],
+        );
+    }
+
+    #[test]
+    fn test_get_full_path_orphans_stale_parent_references() {
+        // 6 was reused for another directory, so 7 and 8 were in a directory that is gone.
+        assert_paths_in_any_order(
+            &mft_with_parent_generation(2, true),
+            &[
+                (6, "A"),
+                (7, "[Orphaned]/f.txt"),
+                (8, "[Orphaned]/B"),
+                (9, "[Orphaned]/B/g.txt"),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_get_full_path_through_a_deleted_parent() {
+        // Freeing 6 bumped its sequence number, but it still holds the directory 7 and 8 were in.
+        assert_paths_in_any_order(
+            &mft_with_parent_generation(2, false),
+            &[(6, "A"), (7, "A/f.txt"), (8, "A/B"), (9, "A/B/g.txt")],
+        );
+        // Freeing it once more means it held another file in between.
+        assert_paths_in_any_order(
+            &mft_with_parent_generation(3, false),
+            &[
+                (6, "A"),
+                (7, "[Orphaned]/f.txt"),
+                (8, "[Orphaned]/B"),
+                (9, "[Orphaned]/B/g.txt"),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_get_full_path_orphans_stale_base_references() {
+        // 7 takes the path of its base entry 6, which was reused.
+        let mft = mft_of([
+            with_sequence(synthetic_entry(true, Some(("A", 5))), 2),
+            nameless_directory(6),
+            synthetic_entry(false, Some(("f.txt", 7))),
+        ]);
+        assert_paths_in_any_order(
+            &mft,
+            &[(6, "A"), (7, "[Orphaned]"), (8, "[Orphaned]/f.txt")],
         );
     }
 

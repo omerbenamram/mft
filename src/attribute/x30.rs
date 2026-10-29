@@ -139,7 +139,7 @@ impl<'a> FileNameAttr<'a> {
 /// directory it is in.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct NameInParent<'a> {
-    pub(crate) parent: u64,
+    pub(crate) parent: MftReference,
     pub(crate) namespace: FileNamespace,
     pub(crate) name: Utf16LeStr<'a>,
 }
@@ -163,7 +163,7 @@ impl<'a> NameInParent<'a> {
         let namespace = FileNamespace::from_u8(*value.get(0x41)?)?;
         let name = value.get(0x42..0x42 + name_length * 2)?;
         Some(NameInParent {
-            parent: MftReference::from(read_u64(value, 0)?).entry,
+            parent: MftReference::from(read_u64(value, 0)?),
             namespace,
             name: Utf16LeStr::from_utf16le_bytes(name),
         })
@@ -181,7 +181,7 @@ mod tests {
             let name = NameInParent::from_slice(value).map(|n| (n.parent, n.namespace, n.name));
             let full = FileNameAttr::from_slice(value)
                 .ok()
-                .map(|f| (f.parent.entry, f.namespace, f.name));
+                .map(|f| (f.parent, f.namespace, f.name));
             assert_eq!(name, full, "value {value:02X?}");
         };
 
