@@ -31,8 +31,8 @@ pub struct StandardInfoAttr {
     /// The key of the file's owner in `$Quota`, or 0 if quotas are disabled.
     pub owner_id: u32,
     /// The key of the file's security descriptor in `$Secure`, or 0 if it has none there, such as
-    /// a file that kept its own
-    /// [`$SECURITY_DESCRIPTOR`](crate::attribute::x50::SecurityDescriptorAttr) from before NTFS 3.0.
+    /// a file that kept its [`$SECURITY_DESCRIPTOR`](crate::attribute::x50::SecurityDescriptorAttr)
+    /// from before NTFS 3.0.
     pub security_id: u32,
     /// The bytes charged to the owner's quota, or 0 if quotas are disabled.
     pub quota: u64,
