@@ -63,6 +63,9 @@ bitflags! {
 }
 impl_serialize_for_bitflags! {IndexRootFlags}
 
+/// The attribute type a `$FILE_NAME` index (`$I30`) indexes.
+const FILE_NAME_ATTRIBUTE_TYPE: u32 = 0x30;
+
 impl<'a> IndexRootAttr<'a> {
     /// Data size should be either 16 or 64
     pub fn from_slice(value: &'a [u8]) -> Result<IndexRootAttr<'a>> {
@@ -88,30 +91,29 @@ impl<'a> IndexRootAttr<'a> {
         // The flags are one byte, followed by three reserved bytes.
         let index_root_flags =
             IndexRootFlags::from_bits_retain(stream.read_u32::<LittleEndian>()? & 0xFF);
-        // Indexes of `$FILE_NAME` (`$I30`) index attribute type 0x30. View indexes, such as
-        // `$Secure:$SDH`, index no attribute (type 0), and their entries carry a key and data.
-        let index_entries = if attribute_type == 0 {
-            let first_entry = index_node_start_pos
-                .checked_add(relative_offset_to_index_node as usize)
-                .ok_or_else(|| Error::Any {
-                    detail: "index node offset overflow".to_string(),
-                })?;
-            IndexEntries {
-                index_entries: Vec::new(),
-                view_entries: ViewIndexEntry::from_node(
-                    value,
-                    collation_rule,
-                    first_entry,
-                    index_node_start_pos.saturating_add(index_node_length as usize),
-                )?,
-            }
-        } else {
+        // Indexes of `$FILE_NAME` (`$I30`) index attribute type 0x30. Every other index is a view
+        // index, such as `$Secure:$SDH`, which indexes no attribute (type 0) and whose entries carry
+        // a key and data.
+        let index_entries = if attribute_type == FILE_NAME_ATTRIBUTE_TYPE {
             IndexEntries::from_slice(
                 value,
                 index_node_length,
                 index_node_start_pos,
                 stream.position() as usize,
             )?
+        } else {
+            // The node's entries, from the first one to the end of the node.
+            let entries = value
+                .get(index_node_start_pos..)
+                .and_then(|node| node.get(..index_node_length as usize))
+                .and_then(|node| node.get(relative_offset_to_index_node as usize..))
+                .ok_or_else(|| Error::Any {
+                    detail: "view index node runs past the index root".to_string(),
+                })?;
+            IndexEntries {
+                index_entries: Vec::new(),
+                view_entries: ViewIndexEntry::from_node(entries, collation_rule)?,
+            }
         };
 
         Ok(IndexRootAttr {
@@ -275,23 +277,17 @@ pub enum ViewIndexValue<'a> {
 }
 
 impl<'a> ViewIndexEntry<'a> {
-    /// Reads the entries of a view index node in `value[start..end]`, up to its end entry.
+    /// Reads the view index entries at the start of `node`, up to its end entry.
     /// <https://github.com/libyal/libfsntfs/blob/main/documentation/New%20Technologies%20File%20System%20(NTFS).asciidoc#index-entry>
-    fn from_node(
-        value: &'a [u8],
-        collation_rule: IndexCollationRules,
-        start: usize,
-        end: usize,
-    ) -> Result<Vec<Self>> {
+    fn from_node(node: &'a [u8], collation_rule: IndexCollationRules) -> Result<Vec<Self>> {
         const ENTRY_HEADER_LEN: usize = 16;
         let truncated = || Error::Any {
             detail: "view index entry runs past the index node".to_string(),
         };
-        let node = value.get(..end).ok_or_else(truncated)?;
 
         let mut entries = Vec::new();
-        let mut offset = start;
-        while offset < end {
+        let mut offset = 0;
+        while offset < node.len() {
             let data_offset = usize::from(read_u16(node, offset).ok_or_else(truncated)?);
             let data_length = usize::from(read_u16(node, offset + 2).ok_or_else(truncated)?);
             let length = usize::from(read_u16(node, offset + 8).ok_or_else(truncated)?);
@@ -331,9 +327,13 @@ impl<'a> ViewIndexValue<'a> {
         let guid = |offset: usize| Guid::from_buffer(data.get(offset..offset + 16)?).ok();
 
         Some(match (collation_rule, key.len(), data.len()) {
-            // The data is the descriptor's `$SDS` entry header.
+            // The data is the descriptor's `$SDS` entry header, which starts with its hash and id.
+            // `$SDH` is keyed by both and `$SII` by the id, so the key ends where the id does.
             (IndexCollationRules::CollationNtofsSecurityHash, 8, 20)
             | (IndexCollationRules::CollationNtofsUlong, 4, 20) => {
+                if data[8 - key.len()..8] != *key {
+                    return None;
+                }
                 ViewIndexValue::SecurityDescriptor {
                     hash: read_u32(data, 0)?,
                     security_id: read_u32(data, 4)?,
@@ -364,9 +364,15 @@ impl<'a> ViewIndexValue<'a> {
             }
             (IndexCollationRules::CollationNtofsUlong, 4, 48..) => {
                 let exceeded_time = read_u64(data, 40)?;
-                let sid = match data.get(48..) {
-                    Some([]) | None => None,
-                    Some(rest) => Some(sid(rest, 0)?.0),
+                let sid = match &data[48..] {
+                    [] => None,
+                    rest => {
+                        let (sid, sid_length) = sid(rest, 0)?;
+                        if sid_length != rest.len() {
+                            return None;
+                        }
+                        Some(sid)
+                    }
                 };
                 ViewIndexValue::Quota {
                     owner_id: read_u32(key, 0)?,
@@ -490,13 +496,8 @@ mod tests {
         let mut node = view_entry(&guid(0), &data, 0);
         node.extend(end_entry());
 
-        let entries = ViewIndexEntry::from_node(
-            &node,
-            IndexCollationRules::CollationNtofsUlongs,
-            0,
-            node.len(),
-        )
-        .unwrap();
+        let entries =
+            ViewIndexEntry::from_node(&node, IndexCollationRules::CollationNtofsUlongs).unwrap();
         let guid_of = |first| Guid::from_buffer(&guid(first)).unwrap();
         assert_eq!(
             entries,
@@ -516,13 +517,8 @@ mod tests {
         key.extend(mft_reference_bytes(1234, 7));
         let mut node = view_entry(&key, &[], 0);
         node.extend(end_entry());
-        let entries = ViewIndexEntry::from_node(
-            &node,
-            IndexCollationRules::CollationNtofsUlongs,
-            0,
-            node.len(),
-        )
-        .unwrap();
+        let entries =
+            ViewIndexEntry::from_node(&node, IndexCollationRules::CollationNtofsUlongs).unwrap();
         assert_eq!(
             entries[0].value,
             ViewIndexValue::Reparse {
@@ -542,7 +538,7 @@ mod tests {
         node.extend(view_entry(&[7], &[], 0));
 
         let other = |rule| {
-            ViewIndexEntry::from_node(&node, rule, 0, node.len())
+            ViewIndexEntry::from_node(&node, rule)
                 .unwrap()
                 .into_iter()
                 .map(|entry| entry.value)
@@ -567,9 +563,9 @@ mod tests {
     fn view_entry_past_the_index_node_is_error() {
         let mut node = view_entry(&[0; 4], &[0; 20], 0);
         node.extend(end_entry());
-        for end in [8, 20, node.len() + 1] {
+        for end in [8, 20] {
             let err =
-                ViewIndexEntry::from_node(&node, IndexCollationRules::CollationNtofsUlong, 0, end)
+                ViewIndexEntry::from_node(&node[..end], IndexCollationRules::CollationNtofsUlong)
                     .unwrap_err();
             assert!(
                 err.to_string().contains("past the index node"),
@@ -580,14 +576,25 @@ mod tests {
         // An entry whose data runs past its own length.
         let mut node = view_entry(&[0; 4], &[], 0);
         node[2] = 20;
-        let err = ViewIndexEntry::from_node(
-            &node,
-            IndexCollationRules::CollationNtofsUlong,
-            0,
-            node.len(),
-        )
-        .unwrap_err();
+        let err =
+            ViewIndexEntry::from_node(&node, IndexCollationRules::CollationNtofsUlong).unwrap_err();
         assert!(err.to_string().contains("past the index node"), "{err}");
+    }
+
+    #[test]
+    fn view_index_node_past_the_index_root_is_error() {
+        let mut value = Vec::new();
+        for field in [0u32, 0x10, 4096, 1, 16, 1000, 1000, 0] {
+            value.extend_from_slice(&field.to_le_bytes());
+        }
+        value.extend(end_entry());
+        let err = IndexRootAttr::from_slice(&value).unwrap_err();
+        assert!(err.to_string().contains("past the index root"), "{err}");
+
+        // The same root with the node's real length parses, with no entries.
+        value[20..24].copy_from_slice(&32u32.to_le_bytes());
+        let root = IndexRootAttr::from_slice(&value).unwrap();
+        assert!(root.index_entries.view_entries.is_empty());
     }
 
     #[test]
