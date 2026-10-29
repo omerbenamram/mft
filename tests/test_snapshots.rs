@@ -74,7 +74,7 @@ fn test_cli_output_snapshots() {
     }
 }
 
-/// Single records cut from a Windows 11 `$MFT` (see `samples/WIN11_NOTICE.md`).
+/// Single records cut from a Windows 11 `$MFT` (see `testdata/win11/NOTICE.md`).
 const WIN11_ENTRIES: &[(u64, &str)] = &[
     (40, "logged_utility_stream_dsc"),
     (205, "ea_kernel_purge"),
@@ -89,14 +89,20 @@ fn test_win11_entry_snapshots() {
     ensure_env_logger_initialized();
 
     for &(entry_id, name) in WIN11_ENTRIES {
-        let path = mft_sample_name(&format!("win11_entry_{entry_id}_{name}"));
-        let entry = MftEntry::from_buffer(std::fs::read(path).unwrap(), entry_id).unwrap();
+        let path = win11_sample(&format!("entry_{entry_id}_{name}"));
+        let data = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        // The record number stored at 0x2C catches a fixture cut from the wrong offset.
+        let stored = u32::from_le_bytes(data[0x2C..0x30].try_into().unwrap());
+        assert_eq!(u64::from(stored), entry_id, "{}", path.display());
+        let entry = MftEntry::from_buffer(data, entry_id).unwrap();
         let json = serde_json::to_string_pretty(&entry).unwrap();
         insta::assert_snapshot!(format!("win11_entry_{entry_id}_{name}"), json);
     }
 }
 
-/// Records 0-33 of the same `$MFT`: every system file, with the paths resolved.
+/// Records 0-33 of the same `$MFT`: every system file, with the paths resolved. The index roots of
+/// `$Secure` and `$Extend\$Quota` hold `$SDH`, `$SII`, `$O` and `$Q` entries, which aren't parsed yet,
+/// so they show up empty.
 #[test]
 #[cfg(feature = "mft_dump")]
 fn test_win11_system_snapshots() {
@@ -106,7 +112,7 @@ fn test_win11_system_snapshots() {
         let output = cargo_bin_cmd!("mft_dump")
             .arg("-o")
             .arg(format)
-            .arg(mft_sample_name("win11_system.MFT"))
+            .arg(win11_sample("system.MFT"))
             .output()
             .unwrap();
         assert!(
