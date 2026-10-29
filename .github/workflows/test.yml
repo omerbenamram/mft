@@ -23,6 +23,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Check CHANGELOG.md has notes for the Cargo.toml version
+        run: |
+          VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          scripts/release-notes.sh "$VERSION" > /dev/null
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

@@ -12,11 +12,14 @@
    and fixes alone bump the patch version. `cargo semver-checks check-release` flags API breaks.
 2. Open a `chore(release): X.Y.Z` PR that bumps `version` in `Cargo.toml`, refreshes
    `Cargo.lock`, and renames `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD`.
+   That section becomes the GitHub release's notes, followed by GitHub's list of merged PRs,
+   and CI fails the PR without it.
 3. Merge it.
 
 The merge runs `.github/workflows/auto-tag.yml`. It sees a `Cargo.toml` version with no tag,
 pushes the `vX.Y.Z` tag on the merge commit, and runs `.github/workflows/release.yml` on the
-tag: preflight, binaries, GitHub release, then `cargo publish` last.
+tag: preflight, binaries, GitHub release, then `cargo publish` last. If the version has no notes
+in `CHANGELOG.md`, auto-tag fails without tagging it; merging a PR that adds them runs it again.
 
 Pushing a `vX.Y.Z` tag by hand still runs `release.yml` directly; auto-tag then skips that
 version because the tag exists. If auto-tag pushed the tag but no release started, run
