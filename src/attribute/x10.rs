@@ -9,6 +9,10 @@ use log::trace;
 use serde::Serialize;
 use std::io::{Cursor, ErrorKind};
 
+/// A `$STANDARD_INFORMATION` attribute: the file's timestamps and flags and, since NTFS 3.0, its
+/// quota owner and charge, security id and update sequence number. The older, 48-byte layout lacks
+/// those four, which [`StandardInfoAttr::from_slice`] reads as 0; [`StandardInfoAttr::V3_SIZE`]
+/// tells the layouts apart.
 #[derive(Serialize, Debug, Clone)]
 pub struct StandardInfoAttr {
     #[serde(serialize_with = "crate::utils::serialize_timestamp")]
@@ -19,28 +23,27 @@ pub struct StandardInfoAttr {
     pub mft_modified: Timestamp,
     #[serde(serialize_with = "crate::utils::serialize_timestamp")]
     pub accessed: Timestamp,
-    /// The file's attributes (`FILE_ATTRIBUTE_*`), such as read-only, hidden or archive.
+    /// The file's `FILE_ATTRIBUTE_*` flags.
     pub file_flags: FileAttributeFlags,
     pub max_version: u32,
     pub version: u32,
     pub class_id: u32,
     /// The owner's key in `$Quota`, or 0 if the file has none.
     pub owner_id: u32,
-    /// The key of the file's security descriptor in `$Secure`, or 0 if the file keeps it in a
-    /// `$SECURITY_DESCRIPTOR` attribute instead, as files did before NTFS 3.0.
+    /// The key of the file's security descriptor in `$Secure`, or 0 if the descriptor is in the
+    /// file's own [`$SECURITY_DESCRIPTOR`](crate::attribute::x50::SecurityDescriptorAttr).
     pub security_id: u32,
     /// The bytes charged to the owner's quota, or 0 if none are.
     pub quota: u64,
     /// The update sequence number of the last change journal (`$UsnJrnl`) record written for the
-    /// file, which the journal may have dropped since, or 0 if none was written.
+    /// file, or 0 if none was.
     pub usn: u64,
 }
 
 impl StandardInfoAttr {
-    /// The size of the NTFS 3.0 layout, the first with `owner_id`, `security_id`, `quota` and
-    /// `usn`. [`StandardInfoAttr::from_slice`] reads them as 0 in the older, 48-byte one, as for a
-    /// file with none of them. To tell the layouts apart, check whether the attribute's
-    /// [`value_size`](crate::attribute::header::MftAttributeHeader::value_size) is at least this.
+    /// The size of the NTFS 3.0 layout. An attribute whose
+    /// [`value_size`](crate::attribute::header::MftAttributeHeader::value_size) is at least this
+    /// has `owner_id`, `security_id`, `quota` and `usn`; a 48-byte one has none of them.
     pub const V3_SIZE: usize = 72;
 
     /// Parse a Standard Information attribute buffer whose length is the attribute value size.
@@ -107,7 +110,8 @@ impl StandardInfoAttr {
         })
     }
 
-    /// Parse a Standard Information attrbiute buffer.
+    /// Parse a Standard Information attribute buffer in the 72-byte layout. Use
+    /// [`StandardInfoAttr::from_slice`] for a value that may be the 48-byte one.
     ///
     /// # Example
     ///
