@@ -27,6 +27,7 @@ The main binary utility provided with this crate is `mft_dump`, and it provides 
 Some examples
   - `mft_dump <input_file>` will dump contents of mft entries as JSON.
   - `mft_dump -o csv <input_file>` will dump contents of mft entries as CSV.
+  - `mft_dump -o csv --hard-link-rows --stream-rows <input_file>` will also write a row for each hard link and each alternate data stream of a file.
   - `mft_dump --extract-resident-streams <output_directory> -o json <input_file>` will extract all resident streams in MFT to files in <output_directory>.
 
 # Library usage:

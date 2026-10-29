@@ -9,7 +9,7 @@ use mft::attribute::MftAttributeType;
 use mft::mft::MftParser;
 
 use dialoguer::Confirm;
-use mft::csv::FlatMftEntryWithName;
+use mft::csv::{CsvRows, FlatMftEntryWithName};
 
 use anyhow::anyhow;
 use anyhow::{Context, Error, Result};
@@ -99,6 +99,7 @@ struct MftDump {
     ranges: Option<Ranges>,
     json_buf: Vec<u8>,
     backtraces_enabled: bool,
+    csv_rows: CsvRows,
 }
 
 impl MftDump {
@@ -111,6 +112,17 @@ impl MftDump {
         let output_format =
             OutputFormat::from_str(output_format).expect("Validated with clap default values");
         let backtraces_enabled = matches.get_flag("backtraces");
+
+        // Checked before the output file is created, which would truncate it.
+        let csv_rows = CsvRows {
+            hard_links: matches.get_flag("hard-link-rows"),
+            streams: matches.get_flag("stream-rows"),
+        };
+        if csv_rows.any() && output_format != OutputFormat::CSV {
+            return Err(anyhow!(
+                "`--hard-link-rows` and `--stream-rows` only apply to `-o csv`"
+            ));
+        }
 
         let output: Option<Box<dyn Write>> = if let Some(path) = output_target {
             match Self::create_output_file(path, !matches.get_flag("no-confirm-overwrite")) {
@@ -158,6 +170,7 @@ impl MftDump {
             ranges,
             json_buf: Vec::with_capacity(64 * 1024),
             backtraces_enabled,
+            csv_rows,
         })
     }
 
@@ -344,6 +357,7 @@ impl MftDump {
                     self.print_bodyfile_entry(&entry, &extensions, full_path)?
                 }
                 OutputFormat::CSV => self.print_csv_entry(
+                    &mut parser,
                     &entry,
                     &extensions,
                     full_path,
@@ -407,20 +421,30 @@ impl MftDump {
         Ok(())
     }
 
-    pub fn print_csv_entry<W: Write>(
+    pub fn print_csv_entry<T: Read + Seek, W: Write>(
         &self,
+        parser: &mut MftParser<T>,
         entry: &MftEntry,
         extensions: &[MftEntry],
         full_path: Option<PathBuf>,
         writer: &mut csv::Writer<W>,
     ) -> Result<()> {
-        let flat_entry = FlatMftEntryWithName::from_entry_with_path(
+        let full_path = full_path.unwrap_or_default();
+        if !self.csv_rows.any() {
+            writer.serialize(FlatMftEntryWithName::from_entry_with_path(
+                entry, extensions, full_path,
+            ))?;
+            return Ok(());
+        }
+        for row in FlatMftEntryWithName::rows_with_path(
             entry,
             extensions,
-            full_path.unwrap_or_default(),
-        );
-
-        writer.serialize(flat_entry)?;
+            full_path,
+            self.csv_rows,
+            |name| parser.get_full_path_for_name(entry, name),
+        ) {
+            writer.serialize(row)?;
+        }
 
         Ok(())
     }
@@ -509,6 +533,21 @@ fn main() -> Result<()> {
                 .help(indoc!("Writes resident data streams to the given directory.
                              Resident streams will be named like - `{path}__<random_bytes>_{stream_number}_{stream_name}.dontrun`
                              random is added to prevent collisions.")),
+        )
+        .arg(
+            Arg::new("hard-link-rows")
+                .long("hard-link-rows")
+                .action(ArgAction::SetTrue)
+                .help(indoc!("With `-o csv`, also writes a row for each other hard link of a file, with that link's
+                             path and `$FILE_NAME` columns. A file's `Dos` short name isn't a link.")),
+        )
+        .arg(
+            Arg::new("stream-rows")
+                .long("stream-rows")
+                .action(ArgAction::SetTrue)
+                .help(indoc!("With `-o csv`, also writes a row for each named data stream (ADS) of a file, with
+                             `:<stream>` appended to `FullPath` and `FileName`, and the stream's size as `FileSize`.
+                             Stream rows use the file's main path, not the paths of its other hard links.")),
         )
         .arg(
             Arg::new("no-confirm-overwrite")
