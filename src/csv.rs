@@ -68,18 +68,22 @@ pub struct FlatMftEntryWithName {
     #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
     pub file_name_last_mft_modified: Option<Timestamp>,
 
-    /// The best `$FILE_NAME` name, the last part of `FullPath`.
+    /// The best `$FILE_NAME` name, the last part of `FullPath`. Empty for extension records,
+    /// which hold no name of their own.
     pub file_name: Option<String>,
     /// The `$LogFile` sequence number of the record's last change.
     pub lsn: u64,
     /// The update sequence number of the file's last change in `$Extend\$UsnJrnl`, from
-    /// `$STANDARD_INFORMATION`. 0 if the journal hasn't recorded the file.
+    /// `$STANDARD_INFORMATION`. 0 if the journal hasn't recorded the file, and empty if the
+    /// attribute predates NTFS 3.0 and has no USN.
     pub usn: Option<u64>,
-    /// The file's security descriptor id in `$Secure`, from `$STANDARD_INFORMATION`.
+    /// The file's security descriptor id in `$Secure`, from `$STANDARD_INFORMATION`. Empty if the
+    /// attribute predates NTFS 3.0 and has no id.
     pub security_id: Option<u32>,
     /// The object id from `$OBJECT_ID`, if the file has one.
     pub object_id: Option<Guid>,
-    /// The names of the named `$DATA` streams, separated by `|`.
+    /// The names of the named `$DATA` streams, separated by `|`, which Windows doesn't allow in
+    /// names. These include the streams of NTFS metadata files, such as `$Secure:$SDS`.
     pub alternate_data_streams: String,
 }
 
@@ -118,11 +122,17 @@ impl FlatMftEntryWithName {
 
         let file_name = find_best_name_attribute_in(entry, extensions);
 
-        let standard_info = entry_attributes
+        let standard_info_attribute = entry_attributes
             .iter()
-            .find(|a| a.header.type_code == MftAttributeType::StandardInformation)
+            .find(|a| a.header.type_code == MftAttributeType::StandardInformation);
+        let standard_info = standard_info_attribute
             .and_then(|a| a.data.as_standard_info())
             .cloned();
+        // Only the 72-byte `$STANDARD_INFORMATION` of NTFS 3.0 and later has the security id
+        // and USN; the parser fills them with 0 in the older 48-byte one.
+        let standard_info_v3 = standard_info
+            .as_ref()
+            .filter(|_| standard_info_attribute.is_some_and(|a| a.header.value_size() >= 72));
 
         // The unnamed stream, or a named one if there is none. Records that continue a stream
         // started elsewhere don't hold its size.
@@ -138,13 +148,13 @@ impl FlatMftEntryWithName {
             .map(|o| o.object_id.clone());
 
         // A stream spread over several records has a header in each, so keep its first.
-        let mut streams: Vec<String> = Vec::new();
+        let mut streams = Vec::new();
         for a in &entry_attributes {
-            if a.header.type_code == MftAttributeType::DATA && !a.header.name.is_empty() {
-                let name = a.header.name.to_string();
-                if !streams.contains(&name) {
-                    streams.push(name);
-                }
+            if a.header.type_code == MftAttributeType::DATA
+                && !a.header.name.is_empty()
+                && !streams.contains(&a.header.name)
+            {
+                streams.push(a.header.name);
             }
         }
 
@@ -174,10 +184,14 @@ impl FlatMftEntryWithName {
             file_name_last_mft_modified: file_name.as_ref().map(|i| i.mft_modified),
             file_name: file_name.as_ref().map(|i| i.name.to_string()),
             lsn: entry.header.metadata_transaction_journal,
-            usn: standard_info.as_ref().map(|i| i.usn),
-            security_id: standard_info.as_ref().map(|i| i.security_id),
+            usn: standard_info_v3.map(|i| i.usn),
+            security_id: standard_info_v3.map(|i| i.security_id),
             object_id,
-            alternate_data_streams: streams.join("|"),
+            alternate_data_streams: streams
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("|"),
             file_size,
             full_path,
         }
