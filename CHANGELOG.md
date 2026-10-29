@@ -6,6 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Resolving full paths takes 56–66% less work on large MFTs, with the same paths: it skips the sizes and flags of each `$FILE_NAME` and stops at the first `Win32` name, copies a directory's path once to build its children's, and caches up to 65,536 directory paths instead of 1,000. `mft_dump`'s CSV and bodyfile output take 11–12% fewer instructions there, and JSONL about 7%.
+
 ## [0.9.0] - 2026-10-29
 
 ### Added

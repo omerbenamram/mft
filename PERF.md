@@ -636,3 +636,82 @@ cross build) and Windows still use a plain release build.
   multiply chain of the date conversion).
 - `core::str::from_utf8` ~4% (validating the stack buffers; avoidable only with `unsafe` or a
   dependency such as `arrayvec`).
+
+## H11 (2026-10-29) — Cheaper path resolution
+
+Resolving every entry's full path cost more than reading the entries, and was most of a bare
+loop over entries in pymft. A callgrind profile of a loop calling `get_full_path_for_entry` for
+every entry of the CFReDS 2015 data leakage MFT (78,080 entries), on master `ce32ac3`:
+
+- `find_best_name_attribute` was 41% of the instructions. It fully parses every `$FILE_NAME`
+  (four timestamps, sizes, flags), allocates two `Vec`s per call for the type filter, and clones
+  the candidates.
+- `Path::join` was 14%. Joining a file's name onto its parent's cached path cloned the parent and
+  then copied it again into a grown buffer.
+- The 1,000-path cache missed whenever a volume's directories didn't fit, and each miss read and
+  resolved the directory again.
+
+Changes:
+
+- `NameInParent::from_slice` reads the parent, namespace and name of a `$FILE_NAME` and checks
+  its timestamps, skipping its sizes and flags. It accepts exactly the values
+  `FileNameAttr::from_slice` accepts (a unit test checks every truncation and single-byte mutation
+  of a sample value). `MftEntry::find_best_name_in_parent` and `find_best_name_attribute` share one
+  walk over the entry's `$FILE_NAME`s, through a type filter that doesn't allocate, and a unit test
+  checks that `find_best_name_in_parent` picks the same name as the full parse of
+  `find_best_name_attribute_in` for every entry of `samples/MFT`. The walk stops at the first
+  `Win32` name, which no later name can beat, instead of walking the rest of the entry's
+  attributes: that alone saved 6–10% of the path work. Names in extension records, which only
+  matter when the base record has no long name, still go through the full parse.
+- Paths grow with `push` instead of `join`, and a path copies its parent's cached path once, into
+  a buffer with room for the rest. A directory whose parent is cached no longer builds the set of
+  directories visited, which only a walk past a cache miss needs. With the single copy for
+  directories, that saved 12% of the path work left.
+- The cache holds up to 65,536 directory paths (`MAX_CACHED_DIRECTORIES`). `LruCache::new`
+  allocates its table up front, so the cache is sized to the MFT's entry count, though not below
+  master's 1,000. Growing the table as it fills instead (`LruCache::unbounded`, then `resize`)
+  cost 0.4–2.3% more path work in rehashing, to save memory that mostly isn't touched before it's
+  used: of a full-size table, only the 128 KB of control bytes are written up front.
+
+Not taken: reading a `$FILE_NAME`'s resident value without building its attribute header would
+save another 16–21% of the path work, and handing a cached parent's path a borrowed name instead
+of a `String` 5–8%. Both duplicate code that parses headers or builds paths.
+
+Every entry's path is identical to master's on all 34 MFTs of the project's sample corpus, and
+`check_identical.sh` reports byte-identical output in all four formats for each of them. A bigger
+cache could still change paths on a corrupt MFT, where a parent loop through a directory without a
+name got a path that depended on the order its entries were resolved in; none of the 34 has one,
+and that is fixed separately.
+
+Path resolution alone (the loop above minus the same loop without it), instructions:
+
+| MFT | master | H11 | change |
+| --- | ---: | ---: | ---: |
+| CFReDS 2015 data leakage | 429.6M | 147.1M | −66% |
+| Windows 11 (`zenodo-bart-win11`, 101,010 directories) | 1,954.0M | 852.7M | −56% |
+| Narcos CCleaner | 767.9M | 297.2M | −61% |
+| NPS 2011 scenario 4 | 457.8M | 157.3M | −66% |
+| NIST hacking case | 40.6M | 17.5M | −57% |
+
+`mft_dump` instructions (`instructions.sh`), change from master:
+
+| Input | JSONL | CSV | bodyfile | JSON |
+| --- | ---: | ---: | ---: | ---: |
+| `samples/MFT` | −5.1% | −7.1% | −7.1% | −3.4% |
+| CFReDS 2015 data leakage | −7.5% | −12.3% | −12.3% | |
+| Windows 11 | −6.6% | −11.6% | −11.2% | |
+
+Cache size, measured on an earlier build of this change (instructions for reading and resolving
+every entry, and the benchmark's peak RSS):
+
+| Cache size | CFReDS 2015 | Windows 11 | Narcos |
+| ---: | ---: | ---: | ---: |
+| 1,000 | 366M, 2.6 MB | 1,721M, 3.9 MB | 668M, 3.2 MB |
+| 4,096 | 356M, 3.4 MB | 1,688M, 5.1 MB | 648M, 4.2 MB |
+| 16,384 | 297M, 5.7 MB | 1,636M, 9.7 MB | 566M, 6.9 MB |
+| 32,768 | 298M, 6.4 MB | 1,535M, 14.6 MB | 541M, 9.3 MB |
+| 65,536 | 298M, 7.4 MB | 1,481M, 23.7 MB | 541M, 10.4 MB |
+| 131,072 | 298M, 9.7 MB | 1,474M, 30.1 MB | 541M, 12.6 MB |
+
+H8 saw no gain from a 65,536-path cache on `samples/MFT`, whose directories all fit in 1,000;
+larger volumes don't.

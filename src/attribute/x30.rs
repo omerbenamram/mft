@@ -1,6 +1,7 @@
 use crate::Utf16LeStr;
 use crate::attribute::FileAttributeFlags;
 use crate::err::{Error, Result};
+use crate::utils::{read_u64, windows_filetime_to_timestamp};
 use log::trace;
 
 use byteorder::{LittleEndian, ReadBytesExt};
@@ -18,6 +19,13 @@ pub enum FileNamespace {
     Win32 = 1,
     DOS = 2,
     Win32AndDos = 3,
+}
+
+impl FileNamespace {
+    /// Whether a name in this namespace is more than an 8.3 short name.
+    pub(crate) fn is_long(self) -> bool {
+        self != FileNamespace::DOS
+    }
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -127,9 +135,70 @@ impl<'a> FileNameAttr<'a> {
     }
 }
 
+/// The parts of a `$FILE_NAME` that path resolution needs: the name, and the entry number of the
+/// directory it is in.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NameInParent<'a> {
+    pub(crate) parent: u64,
+    pub(crate) namespace: FileNamespace,
+    pub(crate) name: Utf16LeStr<'a>,
+}
+
+impl<'a> NameInParent<'a> {
+    /// Reads the name and parent of a `$FILE_NAME` value, skipping its sizes and flags. Accepts
+    /// exactly the values [`FileNameAttr::from_slice`] accepts, so that paths and parsed attributes
+    /// agree on an entry's best name.
+    pub(crate) fn from_slice(value: &'a [u8]) -> Option<NameInParent<'a>> {
+        // `FileNameAttr::from_slice` rejects a timestamp out of range.
+        let timestamps_valid = (0x08..0x28).step_by(8).all(|offset| {
+            read_u64(value, offset)
+                .is_some_and(|filetime| windows_filetime_to_timestamp(filetime).is_ok())
+        });
+        if !timestamps_valid {
+            return None;
+        }
+
+        // The name follows the fixed fields, the last of which are its length and namespace.
+        let name_length = usize::from(*value.get(0x40)?);
+        let namespace = FileNamespace::from_u8(*value.get(0x41)?)?;
+        let name = value.get(0x42..0x42 + name_length * 2)?;
+        Some(NameInParent {
+            parent: MftReference::from(read_u64(value, 0)?).entry,
+            namespace,
+            name: Utf16LeStr::from_utf16le_bytes(name),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::FileNameAttr;
+    use super::{FileNameAttr, FileNamespace, NameInParent};
+    use crate::entry::tests::filename_value_bytes;
+
+    #[test]
+    fn name_in_parent_accepts_what_file_name_attr_accepts() {
+        let assert_agree = |value: &[u8]| {
+            let name = NameInParent::from_slice(value).map(|n| (n.parent, n.namespace, n.name));
+            let full = FileNameAttr::from_slice(value)
+                .ok()
+                .map(|f| (f.parent.entry, f.namespace, f.name));
+            assert_eq!(name, full, "value {value:02X?}");
+        };
+
+        let log_file = filename_value_bytes("$LogFile", FileNamespace::Win32AndDos);
+        assert!(NameInParent::from_slice(&log_file).is_some());
+        for len in 0..=log_file.len() {
+            assert_agree(&log_file[..len]);
+        }
+        // Covers out-of-range timestamps, overlong names and unknown namespaces.
+        for position in 0..log_file.len() {
+            for byte in [0x00, 0x01, 0x04, 0x7F, 0x80, 0xFF] {
+                let mut value = log_file.clone();
+                value[position] = byte;
+                assert_agree(&value);
+            }
+        }
+    }
 
     #[test]
     fn flags_keep_unknown_bits() {
