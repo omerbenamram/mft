@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
+  # auto-tag.yml dispatches this on the tag it pushes (its tag push doesn't trigger workflows).
+  workflow_dispatch:
 
 jobs:
   # Fails a bad tag or a missing crates.io token before anything is built or published.
