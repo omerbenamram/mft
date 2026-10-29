@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use crate::Utf16LeStr;
 use crate::attribute::raw::data_as_hex;
-use crate::utils::{read_u16, read_u32};
+use crate::utils::{read_guid, read_u16, read_u32};
 use serde::Serialize;
 use winstructs::guid::Guid;
 
@@ -96,7 +96,7 @@ impl<'a> ReparsePointAttr<'a> {
         let data_length = usize::from(read_u16(value, 4)?);
 
         let (guid, data_offset) = if tag & TAG_MICROSOFT_BIT == 0 {
-            (Some(Guid::from_buffer(value.get(8..24)?).ok()?), 24)
+            (Some(read_guid(value, 8)?), 24)
         } else {
             (None, 8)
         };

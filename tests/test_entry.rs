@@ -5,7 +5,7 @@ use mft::Timestamp;
 use mft::attribute::MftAttributeType;
 use mft::attribute::header::ResidentialHeader;
 use mft::attribute::x30::FileNamespace;
-use mft::attribute::x90::{IndexCollationRules, IndexEntryFlags};
+use mft::attribute::x90::{IndexCollationRules, IndexEntryFlags, ViewIndexValue};
 use mft::entry::MftEntry;
 use mft::err::Error as MftError;
 use mft::mft::MftParser;
@@ -81,6 +81,74 @@ fn test_entry_index_root() {
             }
         }
     }
+}
+
+/// Asserts the view index entries in the index roots of `entry`, by index name.
+fn assert_view_entries(entry: &MftEntry, expected: &[(&str, Vec<ViewIndexValue>)]) {
+    let attributes: Vec<_> = entry.iter_attributes().map(Result::unwrap).collect();
+    let actual: Vec<_> = attributes
+        .iter()
+        .filter_map(|attribute| {
+            let index_root = attribute.data.as_index_root()?;
+            assert!(index_root.index_entries.index_entries.is_empty());
+            let values = index_root.index_entries.view_entries.iter();
+            Some((
+                attribute.header.name.to_string(),
+                values.map(|entry| entry.value.clone()).collect::<Vec<_>>(),
+            ))
+        })
+        .collect();
+    let expected: Vec<_> = expected
+        .iter()
+        .map(|(name, values)| (name.to_string(), values.clone()))
+        .collect();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn test_view_index_entries() {
+    let mut parser = MftParser::from_path(mft_sample()).unwrap();
+    let secure = |hash, security_id, sds_offset, sds_length| ViewIndexValue::SecurityDescriptor {
+        hash,
+        security_id,
+        sds_offset,
+        sds_length,
+    };
+    assert_view_entries(
+        &parser.get_entry(9).unwrap(),
+        &[
+            ("$SDH", vec![secure(0x8048_FB19, 301, 9648, 236)]),
+            ("$SII", vec![secure(0x63D4_6E04, 305, 10400, 140)]),
+        ],
+    );
+
+    let mut parser = MftParser::from_path(win11_sample("system.MFT")).unwrap();
+    let change_time = mft::windows_filetime_to_timestamp(0x01DA_0BF0_48AD_BEF4).unwrap();
+    let admins = "S-1-5-32-544".to_string();
+    let quota = |owner_id, sid| ViewIndexValue::Quota {
+        owner_id,
+        version: 2,
+        quota_flags: 1,
+        bytes_used: 0,
+        change_time,
+        warning_limit: -1,
+        hard_limit: -1,
+        exceeded_time: None,
+        sid,
+    };
+    assert_view_entries(
+        &parser.get_entry(24).unwrap(),
+        &[
+            (
+                "$O",
+                vec![ViewIndexValue::QuotaOwner {
+                    sid: admins.clone(),
+                    owner_id: 256,
+                }],
+            ),
+            ("$Q", vec![quota(1, None), quota(256, Some(admins))]),
+        ],
+    );
 }
 
 #[test]

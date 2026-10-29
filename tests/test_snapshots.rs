@@ -106,9 +106,8 @@ fn test_win11_entry_snapshots() {
     }
 }
 
-/// Records 0-33 of the same `$MFT`: every system file, with the paths resolved. The index roots of
-/// `$Secure` and `$Extend\$Quota` hold `$SDH`, `$SII`, `$O` and `$Q` entries, which aren't parsed yet,
-/// so they show up empty.
+/// Records 0-33 of the same `$MFT`: every system file, with the paths resolved, and the view index
+/// entries of `$Extend\$Quota`.
 #[test]
 #[cfg(feature = "mft_dump")]
 fn test_win11_system_snapshots() {

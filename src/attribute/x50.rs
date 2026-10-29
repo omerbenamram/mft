@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use crate::attribute::raw::data_as_hex;
 use crate::impl_serialize_for_bitflags;
-use crate::utils::{read_u16, read_u32};
+use crate::utils::{read_guid, read_u16, read_u32};
 use bitflags::bitflags;
 use serde::Serialize;
 use winstructs::guid::Guid;
@@ -208,8 +208,7 @@ impl<'a> Ace<'a> {
                     ),
                 ] {
                     if object_flags & present != 0 {
-                        *object_type =
-                            Some(Guid::from_buffer(body.get(offset..offset + 16)?).ok()?);
+                        *object_type = Some(read_guid(body, offset)?);
                         offset += 16;
                     }
                 }
@@ -229,7 +228,7 @@ impl<'a> Ace<'a> {
 
 /// Formats the SID at `offset` as a string, and returns its length.
 /// <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/f992ad60-0fe4-4b87-9fed-beb478836861>
-fn sid(value: &[u8], offset: usize) -> Option<(String, usize)> {
+pub(crate) fn sid(value: &[u8], offset: usize) -> Option<(String, usize)> {
     let header = value.get(offset..offset.checked_add(8)?)?;
     let count = usize::from(header[1]);
     // The identifier authority is a 48-bit big-endian number.
