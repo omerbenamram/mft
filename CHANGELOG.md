@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-29
+
 ### Added
 - Parse resident `$SECURITY_DESCRIPTOR` (0x50) attributes into `SecurityDescriptorAttr`: the control flags, owner and group SIDs, and the SACL and DACL with each ACE's type, flags, access mask, object types and SID. Non-resident ones keep their data runs.
 - Parse `$EA_INFORMATION` (0xD0) and `$EA` (0xE0) into `EaInformationAttr` and `EaAttr`: each extended attribute's flags, name and value. WSL's `$LXUID`, `$LXGID`, `$LXMOD` and `$LXDEV` and code integrity's `$CI.CATALOGHINT` are decoded, and other values keep their data as hex.
@@ -14,11 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `mft_dump -o csv --hard-link-rows` also writes a row for each other hard link of a file, with that link's path and `$FILE_NAME` columns, and `--stream-rows` a row for each named `$DATA` stream, with `FullPath` and `FileName` ending in `:<stream>` and the stream's size as `FileSize`. In the library, `FlatMftEntryWithName::rows_with_path` builds these rows and `MftParser::get_full_path_for_name` gives the path of a file under one of its names.
 
 ### Changed
+- **Breaking:** `FlatMftEntryWithName` has new public fields for the new CSV columns, which breaks struct literals outside the crate.
 - The CSV `FileName*` columns come from the file's best name (the one `FullPath` ends with: `Win32` over `POSIX` over `Dos`, including names in extension records) instead of its first `$FILE_NAME` attribute. Their times differ where Windows wrote the short name and the long name at different times, which is about 4% of the rows in our sample images.
-- `IndexEntries` has a new `view_entries` field.
-- `MftAttributeContent` has a new `AttrX50` variant, and resident `$SECURITY_DESCRIPTOR` JSON output changes from raw hex to the parsed descriptor.
-- `MftAttributeContent` has new `AttrXD0` and `AttrXE0` variants, and `$EA_INFORMATION` and `$EA` JSON output changes from raw hex to the parsed structures.
-- `EntryFlags`, `AttributeDataFlags`, `FileAttributeFlags`, `IndexRootFlags` and `IndexEntryFlags` values can hold bits without a name, so comparing one with `==` against named flags can now be false where it used to be true. JSON and CSV flag strings can end with a hex part, such as `FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | 0x80000000`.
+- **Breaking:** `IndexEntries` has a new `view_entries` field, which breaks struct literals outside the crate.
+- **Breaking:** `MftAttributeContent` has a new `AttrX50` variant, which breaks exhaustive matches, and resident `$SECURITY_DESCRIPTOR` JSON output changes from raw hex to the parsed descriptor.
+- **Breaking:** `MftAttributeContent` has new `AttrXD0` and `AttrXE0` variants, and `$EA_INFORMATION` and `$EA` JSON output changes from raw hex to the parsed structures.
+- **Breaking:** `EntryFlags`, `AttributeDataFlags`, `FileAttributeFlags`, `IndexRootFlags` and `IndexEntryFlags` values can hold bits without a name, so comparing one with `==` against named flags can now be false where it used to be true. JSON and CSV flag strings can end with a hex part, such as `FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | 0x80000000`.
 
 ### Fixed
 - View index roots, such as `$Secure:$SDH`, no longer show up with no entries.
