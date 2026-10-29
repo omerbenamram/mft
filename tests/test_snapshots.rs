@@ -41,13 +41,26 @@ fn ranges_arg(ids: impl IntoIterator<Item = u64>) -> String {
         .join(",")
 }
 
+/// Runs `mft_dump` and returns its stdout, failing the test with its stderr if it fails.
+#[cfg(feature = "mft_dump")]
+fn mft_dump_stdout(args: &[&std::ffi::OsStr]) -> String {
+    let output = assert_cmd::cargo::cargo_bin_cmd!("mft_dump")
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "mft_dump failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
 /// `mft_dump` uses a different JSON serializer for JSONL than the library's serde_json output, so
 /// snapshot the CLI output too. CSV covers the first 40 records plus the JSON entries.
 #[test]
 #[cfg(feature = "mft_dump")]
 fn test_cli_output_snapshots() {
-    use assert_cmd::cargo::cargo_bin_cmd;
-
     let json_ids = || JSON_ENTRIES.iter().map(|&(id, _)| id);
     let csv_ids: BTreeSet<u64> = (0..40).chain(json_ids()).collect();
 
@@ -56,20 +69,13 @@ fn test_cli_output_snapshots() {
         ("jsonl", ranges_arg(json_ids())),
         ("csv", ranges_arg(csv_ids)),
     ] {
-        let mut cmd = cargo_bin_cmd!("mft_dump");
-        cmd.arg("-o")
-            .arg(format)
-            .arg("-r")
-            .arg(ids)
-            .arg(mft_sample());
-        let output = cmd.output().unwrap();
-        assert!(
-            output.status.success(),
-            "mft_dump failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stdout = mft_dump_stdout(&[
+            "-o".as_ref(),
+            format.as_ref(),
+            "-r".as_ref(),
+            ids.as_ref(),
+            mft_sample().as_os_str(),
+        ]);
         insta::assert_snapshot!(format!("cli_{format}_selected_entries"), stdout);
     }
 }
@@ -106,22 +112,9 @@ fn test_win11_entry_snapshots() {
 #[test]
 #[cfg(feature = "mft_dump")]
 fn test_win11_system_snapshots() {
-    use assert_cmd::cargo::cargo_bin_cmd;
-
+    let path = win11_sample("system.MFT");
     for format in ["jsonl", "csv"] {
-        let output = cargo_bin_cmd!("mft_dump")
-            .arg("-o")
-            .arg(format)
-            .arg(win11_sample("system.MFT"))
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "mft_dump failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stdout = mft_dump_stdout(&["-o".as_ref(), format.as_ref(), path.as_os_str()]);
         insta::assert_snapshot!(format!("cli_{format}_win11_system"), stdout);
     }
 }

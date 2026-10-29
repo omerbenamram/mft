@@ -107,6 +107,5 @@ In the Firefox Profiler UI:
  - https://github.com/forensicmatt/RustyMft
 
 ## Test data
-The code is licensed under MIT or Apache-2.0. Some test data under `testdata/` comes from third parties under
-its own licence, listed next to it: `testdata/ntfs/README.md` for the NTFS images, and `testdata/win11/NOTICE.md`
+Some test data under `testdata/` comes from third parties and has its own licence, listed next to it: `testdata/ntfs/README.md` for the NTFS images, and `testdata/win11/NOTICE.md`
 for the Windows 11 records (CC-BY-4.0). `testdata/` isn't part of the published crate.
