@@ -31,6 +31,10 @@ pub struct StandardInfoAttr {
 }
 
 impl StandardInfoAttr {
+    /// The size of the NTFS 3.0 layout, the first with `owner_id`, `security_id`, `quota` and
+    /// `usn`. The parser sets those to 0 in the older, 48-byte one.
+    pub const V3_SIZE: usize = 72;
+
     /// Parse a Standard Information attribute buffer whose length is the attribute value size.
     ///
     /// NTFS uses (at least) two layouts:
@@ -40,7 +44,7 @@ impl StandardInfoAttr {
         if value.len() < 48 {
             return Err(std::io::Error::from(ErrorKind::UnexpectedEof).into());
         }
-        if value.len() != 48 && value.len() < 72 {
+        if value.len() != 48 && value.len() < Self::V3_SIZE {
             return Err(std::io::Error::new(
                 ErrorKind::InvalidData,
                 format!(
@@ -68,7 +72,7 @@ impl StandardInfoAttr {
         let version = reader.read_u32::<LittleEndian>()?;
         let class_id = reader.read_u32::<LittleEndian>()?;
 
-        let (owner_id, security_id, quota, usn) = if value.len() >= 72 {
+        let (owner_id, security_id, quota, usn) = if value.len() >= Self::V3_SIZE {
             (
                 reader.read_u32::<LittleEndian>()?,
                 reader.read_u32::<LittleEndian>()?,

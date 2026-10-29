@@ -1,5 +1,6 @@
+use crate::attribute::x10::StandardInfoAttr;
 use crate::attribute::{FileAttributeFlags, MftAttributeType};
-use crate::entry::EntryFlags;
+use crate::entry::{BestNames, EntryFlags};
 use crate::{MftAttribute, MftEntry, MftParser};
 
 use serde::Serialize;
@@ -7,6 +8,7 @@ use serde::Serialize;
 use jiff::Timestamp;
 use std::io::{Read, Seek};
 use std::path::PathBuf;
+use winstructs::guid::Guid;
 
 /// Used for CSV output
 #[derive(Serialize)]
@@ -47,7 +49,8 @@ pub struct FlatMftEntryWithName {
     pub standard_info_last_access: Option<Timestamp>,
     #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
     pub standard_info_created: Option<Timestamp>,
-    /// All of these fields are present for entries that have an 0x30 attribute.
+    /// All of these fields are present for entries that have an 0x30 attribute. They come from the
+    /// best name (`Win32` over `POSIX` over `Dos`), the same one the full path uses.
     pub file_name_flags: Option<FileAttributeFlags>,
     #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
     pub file_name_last_modified: Option<Timestamp>,
@@ -65,6 +68,24 @@ pub struct FlatMftEntryWithName {
     pub standard_info_last_mft_modified: Option<Timestamp>,
     #[serde(serialize_with = "crate::utils::serialize_option_timestamp")]
     pub file_name_last_mft_modified: Option<Timestamp>,
+
+    /// The best `$FILE_NAME` name, the last part of `FullPath`. Empty for extension records,
+    /// which hold no name of their own.
+    pub file_name: Option<String>,
+    /// The `$LogFile` sequence number of the record's last change.
+    pub lsn: u64,
+    /// The update sequence number of the file's last change in `$Extend\$UsnJrnl`, from
+    /// `$STANDARD_INFORMATION`. 0 if the journal hasn't recorded the file, and empty if the
+    /// attribute predates NTFS 3.0 and has no USN.
+    pub usn: Option<u64>,
+    /// The file's security descriptor id in `$Secure`, from `$STANDARD_INFORMATION`. Empty if the
+    /// attribute predates NTFS 3.0 and has no id.
+    pub security_id: Option<u32>,
+    /// The object id from `$OBJECT_ID`, if the file has one.
+    pub object_id: Option<Guid>,
+    /// The names of the named `$DATA` streams, separated by `|`, which Windows doesn't allow in
+    /// names. These include the streams of NTFS metadata files, such as `$Secure:$SDS`.
+    pub alternate_data_streams: String,
 }
 
 impl FlatMftEntryWithName {
@@ -88,29 +109,36 @@ impl FlatMftEntryWithName {
         extensions: &[MftEntry],
         full_path: PathBuf,
     ) -> FlatMftEntryWithName {
-        let entry_attributes: Vec<MftAttribute> = std::iter::once(entry)
-            .chain(extensions)
-            .flat_map(|record| {
-                record.iter_attributes_matching(Some(vec![
-                    MftAttributeType::FileName,
+        let mut entry_attributes: Vec<MftAttribute> = Vec::new();
+        // The name `find_best_name_attribute_in` picks, chosen in the same pass.
+        let mut names = BestNames::default();
+        let records = std::iter::once((entry, true)).chain(extensions.iter().map(|e| (e, false)));
+        for (record, is_base) in records {
+            for attribute in record
+                .iter_attributes_matching(Some(vec![
                     MftAttributeType::StandardInformation,
+                    MftAttributeType::FileName,
+                    MftAttributeType::ObjectId,
                     MftAttributeType::DATA,
                 ]))
-            })
-            .filter_map(Result::ok)
-            .collect();
+                .filter_map(Result::ok)
+            {
+                if let Some(name) = attribute.data.as_file_name() {
+                    names.offer(name, is_base);
+                }
+                entry_attributes.push(attribute);
+            }
+        }
+        let file_name = names.best();
 
-        let file_name = entry_attributes
+        let standard_info_attribute = entry_attributes
             .iter()
-            .find(|a| a.header.type_code == MftAttributeType::FileName)
-            .and_then(|a| a.data.as_file_name())
-            .cloned();
-
-        let standard_info = entry_attributes
-            .iter()
-            .find(|a| a.header.type_code == MftAttributeType::StandardInformation)
-            .and_then(|a| a.data.as_standard_info())
-            .cloned();
+            .find(|a| a.header.type_code == MftAttributeType::StandardInformation);
+        let standard_info = standard_info_attribute.and_then(|a| a.data.as_standard_info());
+        // Only the NTFS 3.0 layout has the security id and USN.
+        let standard_info_v3 = standard_info_attribute
+            .filter(|a| a.header.value_size() >= StandardInfoAttr::V3_SIZE as u64)
+            .and_then(|a| a.data.as_standard_info());
 
         // The unnamed stream, or a named one if there is none. Records that continue a stream
         // started elsewhere don't hold its size.
@@ -120,9 +148,26 @@ impl FlatMftEntryWithName {
             .min_by_key(|a| !a.header.name.is_empty())
             .map_or(0, |a| a.header.value_size());
 
-        let has_ads = entry_attributes
+        let object_id = entry_attributes
             .iter()
-            .any(|a| a.header.type_code == MftAttributeType::DATA && !a.header.name.is_empty());
+            .find_map(|a| a.data.as_object_id())
+            .map(|o| o.object_id.clone());
+
+        // A stream spread over several records has a header in each, so keep its first.
+        let mut alternate_data_streams = String::new();
+        for a in &entry_attributes {
+            if a.header.type_code == MftAttributeType::DATA
+                && !a.header.name.is_empty()
+                && !a.header.is_continuation()
+            {
+                if !alternate_data_streams.is_empty() {
+                    alternate_data_streams.push('|');
+                }
+                a.header
+                    .name
+                    .with_utf8(|name| alternate_data_streams.push_str(name));
+            }
+        }
 
         FlatMftEntryWithName {
             entry_id: entry.header.record_number,
@@ -137,17 +182,23 @@ impl FlatMftEntryWithName {
             base_entry_sequence: entry.header.base_reference.sequence,
             is_a_directory: entry.is_dir(),
             is_deleted: !entry.header.flags.contains(EntryFlags::ALLOCATED),
-            has_alternate_data_streams: has_ads,
-            standard_info_flags: standard_info.as_ref().map(|i| i.file_flags.clone()),
-            standard_info_last_modified: standard_info.as_ref().map(|i| i.modified),
-            standard_info_last_access: standard_info.as_ref().map(|i| i.accessed),
-            standard_info_created: standard_info.as_ref().map(|i| i.created),
+            has_alternate_data_streams: !alternate_data_streams.is_empty(),
+            standard_info_flags: standard_info.map(|i| i.file_flags.clone()),
+            standard_info_last_modified: standard_info.map(|i| i.modified),
+            standard_info_last_access: standard_info.map(|i| i.accessed),
+            standard_info_created: standard_info.map(|i| i.created),
             file_name_flags: file_name.as_ref().map(|i| i.flags.clone()),
             file_name_last_modified: file_name.as_ref().map(|i| i.modified),
             file_name_last_access: file_name.as_ref().map(|i| i.accessed),
             file_name_created: file_name.as_ref().map(|i| i.created),
-            standard_info_last_mft_modified: standard_info.as_ref().map(|i| i.mft_modified),
+            standard_info_last_mft_modified: standard_info.map(|i| i.mft_modified),
             file_name_last_mft_modified: file_name.as_ref().map(|i| i.mft_modified),
+            file_name: file_name.as_ref().map(|i| i.name.to_utf8_string()),
+            lsn: entry.header.metadata_transaction_journal,
+            usn: standard_info_v3.map(|i| i.usn),
+            security_id: standard_info_v3.map(|i| i.security_id),
+            object_id,
+            alternate_data_streams,
             file_size,
             full_path,
         }
