@@ -262,6 +262,12 @@ pub(crate) fn read_u32(buf: &[u8], offset: usize) -> Option<u32> {
         .map(LittleEndian::read_u32)
 }
 
+/// Reads a little-endian `u64` at `offset`, or `None` past the end of `buf`.
+pub(crate) fn read_u64(buf: &[u8], offset: usize) -> Option<u64> {
+    buf.get(offset..offset.checked_add(8)?)
+        .map(LittleEndian::read_u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

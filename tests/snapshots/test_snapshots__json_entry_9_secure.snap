@@ -212,7 +212,17 @@ expression: json
         "index_node_allocation_length": 96,
         "index_root_flags": "LARGE_INDEX",
         "index_entries": {
-          "index_entries": []
+          "index_entries": [],
+          "view_entries": [
+            {
+              "flags": "INDEX_ENTRY_NODE",
+              "type": "SecurityDescriptor",
+              "hash": 2152266521,
+              "security_id": 301,
+              "sds_offset": 9648,
+              "sds_length": 236
+            }
+          ]
         }
       }
     },
@@ -243,7 +253,17 @@ expression: json
         "index_node_allocation_length": 88,
         "index_root_flags": "LARGE_INDEX",
         "index_entries": {
-          "index_entries": []
+          "index_entries": [],
+          "view_entries": [
+            {
+              "flags": "INDEX_ENTRY_NODE",
+              "type": "SecurityDescriptor",
+              "hash": 1674866180,
+              "security_id": 305,
+              "sds_offset": 10400,
+              "sds_length": 140
+            }
+          ]
         }
       }
     },

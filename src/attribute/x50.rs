@@ -229,7 +229,7 @@ impl<'a> Ace<'a> {
 
 /// Formats the SID at `offset` as a string, and returns its length.
 /// <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/f992ad60-0fe4-4b87-9fed-beb478836861>
-fn sid(value: &[u8], offset: usize) -> Option<(String, usize)> {
+pub(crate) fn sid(value: &[u8], offset: usize) -> Option<(String, usize)> {
     let header = value.get(offset..offset.checked_add(8)?)?;
     let count = usize::from(header[1]);
     // The identifier authority is a 48-bit big-endian number.

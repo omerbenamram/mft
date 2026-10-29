@@ -1,13 +1,18 @@
+use crate::attribute::raw::data_as_hex;
+use crate::attribute::x50::sid;
 use crate::err::{Error, Result};
 use crate::impl_serialize_for_bitflags;
+use crate::utils::{read_u16, read_u32, read_u64, windows_filetime_to_timestamp};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
 use bitflags::bitflags;
+use jiff::Timestamp;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use serde::Serialize;
 use std::io::Cursor;
+use winstructs::guid::Guid;
 use winstructs::ntfs::mft_reference::MftReference;
 
 use crate::attribute::x30::FileNameAttr;
@@ -83,12 +88,31 @@ impl<'a> IndexRootAttr<'a> {
         // The flags are one byte, followed by three reserved bytes.
         let index_root_flags =
             IndexRootFlags::from_bits_retain(stream.read_u32::<LittleEndian>()? & 0xFF);
-        let index_entries = IndexEntries::from_slice(
-            value,
-            index_node_length,
-            index_node_start_pos,
-            stream.position() as usize,
-        )?;
+        // Indexes of `$FILE_NAME` (`$I30`) index attribute type 0x30. View indexes, such as
+        // `$Secure:$SDH`, index no attribute (type 0), and their entries carry a key and data.
+        let index_entries = if attribute_type == 0 {
+            let first_entry = index_node_start_pos
+                .checked_add(relative_offset_to_index_node as usize)
+                .ok_or_else(|| Error::Any {
+                    detail: "index node offset overflow".to_string(),
+                })?;
+            IndexEntries {
+                index_entries: Vec::new(),
+                view_entries: ViewIndexEntry::from_node(
+                    value,
+                    collation_rule,
+                    first_entry,
+                    index_node_start_pos.saturating_add(index_node_length as usize),
+                )?,
+            }
+        } else {
+            IndexEntries::from_slice(
+                value,
+                index_node_length,
+                index_node_start_pos,
+                stream.position() as usize,
+            )?
+        };
 
         Ok(IndexRootAttr {
             attribute_type,
@@ -182,7 +206,186 @@ impl<'a> IndexEntryHeader<'a> {
 
 #[derive(Serialize, Clone, Debug)]
 pub struct IndexEntries<'a> {
+    /// The entries of a `$FILE_NAME` index (`$I30`).
     pub index_entries: Vec<IndexEntryHeader<'a>>,
+    /// The entries of a view index, such as `$Secure:$SDH` or `$Extend\$Quota:$Q`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub view_entries: Vec<ViewIndexEntry<'a>>,
+}
+
+/// An entry of a view index: an index whose keys aren't file names.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct ViewIndexEntry<'a> {
+    pub flags: IndexEntryFlags,
+    #[serde(flatten)]
+    pub value: ViewIndexValue<'a>,
+}
+
+/// A view index entry's key and data, decoded for the indexes NTFS keeps in its metadata files.
+/// The index is recognized from its collation rule and the sizes of the key and data.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(tag = "type")]
+pub enum ViewIndexValue<'a> {
+    /// `$Secure:$SDH`, the security descriptors by hash, or `$Secure:$SII`, by id. Both point at
+    /// the descriptor's entry in the `$Secure:$SDS` stream.
+    SecurityDescriptor {
+        hash: u32,
+        security_id: u32,
+        sds_offset: u64,
+        sds_length: u32,
+    },
+    /// `$Extend\$ObjId:$O`: the file an object id belongs to.
+    ObjectId {
+        object_id: Guid,
+        mft_reference: MftReference,
+        birth_volume_id: Guid,
+        birth_object_id: Guid,
+        domain_id: Guid,
+    },
+    /// `$Extend\$Quota:$O`: the quota owner id of a SID.
+    QuotaOwner { sid: String, owner_id: u32 },
+    /// `$Extend\$Quota:$Q`: an owner's quota and disk usage.
+    Quota {
+        owner_id: u32,
+        version: u32,
+        quota_flags: u32,
+        bytes_used: u64,
+        change_time: Timestamp,
+        /// -1 means no limit.
+        warning_limit: i64,
+        /// -1 means no limit.
+        hard_limit: i64,
+        /// When the warning limit was exceeded, if it was.
+        exceeded_time: Option<Timestamp>,
+        /// Missing for the default quota entry.
+        sid: Option<String>,
+    },
+    /// `$Extend\$Reparse:$R`: a file with a reparse point, by tag.
+    Reparse {
+        tag: u32,
+        mft_reference: MftReference,
+    },
+    /// Any other index.
+    Other {
+        #[serde(serialize_with = "data_as_hex")]
+        key: &'a [u8],
+        #[serde(serialize_with = "data_as_hex")]
+        data: &'a [u8],
+    },
+}
+
+impl<'a> ViewIndexEntry<'a> {
+    /// Reads the entries of a view index node in `value[start..end]`, up to its end entry.
+    /// <https://github.com/libyal/libfsntfs/blob/main/documentation/New%20Technologies%20File%20System%20(NTFS).asciidoc#index-entry>
+    fn from_node(
+        value: &'a [u8],
+        collation_rule: IndexCollationRules,
+        start: usize,
+        end: usize,
+    ) -> Result<Vec<Self>> {
+        const ENTRY_HEADER_LEN: usize = 16;
+        let truncated = || Error::Any {
+            detail: "view index entry runs past the index node".to_string(),
+        };
+        let node = value.get(..end).ok_or_else(truncated)?;
+
+        let mut entries = Vec::new();
+        let mut offset = start;
+        while offset < end {
+            let data_offset = usize::from(read_u16(node, offset).ok_or_else(truncated)?);
+            let data_length = usize::from(read_u16(node, offset + 2).ok_or_else(truncated)?);
+            let length = usize::from(read_u16(node, offset + 8).ok_or_else(truncated)?);
+            let key_length = usize::from(read_u16(node, offset + 10).ok_or_else(truncated)?);
+            let flags = IndexEntryFlags::from_bits_retain(u32::from(
+                read_u16(node, offset + 12).ok_or_else(truncated)?,
+            ));
+            if flags.contains(IndexEntryFlags::INDEX_ENTRY_END) {
+                break;
+            }
+            if length < ENTRY_HEADER_LEN {
+                return Err(Error::Any {
+                    detail: format!("view index entry length {length} is too small"),
+                });
+            }
+
+            let entry = node.get(offset..offset + length).ok_or_else(truncated)?;
+            let key = entry
+                .get(ENTRY_HEADER_LEN..ENTRY_HEADER_LEN + key_length)
+                .ok_or_else(truncated)?;
+            let data = entry
+                .get(data_offset..data_offset + data_length)
+                .ok_or_else(truncated)?;
+            let value = ViewIndexValue::decode(collation_rule, key, data)
+                .unwrap_or(ViewIndexValue::Other { key, data });
+            entries.push(ViewIndexEntry { flags, value });
+            offset += length;
+        }
+        Ok(entries)
+    }
+}
+
+impl<'a> ViewIndexValue<'a> {
+    /// Decodes the key and data of a known index, or `None` if they don't match its layout.
+    fn decode(collation_rule: IndexCollationRules, key: &[u8], data: &[u8]) -> Option<Self> {
+        let reference = |buf: &[u8], offset: usize| read_u64(buf, offset).map(MftReference::from);
+        let guid = |offset: usize| Guid::from_buffer(data.get(offset..offset + 16)?).ok();
+
+        Some(match (collation_rule, key.len(), data.len()) {
+            // The data is the descriptor's `$SDS` entry header.
+            (IndexCollationRules::CollationNtofsSecurityHash, 8, 20)
+            | (IndexCollationRules::CollationNtofsUlong, 4, 20) => {
+                ViewIndexValue::SecurityDescriptor {
+                    hash: read_u32(data, 0)?,
+                    security_id: read_u32(data, 4)?,
+                    sds_offset: read_u64(data, 8)?,
+                    sds_length: read_u32(data, 16)?,
+                }
+            }
+            (IndexCollationRules::CollationNtofsUlongs, 16, 56) => ViewIndexValue::ObjectId {
+                object_id: Guid::from_buffer(key).ok()?,
+                mft_reference: reference(data, 0)?,
+                birth_volume_id: guid(8)?,
+                birth_object_id: guid(24)?,
+                domain_id: guid(40)?,
+            },
+            (IndexCollationRules::CollationNtofsUlongs, 12, 0) => ViewIndexValue::Reparse {
+                tag: read_u32(key, 0)?,
+                mft_reference: reference(key, 4)?,
+            },
+            (IndexCollationRules::CollationNtofsSid, _, 4) => {
+                let (sid, sid_length) = sid(key, 0)?;
+                if sid_length != key.len() {
+                    return None;
+                }
+                ViewIndexValue::QuotaOwner {
+                    sid,
+                    owner_id: read_u32(data, 0)?,
+                }
+            }
+            (IndexCollationRules::CollationNtofsUlong, 4, 48..) => {
+                let exceeded_time = read_u64(data, 40)?;
+                let sid = match data.get(48..) {
+                    Some([]) | None => None,
+                    Some(rest) => Some(sid(rest, 0)?.0),
+                };
+                ViewIndexValue::Quota {
+                    owner_id: read_u32(key, 0)?,
+                    version: read_u32(data, 0)?,
+                    quota_flags: read_u32(data, 4)?,
+                    bytes_used: read_u64(data, 8)?,
+                    change_time: windows_filetime_to_timestamp(read_u64(data, 16)?).ok()?,
+                    warning_limit: read_u64(data, 24)? as i64,
+                    hard_limit: read_u64(data, 32)? as i64,
+                    exceeded_time: match exceeded_time {
+                        0 => None,
+                        t => Some(windows_filetime_to_timestamp(t).ok()?),
+                    },
+                    sid,
+                }
+            }
+            _ => return None,
+        })
+    }
 }
 
 impl<'a> IndexEntries<'a> {
@@ -226,7 +429,10 @@ impl<'a> IndexEntries<'a> {
             }
         }
 
-        Ok(IndexEntries { index_entries })
+        Ok(IndexEntries {
+            index_entries,
+            view_entries: Vec::new(),
+        })
     }
 }
 
@@ -247,6 +453,141 @@ mod tests {
         out[6] = (sequence & 0xFF) as u8;
         out[7] = (sequence >> 8) as u8;
         out
+    }
+
+    /// A view index entry with `key` and `data`, padded to 8 bytes like NTFS writes them.
+    fn view_entry(key: &[u8], data: &[u8], flags: u16) -> Vec<u8> {
+        let data_offset = 16 + key.len();
+        let length = (data_offset + data.len()).next_multiple_of(8);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(data_offset as u16).to_le_bytes());
+        buf.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&(length as u16).to_le_bytes());
+        buf.extend_from_slice(&(key.len() as u16).to_le_bytes());
+        buf.extend_from_slice(&flags.to_le_bytes());
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(data);
+        buf.resize(length, 0);
+        buf
+    }
+
+    fn end_entry() -> Vec<u8> {
+        view_entry(&[], &[], IndexEntryFlags::INDEX_ENTRY_END.bits() as u16)
+    }
+
+    fn guid(first: u8) -> Vec<u8> {
+        (first..first + 16).collect()
+    }
+
+    #[test]
+    fn view_entries_decode_object_ids_and_reparse_points() {
+        let mut data = mft_reference_bytes(40, 3).to_vec();
+        data.extend(guid(0x10));
+        data.extend(guid(0x20));
+        data.extend(guid(0x30));
+        let mut node = view_entry(&guid(0), &data, 0);
+        node.extend(end_entry());
+
+        let entries = ViewIndexEntry::from_node(
+            &node,
+            IndexCollationRules::CollationNtofsUlongs,
+            0,
+            node.len(),
+        )
+        .unwrap();
+        let guid_of = |first| Guid::from_buffer(&guid(first)).unwrap();
+        assert_eq!(
+            entries,
+            vec![ViewIndexEntry {
+                flags: IndexEntryFlags::empty(),
+                value: ViewIndexValue::ObjectId {
+                    object_id: guid_of(0),
+                    mft_reference: MftReference::new(40, 3),
+                    birth_volume_id: guid_of(0x10),
+                    birth_object_id: guid_of(0x20),
+                    domain_id: guid_of(0x30),
+                },
+            }]
+        );
+
+        let mut key = 0xA000_0003u32.to_le_bytes().to_vec();
+        key.extend(mft_reference_bytes(1234, 7));
+        let mut node = view_entry(&key, &[], 0);
+        node.extend(end_entry());
+        let entries = ViewIndexEntry::from_node(
+            &node,
+            IndexCollationRules::CollationNtofsUlongs,
+            0,
+            node.len(),
+        )
+        .unwrap();
+        assert_eq!(
+            entries[0].value,
+            ViewIndexValue::Reparse {
+                tag: 0xA000_0003,
+                mft_reference: MftReference::new(1234, 7),
+            }
+        );
+    }
+
+    #[test]
+    fn view_entries_of_unknown_layout_keep_key_and_data() {
+        let mut node = view_entry(&[1, 2, 3], &[4, 5], 0);
+        // A SID index whose key isn't a SID.
+        node.extend(view_entry(&[9; 8], &[0; 4], 0));
+        node.extend(end_entry());
+        // Bytes after the end entry aren't entries.
+        node.extend(view_entry(&[7], &[], 0));
+
+        let other = |rule| {
+            ViewIndexEntry::from_node(&node, rule, 0, node.len())
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.value)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            other(IndexCollationRules::CollationNtofsSid),
+            vec![
+                ViewIndexValue::Other {
+                    key: &[1, 2, 3],
+                    data: &[4, 5],
+                },
+                ViewIndexValue::Other {
+                    key: &[9; 8],
+                    data: &[0; 4],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn view_entry_past_the_index_node_is_error() {
+        let mut node = view_entry(&[0; 4], &[0; 20], 0);
+        node.extend(end_entry());
+        for end in [8, 20, node.len() + 1] {
+            let err =
+                ViewIndexEntry::from_node(&node, IndexCollationRules::CollationNtofsUlong, 0, end)
+                    .unwrap_err();
+            assert!(
+                err.to_string().contains("past the index node"),
+                "{end}: {err}"
+            );
+        }
+
+        // An entry whose data runs past its own length.
+        let mut node = view_entry(&[0; 4], &[], 0);
+        node[2] = 20;
+        let err = ViewIndexEntry::from_node(
+            &node,
+            IndexCollationRules::CollationNtofsUlong,
+            0,
+            node.len(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("past the index node"), "{err}");
     }
 
     #[test]

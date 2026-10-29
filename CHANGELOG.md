@@ -9,13 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Parse resident `$SECURITY_DESCRIPTOR` (0x50) attributes into `SecurityDescriptorAttr`: the control flags, owner and group SIDs, and the SACL and DACL with each ACE's type, flags, access mask, object types and SID. Non-resident ones keep their data runs.
 - Parse `$EA_INFORMATION` (0xD0) and `$EA` (0xE0) into `EaInformationAttr` and `EaAttr`: each extended attribute's flags, name and value. WSL's `$LXUID`, `$LXGID`, `$LXMOD` and `$LXDEV` and code integrity's `$CI.CATALOGHINT` are decoded, and other values keep their data as hex.
+- Parse the entries of view index roots, which index something other than file names, into `IndexEntries::view_entries`: `$Secure:$SDH` and `$SII` (each security descriptor's hash, id and place in `$SDS`), `$Extend\$Quota:$O` and `$Q` (quota owners and their usage and limits), `$Extend\$ObjId:$O` (object ids and their birth ids) and `$Extend\$Reparse:$R` (reparse tags by file). Entries of other view indexes keep their key and data as hex. The JSON adds a `view_entries` list only to these index roots.
 
 ### Changed
+- `IndexEntries` has a new `view_entries` field.
 - `MftAttributeContent` has a new `AttrX50` variant, and resident `$SECURITY_DESCRIPTOR` JSON output changes from raw hex to the parsed descriptor.
 - `MftAttributeContent` has new `AttrXD0` and `AttrXE0` variants, and `$EA_INFORMATION` and `$EA` JSON output changes from raw hex to the parsed structures.
 - `EntryFlags`, `AttributeDataFlags`, `FileAttributeFlags`, `IndexRootFlags` and `IndexEntryFlags` values can hold bits without a name, so comparing one with `==` against named flags can now be false where it used to be true. JSON and CSV flag strings can end with a hex part, such as `FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | 0x80000000`.
 
 ### Fixed
+- View index roots, such as `$Secure:$SDH`, no longer show up with no entries.
 - Flag fields keep bits that have no name (entry flags, attribute data flags, `$STANDARD_INFORMATION` and `$FILE_NAME` file attributes, and index flags) instead of dropping them, such as the `0x80000000` set on `$Extend\$RmMetadata\$Txf`.
 - A read error partway through an entry no longer makes the next `get_entry` read from the wrong offset.
 
