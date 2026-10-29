@@ -1,6 +1,7 @@
 use crate::attribute::x10::StandardInfoAttr;
+use crate::attribute::x30::FileNameAttr;
 use crate::attribute::{FileAttributeFlags, MftAttributeType};
-use crate::entry::{BestNames, EntryFlags};
+use crate::entry::{BestNames, EntryFlags, find_best_name_attribute_in, is_long_name};
 use crate::{MftAttribute, MftEntry, MftParser};
 
 use serde::Serialize;
@@ -11,7 +12,7 @@ use std::path::PathBuf;
 use winstructs::guid::Guid;
 
 /// Used for CSV output
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 pub struct FlatMftEntryWithName {
     pub signature: String,
@@ -169,7 +170,7 @@ impl FlatMftEntryWithName {
             }
         }
 
-        FlatMftEntryWithName {
+        let mut row = FlatMftEntryWithName {
             entry_id: entry.header.record_number,
             signature: String::from_utf8(entry.header.signature.to_ascii_uppercase())
                 .expect("It should be either FILE or BAAD (valid utf-8)"),
@@ -187,13 +188,13 @@ impl FlatMftEntryWithName {
             standard_info_last_modified: standard_info.map(|i| i.modified),
             standard_info_last_access: standard_info.map(|i| i.accessed),
             standard_info_created: standard_info.map(|i| i.created),
-            file_name_flags: file_name.as_ref().map(|i| i.flags.clone()),
-            file_name_last_modified: file_name.as_ref().map(|i| i.modified),
-            file_name_last_access: file_name.as_ref().map(|i| i.accessed),
-            file_name_created: file_name.as_ref().map(|i| i.created),
+            file_name_flags: None,
+            file_name_last_modified: None,
+            file_name_last_access: None,
+            file_name_created: None,
             standard_info_last_mft_modified: standard_info.map(|i| i.mft_modified),
-            file_name_last_mft_modified: file_name.as_ref().map(|i| i.mft_modified),
-            file_name: file_name.as_ref().map(|i| i.name.to_utf8_string()),
+            file_name_last_mft_modified: None,
+            file_name: None,
             lsn: entry.header.metadata_transaction_journal,
             usn: standard_info_v3.map(|i| i.usn),
             security_id: standard_info_v3.map(|i| i.security_id),
@@ -201,6 +202,88 @@ impl FlatMftEntryWithName {
             alternate_data_streams,
             file_size,
             full_path,
-        }
+        };
+        row.set_file_name(file_name.as_ref());
+        row
     }
+
+    /// The rows of an entry: its row from [`FlatMftEntryWithName::from_entry_with_path`], then
+    /// the extra rows that `rows` asks for. `link_path` gives the full path of a file under one of
+    /// its names (see [`MftParser::get_full_path_for_name`]).
+    pub fn rows_with_path(
+        entry: &MftEntry,
+        extensions: &[MftEntry],
+        full_path: PathBuf,
+        rows: CsvRows,
+        mut link_path: impl FnMut(&FileNameAttr<'_>) -> PathBuf,
+    ) -> Vec<FlatMftEntryWithName> {
+        let row = Self::from_entry_with_path(entry, extensions, full_path);
+        // An extension record isn't a file of its own, and a directory can't have hard links.
+        if !(rows.hard_links || rows.streams) || !entry.header.is_base_record() {
+            return vec![row];
+        }
+
+        let attributes: Vec<MftAttribute> = std::iter::once(entry)
+            .chain(extensions)
+            .flat_map(|record| {
+                record.iter_attributes_matching(Some(vec![
+                    MftAttributeType::FileName,
+                    MftAttributeType::DATA,
+                ]))
+            })
+            .filter_map(Result::ok)
+            .collect();
+
+        let mut out = vec![row.clone()];
+        if rows.hard_links && !entry.is_dir() {
+            let best = find_best_name_attribute_in(entry, extensions);
+            for name in attributes.iter().filter_map(|a| a.data.as_file_name()) {
+                // The `Dos` name is another spelling of a long one, not a link.
+                if is_long_name(name) && Some(name) != best.as_ref() {
+                    let mut link = row.clone();
+                    link.set_file_name(Some(name));
+                    link.full_path = link_path(name);
+                    out.push(link);
+                }
+            }
+        }
+        if rows.streams {
+            for header in attributes.iter().map(|a| &a.header).filter(|h| {
+                h.type_code == MftAttributeType::DATA && !h.name.is_empty() && !h.is_continuation()
+            }) {
+                let mut stream = row.clone();
+                let suffix = format!(":{}", header.name.to_utf8_string());
+                let mut path = stream.full_path.into_os_string();
+                path.push(&suffix);
+                stream.full_path = path.into();
+                if let Some(file_name) = &mut stream.file_name {
+                    file_name.push_str(&suffix);
+                }
+                stream.file_size = header.value_size();
+                out.push(stream);
+            }
+        }
+        out
+    }
+
+    /// Fills the `FileName*` columns from `name`.
+    fn set_file_name(&mut self, name: Option<&FileNameAttr<'_>>) {
+        self.file_name_flags = name.map(|i| i.flags.clone());
+        self.file_name_last_modified = name.map(|i| i.modified);
+        self.file_name_last_access = name.map(|i| i.accessed);
+        self.file_name_created = name.map(|i| i.created);
+        self.file_name_last_mft_modified = name.map(|i| i.mft_modified);
+        self.file_name = name.map(|i| i.name.to_utf8_string());
+    }
+}
+
+/// The extra CSV rows to write for each file, besides its own.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CsvRows {
+    /// A row for each of the file's other long names (hard links), with that name's path and
+    /// `FileName*` columns.
+    pub hard_links: bool,
+    /// A row for each named `$DATA` stream, with `:stream` appended to `FullPath` and `FileName`
+    /// and the stream's size in `FileSize`.
+    pub streams: bool,
 }

@@ -21,3 +21,4 @@ them. They are test data for this repository only and are not part of the publis
 | `entry_95063_usn_journal` | 95063 | `$Extend\$UsnJrnl` with its `$J` and `$Max` streams |
 | `entry_100558_cloud_files_placeholder` | 100558 | OneDrive placeholder file (cloud files reparse point) |
 | `entry_137062_onedrive_folder` | 137062 | OneDrive folder: object id, named `$DATA` stream, `$I30` index root and cloud reparse point |
+| `entry_45647_hard_links` | 45647 | `MMCEx.dll`, hard-linked from `WinSxS` and the GAC (a `POSIX` and a `Win32AndDos` name, in different directories) |

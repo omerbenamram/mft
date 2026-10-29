@@ -421,6 +421,33 @@ impl<T: Read + Seek> MftParser<T> {
         self.resolve_directory_path(entry_id, step)
     }
 
+    /// Gets the full path of a file under one of its names, such as one of its hard links, which
+    /// [`MftParser::get_full_path_for_entry`] doesn't pick.
+    pub fn get_full_path_for_name(&mut self, entry: &MftEntry, name: &FileNameAttr<'_>) -> PathBuf {
+        self.path_in_parent(
+            entry.header.record_number,
+            name.name.to_utf8_string(),
+            name.parent.entry,
+        )
+    }
+
+    /// The path of the file `entry_id` named `name` in the directory `parent_entry_id`.
+    fn path_in_parent(&mut self, entry_id: u64, name: String, parent_entry_id: u64) -> PathBuf {
+        match parent_entry_id {
+            // MFT entry 5 is the root path.
+            5 => PathBuf::from(name),
+            0 => {
+                trace!("Found orphaned entry ID {entry_id}");
+                PathBuf::from("[Orphaned]").join(name)
+            }
+            id if id == entry_id => {
+                trace!("Found self-referential file path, for entry ID {entry_id}");
+                PathBuf::from("[Orphaned]").join(name)
+            }
+            id => self.get_directory_path(id).join(name),
+        }
+    }
+
     /// Gets the full path for an entry.
     /// Caches computations.
     pub fn get_full_path_for_entry(&mut self, entry: &MftEntry) -> Result<Option<PathBuf>> {
@@ -439,19 +466,7 @@ impl<T: Read + Seek> MftParser<T> {
 
         match filename_header {
             Some((name, parent_entry_id)) => {
-                match parent_entry_id {
-                    // MFT entry 5 is the root path.
-                    5 => Ok(Some(PathBuf::from(name))),
-                    0 => {
-                        trace!("Found orphaned entry ID {entry_id}");
-                        Ok(Some(PathBuf::from("[Orphaned]").join(name)))
-                    }
-                    id if id == entry_id => {
-                        trace!("Found self-referential file path, for entry ID {entry_id}");
-                        Ok(Some(PathBuf::from("[Orphaned]").join(name)))
-                    }
-                    id => Ok(Some(self.get_directory_path(id).join(name))),
-                }
+                Ok(Some(self.path_in_parent(entry_id, name, parent_entry_id)))
             }
             None => match entry.header.base_reference.entry {
                 // I don't have a parent reference, and no X30 attribute. Though luck.
