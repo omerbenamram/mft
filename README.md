@@ -105,3 +105,7 @@ In the Firefox Profiler UI:
  - https://docs.microsoft.com/en-us/windows/desktop/DevNotes/master-file-table
  - https://github.com/libyal/libfsntfs/blob/master/documentation/New%20Technologies%20File%20System%20(NTFS).asciidoc
  - https://github.com/forensicmatt/RustyMft
+
+## Test data
+Some test data under `testdata/` comes from third parties and has its own licence, listed next to it: `testdata/ntfs/README.md` for the NTFS images, and `testdata/win11/NOTICE.md`
+for the Windows 11 records (CC-BY-4.0). `testdata/` isn't part of the published crate.

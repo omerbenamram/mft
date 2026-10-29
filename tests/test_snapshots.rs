@@ -5,6 +5,7 @@
 mod fixtures;
 
 use fixtures::*;
+use mft::MftEntry;
 use mft::mft::MftParser;
 use std::collections::BTreeSet;
 
@@ -40,13 +41,26 @@ fn ranges_arg(ids: impl IntoIterator<Item = u64>) -> String {
         .join(",")
 }
 
+/// Runs `mft_dump` and returns its stdout, failing the test with its stderr if it fails.
+#[cfg(feature = "mft_dump")]
+fn mft_dump_stdout(args: &[&std::ffi::OsStr]) -> String {
+    let output = assert_cmd::cargo::cargo_bin_cmd!("mft_dump")
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "mft_dump failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
 /// `mft_dump` uses a different JSON serializer for JSONL than the library's serde_json output, so
 /// snapshot the CLI output too. CSV covers the first 40 records plus the JSON entries.
 #[test]
 #[cfg(feature = "mft_dump")]
 fn test_cli_output_snapshots() {
-    use assert_cmd::cargo::cargo_bin_cmd;
-
     let json_ids = || JSON_ENTRIES.iter().map(|&(id, _)| id);
     let csv_ids: BTreeSet<u64> = (0..40).chain(json_ids()).collect();
 
@@ -55,20 +69,52 @@ fn test_cli_output_snapshots() {
         ("jsonl", ranges_arg(json_ids())),
         ("csv", ranges_arg(csv_ids)),
     ] {
-        let mut cmd = cargo_bin_cmd!("mft_dump");
-        cmd.arg("-o")
-            .arg(format)
-            .arg("-r")
-            .arg(ids)
-            .arg(mft_sample());
-        let output = cmd.output().unwrap();
-        assert!(
-            output.status.success(),
-            "mft_dump failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stdout = mft_dump_stdout(&[
+            "-o".as_ref(),
+            format.as_ref(),
+            "-r".as_ref(),
+            ids.as_ref(),
+            mft_sample().as_os_str(),
+        ]);
         insta::assert_snapshot!(format!("cli_{format}_selected_entries"), stdout);
+    }
+}
+
+/// Single records cut from a Windows 11 `$MFT` (see `testdata/win11/NOTICE.md`).
+const WIN11_ENTRIES: &[(u64, &str)] = &[
+    (40, "logged_utility_stream_dsc"),
+    (205, "ea_kernel_purge"),
+    (358, "appexeclink"),
+    (95063, "usn_journal"),
+    (100558, "cloud_files_placeholder"),
+    (137062, "onedrive_folder"),
+];
+
+#[test]
+fn test_win11_entry_snapshots() {
+    ensure_env_logger_initialized();
+
+    for &(entry_id, name) in WIN11_ENTRIES {
+        let path = win11_sample(&format!("entry_{entry_id}_{name}"));
+        let data = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        // The record number stored at 0x2C catches a fixture cut from the wrong offset.
+        let stored = u32::from_le_bytes(data[0x2C..0x30].try_into().unwrap());
+        assert_eq!(u64::from(stored), entry_id, "{}", path.display());
+        let entry = MftEntry::from_buffer(data, entry_id).unwrap();
+        let json = serde_json::to_string_pretty(&entry).unwrap();
+        insta::assert_snapshot!(format!("win11_entry_{entry_id}_{name}"), json);
+    }
+}
+
+/// Records 0-33 of the same `$MFT`: every system file, with the paths resolved. The index roots of
+/// `$Secure` and `$Extend\$Quota` hold `$SDH`, `$SII`, `$O` and `$Q` entries, which aren't parsed yet,
+/// so they show up empty.
+#[test]
+#[cfg(feature = "mft_dump")]
+fn test_win11_system_snapshots() {
+    let path = win11_sample("system.MFT");
+    for format in ["jsonl", "csv"] {
+        let stdout = mft_dump_stdout(&["-o".as_ref(), format.as_ref(), path.as_os_str()]);
+        insta::assert_snapshot!(format!("cli_{format}_win11_system"), stdout);
     }
 }

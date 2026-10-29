@@ -1,0 +1,147 @@
+---
+source: tests/test_snapshots.rs
+expression: json
+---
+{
+  "header": {
+    "signature": [
+      70,
+      73,
+      76,
+      69
+    ],
+    "usa_offset": 48,
+    "usa_size": 3,
+    "metadata_transaction_journal": 557800932,
+    "sequence": 5,
+    "hard_link_count": 1,
+    "first_attribute_record_offset": 56,
+    "flags": "ALLOCATED",
+    "used_entry_size": 712,
+    "total_entry_size": 1024,
+    "base_reference": {
+      "entry": 0,
+      "sequence": 0
+    },
+    "first_attribute_id": 4,
+    "record_number": 358
+  },
+  "attributes": [
+    {
+      "header": {
+        "type_code": "StandardInformation",
+        "record_length": 96,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 72,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 0,
+        "name": "",
+        "start_offset": 56
+      },
+      "data": {
+        "created": "2023-10-31T12:23:11.9975598Z",
+        "modified": "2023-10-31T15:00:41.2762470Z",
+        "mft_modified": "2023-10-31T15:00:41.2771920Z",
+        "accessed": "2023-10-31T15:00:41.2762470Z",
+        "file_flags": "FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_REPARSE_POINT",
+        "max_version": 0,
+        "version": 0,
+        "class_id": 0,
+        "owner_id": 0,
+        "security_id": 1803,
+        "quota": 0,
+        "usn": 95337328
+      }
+    },
+    {
+      "header": {
+        "type_code": "FileName",
+        "record_length": 112,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 88,
+          "index_flag": 1,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 2,
+        "name": "",
+        "start_offset": 152
+      },
+      "data": {
+        "parent": {
+          "entry": 101062,
+          "sequence": 2
+        },
+        "created": "2023-10-31T12:23:11.9975598Z",
+        "modified": "2023-10-31T15:00:41.2762470Z",
+        "mft_modified": "2023-10-31T15:00:41.2762470Z",
+        "accessed": "2023-10-31T15:00:41.2762470Z",
+        "logical_size": 0,
+        "physical_size": 0,
+        "flags": "FILE_ATTRIBUTE_ARCHIVE",
+        "reparse_value": 0,
+        "name_length": 11,
+        "namespace": "Win32AndDos",
+        "name": "notepad.exe"
+      }
+    },
+    {
+      "header": {
+        "type_code": "DATA",
+        "record_length": 24,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 0,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 1,
+        "name": "",
+        "start_offset": 264
+      },
+      "data": ""
+    },
+    {
+      "header": {
+        "type_code": "ReparsePoint",
+        "record_length": 416,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 392,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 3,
+        "name": "",
+        "start_offset": 288
+      },
+      "data": {
+        "tag": 2147483675,
+        "tag_name": "APPEXECLINK",
+        "guid": null,
+        "data": {
+          "type": "AppExecLink",
+          "package_id": "Microsoft.WindowsNotepad_8wekyb3d8bbwe",
+          "app_user_model_id": "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App",
+          "target_path": "C:\\Program Files\\WindowsApps\\Microsoft.WindowsNotepad_11.2309.28.0_x64__8wekyb3d8bbwe\\Notepad\\Notepad.exe"
+        }
+      }
+    }
+  ],
+  "valid_fixup": true
+}

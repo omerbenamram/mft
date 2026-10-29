@@ -1,0 +1,554 @@
+---
+source: tests/test_snapshots.rs
+expression: json
+---
+{
+  "header": {
+    "signature": [
+      70,
+      73,
+      76,
+      69
+    ],
+    "usa_offset": 48,
+    "usa_size": 3,
+    "metadata_transaction_journal": 2000285481,
+    "sequence": 4,
+    "hard_link_count": 1,
+    "first_attribute_record_offset": 56,
+    "flags": "ALLOCATED | IS_EXTENSION",
+    "used_entry_size": 864,
+    "total_entry_size": 1024,
+    "base_reference": {
+      "entry": 0,
+      "sequence": 0
+    },
+    "first_attribute_id": 10,
+    "record_number": 95063
+  },
+  "attributes": [
+    {
+      "header": {
+        "type_code": "StandardInformation",
+        "record_length": 96,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 72,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 0,
+        "name": "",
+        "start_offset": 56
+      },
+      "data": {
+        "created": "2023-10-31T11:59:30.7504466Z",
+        "modified": "2023-10-31T11:59:30.7504466Z",
+        "mft_modified": "2023-10-31T11:59:30.7504466Z",
+        "accessed": "2023-10-31T11:59:30.7504466Z",
+        "file_flags": "FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_SPARSE_FILE",
+        "max_version": 0,
+        "version": 0,
+        "class_id": 0,
+        "owner_id": 0,
+        "security_id": 257,
+        "quota": 0,
+        "usn": 0
+      }
+    },
+    {
+      "header": {
+        "type_code": "FileName",
+        "record_length": 112,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 82,
+          "index_flag": 1,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 1,
+        "name": "",
+        "start_offset": 152
+      },
+      "data": {
+        "parent": {
+          "entry": 11,
+          "sequence": 11
+        },
+        "created": "2023-10-31T11:59:30.7504466Z",
+        "modified": "2023-10-31T11:59:30.7504466Z",
+        "mft_modified": "2023-10-31T11:59:30.7504466Z",
+        "accessed": "2023-10-31T11:59:30.7504466Z",
+        "logical_size": 0,
+        "physical_size": 0,
+        "flags": "FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM",
+        "reparse_value": 0,
+        "name_length": 8,
+        "namespace": "POSIX",
+        "name": "$UsnJrnl"
+      }
+    },
+    {
+      "header": {
+        "type_code": "DATA",
+        "record_length": 528,
+        "form_code": 1,
+        "residential_header": {
+          "vnc_first": 0,
+          "vnc_last": 126991,
+          "unit_compression_size": 4,
+          "allocated_length": 520159232,
+          "file_size": 519854576,
+          "valid_data_length": 519854576,
+          "total_allocated": 42008576
+        },
+        "name_size": 2,
+        "name_offset": 72,
+        "data_flags": "SPARSE",
+        "instance": 3,
+        "name": "$J",
+        "start_offset": 264
+      },
+      "data": {
+        "data_runs": [
+          {
+            "lcn_offset": 0,
+            "lcn_length": 116736,
+            "run_type": "Sparse"
+          },
+          {
+            "lcn_offset": 7162124,
+            "lcn_length": 66,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7164804,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7165040,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7195872,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7273855,
+            "lcn_length": 112,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7218267,
+            "lcn_length": 123,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7200448,
+            "lcn_length": 127,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6496750,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6554593,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6563983,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6625886,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6669565,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6669763,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6723112,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6723276,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7198623,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7224886,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7240500,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 4542745,
+            "lcn_length": 192,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 446171,
+            "lcn_length": 64,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6389293,
+            "lcn_length": 256,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7320152,
+            "lcn_length": 112,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6845386,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6845703,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6854041,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6861281,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6861566,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6884941,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6885145,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7294883,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7318440,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7318680,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7318936,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7319192,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 5038321,
+            "lcn_length": 124,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 5380789,
+            "lcn_length": 124,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 5378443,
+            "lcn_length": 127,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6998296,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6998491,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7035274,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7038295,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7038494,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7088709,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7319448,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7319640,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7319896,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7320408,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7320664,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7320920,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7321176,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7321432,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7321688,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7321944,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7322200,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 5037261,
+            "lcn_length": 129,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 5057386,
+            "lcn_length": 130,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 5341716,
+            "lcn_length": 137,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 5395330,
+            "lcn_length": 113,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 5304530,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 5433309,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 5833861,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 5282398,
+            "lcn_length": 48,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6967177,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6970051,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 1693047,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7106305,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 5034226,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6314162,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6314367,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 3709738,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 611096,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 1024642,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7361628,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7160877,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7160638,
+            "lcn_length": 80,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 7151501,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 6951850,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 5810478,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 5377101,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 5317480,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 2365313,
+            "lcn_length": 128,
+            "run_type": "Standard"
+          }
+        ]
+      }
+    },
+    {
+      "header": {
+        "type_code": "DATA",
+        "record_length": 64,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 32,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 4,
+        "name_offset": 24,
+        "data_flags": "(empty)",
+        "instance": 9,
+        "name": "$Max",
+        "start_offset": 792
+      },
+      "data": "0000000200000000000080000000000052FFB2B4F10BDA010000000000000000"
+    }
+  ],
+  "valid_fixup": true
+}

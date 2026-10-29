@@ -22,6 +22,16 @@ pub fn samples_dir() -> PathBuf {
         .unwrap()
 }
 
+/// Test data that isn't published with the crate (unlike `samples/`).
+pub fn testdata_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata")
+}
+
+/// The Windows 11 records under `testdata/win11` (CC-BY-4.0, see its `NOTICE.md`).
+pub fn win11_sample(filename: &str) -> PathBuf {
+    testdata_dir().join("win11").join(filename)
+}
+
 pub fn mft_sample() -> PathBuf {
     mft_sample_name("MFT")
 }
