@@ -11,8 +11,8 @@ use std::io::{Cursor, ErrorKind};
 
 /// A `$STANDARD_INFORMATION` attribute: the file's timestamps and flags and, since NTFS 3.0, its
 /// quota owner and charge, security id and update sequence number. The older, 48-byte layout lacks
-/// those four, which [`StandardInfoAttr::from_slice`] reads as 0; [`StandardInfoAttr::V3_SIZE`]
-/// tells the layouts apart.
+/// those four, which [`StandardInfoAttr::from_slice`] reads as 0, and files can keep it on a newer
+/// volume; [`StandardInfoAttr::V3_SIZE`] tells the layouts apart.
 #[derive(Serialize, Debug, Clone)]
 pub struct StandardInfoAttr {
     #[serde(serialize_with = "crate::utils::serialize_timestamp")]
@@ -28,12 +28,13 @@ pub struct StandardInfoAttr {
     pub max_version: u32,
     pub version: u32,
     pub class_id: u32,
-    /// The owner's key in `$Quota`, or 0 if the file has none.
+    /// The key of the file's owner in `$Quota`, or 0 if quotas are disabled.
     pub owner_id: u32,
-    /// The key of the file's security descriptor in `$Secure`, or 0 if the descriptor is in the
-    /// file's own [`$SECURITY_DESCRIPTOR`](crate::attribute::x50::SecurityDescriptorAttr).
+    /// The key of the file's security descriptor in `$Secure`, or 0 if it has none there, such as
+    /// a file that kept its own
+    /// [`$SECURITY_DESCRIPTOR`](crate::attribute::x50::SecurityDescriptorAttr) from before NTFS 3.0.
     pub security_id: u32,
-    /// The bytes charged to the owner's quota, or 0 if none are.
+    /// The bytes charged to the owner's quota, or 0 if quotas are disabled.
     pub quota: u64,
     /// The update sequence number of the last change journal (`$UsnJrnl`) record written for the
     /// file, or 0 if none was.
