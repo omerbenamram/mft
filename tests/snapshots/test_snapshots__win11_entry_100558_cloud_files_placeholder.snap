@@ -1,0 +1,202 @@
+---
+source: tests/test_snapshots.rs
+expression: json
+---
+{
+  "header": {
+    "signature": [
+      70,
+      73,
+      76,
+      69
+    ],
+    "usa_offset": 48,
+    "usa_size": 3,
+    "metadata_transaction_journal": 1732642368,
+    "sequence": 4,
+    "hard_link_count": 2,
+    "first_attribute_record_offset": 56,
+    "flags": "ALLOCATED",
+    "used_entry_size": 736,
+    "total_entry_size": 1024,
+    "base_reference": {
+      "entry": 0,
+      "sequence": 0
+    },
+    "first_attribute_id": 6,
+    "record_number": 100558
+  },
+  "attributes": [
+    {
+      "header": {
+        "type_code": "StandardInformation",
+        "record_length": 96,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 72,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 0,
+        "name": "",
+        "start_offset": 56
+      },
+      "data": {
+        "created": "2023-10-31T18:38:14.2354594Z",
+        "modified": "2023-10-31T18:38:14.2659802Z",
+        "mft_modified": "2023-10-31T18:38:15.6007036Z",
+        "accessed": "2023-10-31T18:38:14.2659802Z",
+        "file_flags": "FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_REPARSE_POINT",
+        "max_version": 0,
+        "version": 0,
+        "class_id": 0,
+        "owner_id": 0,
+        "security_id": 1690,
+        "quota": 0,
+        "usn": 514308000
+      }
+    },
+    {
+      "header": {
+        "type_code": "FileName",
+        "record_length": 120,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 90,
+          "index_flag": 1,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 3,
+        "name": "",
+        "start_offset": 152
+      },
+      "data": {
+        "parent": {
+          "entry": 137064,
+          "sequence": 3
+        },
+        "created": "2023-10-31T18:38:14.2354594Z",
+        "modified": "2023-10-31T18:38:14.2354594Z",
+        "mft_modified": "2023-10-31T18:38:14.2354594Z",
+        "accessed": "2023-10-31T18:38:14.2354594Z",
+        "logical_size": 0,
+        "physical_size": 0,
+        "flags": "FILE_ATTRIBUTE_ARCHIVE",
+        "reparse_value": 0,
+        "name_length": 12,
+        "namespace": "DOS",
+        "name": "BARTSI~1.XHB"
+      }
+    },
+    {
+      "header": {
+        "type_code": "FileName",
+        "record_length": 136,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 110,
+          "index_flag": 1,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 2,
+        "name": "",
+        "start_offset": 272
+      },
+      "data": {
+        "parent": {
+          "entry": 137064,
+          "sequence": 3
+        },
+        "created": "2023-10-31T18:38:14.2354594Z",
+        "modified": "2023-10-31T18:38:14.2354594Z",
+        "mft_modified": "2023-10-31T18:38:14.2354594Z",
+        "accessed": "2023-10-31T18:38:14.2354594Z",
+        "logical_size": 0,
+        "physical_size": 0,
+        "flags": "FILE_ATTRIBUTE_ARCHIVE",
+        "reparse_value": 0,
+        "name_length": 22,
+        "namespace": "Win32",
+        "name": "bartSimpsonAcounts.xhb"
+      }
+    },
+    {
+      "header": {
+        "type_code": "DATA",
+        "record_length": 80,
+        "form_code": 1,
+        "residential_header": {
+          "vnc_first": 0,
+          "vnc_last": 7,
+          "unit_compression_size": 0,
+          "allocated_length": 32768,
+          "file_size": 31781,
+          "valid_data_length": 31781,
+          "total_allocated": null
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 4,
+        "name": "",
+        "start_offset": 408
+      },
+      "data": {
+        "data_runs": [
+          {
+            "lcn_offset": 1971582,
+            "lcn_length": 1,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 2346337,
+            "lcn_length": 3,
+            "run_type": "Standard"
+          },
+          {
+            "lcn_offset": 2335225,
+            "lcn_length": 4,
+            "run_type": "Standard"
+          }
+        ]
+      }
+    },
+    {
+      "header": {
+        "type_code": "ReparsePoint",
+        "record_length": 240,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 209,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 5,
+        "name": "",
+        "start_offset": 488
+      },
+      "data": {
+        "tag": 2415943706,
+        "tag_name": "CLOUD_N",
+        "guid": null,
+        "data": {
+          "type": "Other",
+          "data": "0180D801C2B000466552703727FC1F00D401000002000A00800700010060000000480804006400380600080082C8006C1100600168003CC125080A000400D0006E0004D40046006803000660041E00140800257C010A000043390033303732393836450039333446353921315C353703190B052427110F27305A31104F02101339090E241E090A6385776580776635390000F267099896BF746028D4040F81213480071F3600E66B2E0161DF11D90076FBF74D7017AF86806CBEAC10AB6C0415321810F66B85A70111"
+        }
+      }
+    }
+  ],
+  "valid_fixup": true
+}

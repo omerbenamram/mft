@@ -1,0 +1,209 @@
+---
+source: tests/test_snapshots.rs
+expression: json
+---
+{
+  "header": {
+    "signature": [
+      70,
+      73,
+      76,
+      69
+    ],
+    "usa_offset": 48,
+    "usa_size": 3,
+    "metadata_transaction_journal": 1283353988,
+    "sequence": 8,
+    "hard_link_count": 2,
+    "first_attribute_record_offset": 56,
+    "flags": "ALLOCATED",
+    "used_entry_size": 600,
+    "total_entry_size": 1024,
+    "base_reference": {
+      "entry": 0,
+      "sequence": 0
+    },
+    "first_attribute_id": 8,
+    "record_number": 40
+  },
+  "attributes": [
+    {
+      "header": {
+        "type_code": "StandardInformation",
+        "record_length": 96,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 72,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 0,
+        "name": "",
+        "start_offset": 56
+      },
+      "data": {
+        "created": "2021-06-05T12:19:15.6859684Z",
+        "modified": "2023-10-31T17:12:01.4926496Z",
+        "mft_modified": "2023-10-31T17:12:02.8853903Z",
+        "accessed": "2023-10-31T17:12:01.4926496Z",
+        "file_flags": "FILE_ATTRIBUTE_ARCHIVE",
+        "max_version": 0,
+        "version": 0,
+        "class_id": 0,
+        "owner_id": 0,
+        "security_id": 600,
+        "quota": 0,
+        "usn": 377307944
+      }
+    },
+    {
+      "header": {
+        "type_code": "FileName",
+        "record_length": 112,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 84,
+          "index_flag": 1,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 6,
+        "name": "",
+        "start_offset": 152
+      },
+      "data": {
+        "parent": {
+          "entry": 9030,
+          "sequence": 1
+        },
+        "created": "2023-10-31T17:12:01.4775523Z",
+        "modified": "2023-10-31T17:12:01.4926496Z",
+        "mft_modified": "2023-10-31T17:12:01.4926496Z",
+        "accessed": "2023-10-31T17:12:01.4926496Z",
+        "logical_size": 227765,
+        "physical_size": 229376,
+        "flags": "FILE_ATTRIBUTE_ARCHIVE",
+        "reparse_value": 0,
+        "name_length": 9,
+        "namespace": "Win32AndDos",
+        "name": "ntdsa.mof"
+      }
+    },
+    {
+      "header": {
+        "type_code": "FileName",
+        "record_length": 112,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 84,
+          "index_flag": 1,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 7,
+        "name": "",
+        "start_offset": 264
+      },
+      "data": {
+        "parent": {
+          "entry": 168347,
+          "sequence": 6
+        },
+        "created": "2021-06-05T12:19:15.6859684Z",
+        "modified": "2023-10-31T17:12:01.4926496Z",
+        "mft_modified": "2023-10-31T17:12:02.8853903Z",
+        "accessed": "2023-10-31T17:12:01.4926496Z",
+        "logical_size": 227765,
+        "physical_size": 229376,
+        "flags": "FILE_ATTRIBUTE_ARCHIVE",
+        "reparse_value": 0,
+        "name_length": 9,
+        "namespace": "POSIX",
+        "name": "ntdsa.mof"
+      }
+    },
+    {
+      "header": {
+        "type_code": "DATA",
+        "record_length": 72,
+        "form_code": 1,
+        "residential_header": {
+          "vnc_first": 0,
+          "vnc_last": 55,
+          "unit_compression_size": 0,
+          "allocated_length": 229376,
+          "file_size": 227765,
+          "valid_data_length": 227765,
+          "total_allocated": null
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 4,
+        "name": "",
+        "start_offset": 376
+      },
+      "data": {
+        "data_runs": [
+          {
+            "lcn_offset": 758401,
+            "lcn_length": 56,
+            "run_type": "Standard"
+          }
+        ]
+      }
+    },
+    {
+      "header": {
+        "type_code": "LoggedUtilityStream",
+        "record_length": 40,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 8,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 4,
+        "name_offset": 24,
+        "data_flags": "(empty)",
+        "instance": 3,
+        "name": "$DSC",
+        "start_offset": 448
+      },
+      "data": {
+        "attribute_type": "LoggedUtilityStream",
+        "data": "0200000000000000"
+      }
+    },
+    {
+      "header": {
+        "type_code": "LoggedUtilityStream",
+        "record_length": 104,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 56,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 9,
+        "name_offset": 24,
+        "data_flags": "(empty)",
+        "instance": 5,
+        "name": "$TXF_DATA",
+        "start_offset": 488
+      },
+      "data": {
+        "attribute_type": "LoggedUtilityStream",
+        "data": "05000000000005000100000001000000022500000000000000D262000200000000000000000000000000000000000000030000000D000000"
+      }
+    }
+  ],
+  "valid_fixup": true
+}

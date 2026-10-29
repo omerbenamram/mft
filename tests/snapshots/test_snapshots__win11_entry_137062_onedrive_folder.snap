@@ -1,0 +1,262 @@
+---
+source: tests/test_snapshots.rs
+expression: json
+---
+{
+  "header": {
+    "signature": [
+      70,
+      73,
+      76,
+      69
+    ],
+    "usa_offset": 48,
+    "usa_size": 3,
+    "metadata_transaction_journal": 1828989211,
+    "sequence": 6,
+    "hard_link_count": 2,
+    "first_attribute_record_offset": 56,
+    "flags": "ALLOCATED | INDEX_PRESENT",
+    "used_entry_size": 1016,
+    "total_entry_size": 1024,
+    "base_reference": {
+      "entry": 0,
+      "sequence": 0
+    },
+    "first_attribute_id": 8,
+    "record_number": 137062
+  },
+  "attributes": [
+    {
+      "header": {
+        "type_code": "StandardInformation",
+        "record_length": 96,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 72,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 0,
+        "name": "",
+        "start_offset": 56
+      },
+      "data": {
+        "created": "2023-10-31T18:26:42.8277405Z",
+        "modified": "2023-10-31T18:26:48.5069554Z",
+        "mft_modified": "2023-10-31T18:27:07.0232819Z",
+        "accessed": "2023-10-31T18:39:49.8391301Z",
+        "file_flags": "FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_REPARSE_POINT",
+        "max_version": 0,
+        "version": 0,
+        "class_id": 0,
+        "owner_id": 0,
+        "security_id": 1691,
+        "quota": 0,
+        "usn": 511019760
+      }
+    },
+    {
+      "header": {
+        "type_code": "FileName",
+        "record_length": 112,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 82,
+          "index_flag": 1,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 3,
+        "name": "",
+        "start_offset": 152
+      },
+      "data": {
+        "parent": {
+          "entry": 137065,
+          "sequence": 3
+        },
+        "created": "2023-10-31T18:26:42.8277405Z",
+        "modified": "2023-10-31T18:26:42.8277405Z",
+        "mft_modified": "2023-10-31T18:26:42.8277405Z",
+        "accessed": "2023-10-31T18:26:42.8277405Z",
+        "logical_size": 0,
+        "physical_size": 0,
+        "flags": "FILE_ATTRIBUTE_IS_DIRECTORY",
+        "reparse_value": 0,
+        "name_length": 8,
+        "namespace": "DOS",
+        "name": "SAVEDP~1"
+      }
+    },
+    {
+      "header": {
+        "type_code": "FileName",
+        "record_length": 120,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 94,
+          "index_flag": 1,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 2,
+        "name": "",
+        "start_offset": 264
+      },
+      "data": {
+        "parent": {
+          "entry": 137065,
+          "sequence": 3
+        },
+        "created": "2023-10-31T18:26:42.8277405Z",
+        "modified": "2023-10-31T18:26:42.8277405Z",
+        "mft_modified": "2023-10-31T18:26:42.8277405Z",
+        "accessed": "2023-10-31T18:26:42.8277405Z",
+        "logical_size": 0,
+        "physical_size": 0,
+        "flags": "FILE_ATTRIBUTE_IS_DIRECTORY",
+        "reparse_value": 0,
+        "name_length": 14,
+        "namespace": "Win32",
+        "name": "Saved Pictures"
+      }
+    },
+    {
+      "header": {
+        "type_code": "ObjectId",
+        "record_length": 40,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 16,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 4,
+        "name": "",
+        "start_offset": 384
+      },
+      "data": {
+        "object_id": "00D3A2B3-7819-11EE-AD6F-080027EA4A9D",
+        "birth_volume_id": null,
+        "birth_object_id": null,
+        "domain_id": null
+      }
+    },
+    {
+      "header": {
+        "type_code": "DATA",
+        "record_length": 216,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 96,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 48,
+        "name_offset": 24,
+        "data_flags": "(empty)",
+        "instance": 6,
+        "name": "${3D0CE612-FDEE-43f7-8ACA-957BEC0CCBA0}.Metadata",
+        "start_offset": 424
+      },
+      "data": "02002000A3A7BCD520000000400000000200020020000000000000000000000035000000DAA8C86A310000002D00000031535053D6B9F9B2C4FED54D94D78957488C807B11000000080000000013000000020000000000000000000000000000"
+    },
+    {
+      "header": {
+        "type_code": "IndexRoot",
+        "record_length": 184,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 152,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 4,
+        "name_offset": 24,
+        "data_flags": "(empty)",
+        "instance": 1,
+        "name": "$I30",
+        "start_offset": 640
+      },
+      "data": {
+        "attribute_type": 48,
+        "collation_rule": "CollationFilename",
+        "index_entry_size": 4096,
+        "index_entry_number_of_cluster_blocks": 1,
+        "relative_offset_to_index_node": 16,
+        "index_node_length": 136,
+        "index_node_allocation_length": 136,
+        "index_root_flags": "SMALL_INDEX",
+        "index_entries": {
+          "index_entries": [
+            {
+              "mft_reference": {
+                "entry": 104798,
+                "sequence": 1
+              },
+              "index_record_length": 104,
+              "attr_fname_length": 88,
+              "flags": "(empty)",
+              "fname_info": {
+                "parent": {
+                  "entry": 137062,
+                  "sequence": 6
+                },
+                "created": "2023-10-31T12:26:25.2076077Z",
+                "modified": "2023-10-31T12:26:25.2236147Z",
+                "mft_modified": "2023-10-31T18:27:00.8831752Z",
+                "accessed": "2023-10-31T18:26:48.5090034Z",
+                "logical_size": 190,
+                "physical_size": 192,
+                "flags": "FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_PINNED | FILE_ATTRIBUTE_UNPINNED",
+                "reparse_value": 0,
+                "name_length": 11,
+                "namespace": "Win32AndDos",
+                "name": "desktop.ini"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "header": {
+        "type_code": "ReparsePoint",
+        "record_length": 184,
+        "form_code": 0,
+        "residential_header": {
+          "data_size": 157,
+          "index_flag": 0,
+          "padding": 0
+        },
+        "name_size": 0,
+        "name_offset": null,
+        "data_flags": "(empty)",
+        "instance": 7,
+        "name": "",
+        "start_offset": 824
+      },
+      "data": {
+        "tag": 2415976474,
+        "tag_name": "CLOUD_N",
+        "guid": null,
+        "data": {
+          "type": "Other",
+          "data": "0180CC018EB000466552707424437B00C801000002000A008007000100600000004818040064003805101100609C0168083C252800AC00D600583A030006600118000E090443390033303732393836450039333446353921315C30390C22020E382731104F0E4B1013390904241E096385776501807766353900F76709809896BF7498D9DD824942D880071F36E66B2A46F200F56B"
+        }
+      }
+    }
+  ],
+  "valid_fixup": true
+}

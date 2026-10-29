@@ -5,6 +5,7 @@
 mod fixtures;
 
 use fixtures::*;
+use mft::MftEntry;
 use mft::mft::MftParser;
 use std::collections::BTreeSet;
 
@@ -70,5 +71,51 @@ fn test_cli_output_snapshots() {
 
         let stdout = String::from_utf8(output.stdout).unwrap();
         insta::assert_snapshot!(format!("cli_{format}_selected_entries"), stdout);
+    }
+}
+
+/// Single records cut from a Windows 11 `$MFT` (see `samples/WIN11_NOTICE.md`).
+const WIN11_ENTRIES: &[(u64, &str)] = &[
+    (40, "logged_utility_stream_dsc"),
+    (205, "ea_kernel_purge"),
+    (358, "appexeclink"),
+    (95063, "usn_journal"),
+    (100558, "cloud_files_placeholder"),
+    (137062, "onedrive_folder"),
+];
+
+#[test]
+fn test_win11_entry_snapshots() {
+    ensure_env_logger_initialized();
+
+    for &(entry_id, name) in WIN11_ENTRIES {
+        let path = mft_sample_name(&format!("win11_entry_{entry_id}_{name}"));
+        let entry = MftEntry::from_buffer(std::fs::read(path).unwrap(), entry_id).unwrap();
+        let json = serde_json::to_string_pretty(&entry).unwrap();
+        insta::assert_snapshot!(format!("win11_entry_{entry_id}_{name}"), json);
+    }
+}
+
+/// Records 0-33 of the same `$MFT`: every system file, with the paths resolved.
+#[test]
+#[cfg(feature = "mft_dump")]
+fn test_win11_system_snapshots() {
+    use assert_cmd::cargo::cargo_bin_cmd;
+
+    for format in ["jsonl", "csv"] {
+        let output = cargo_bin_cmd!("mft_dump")
+            .arg("-o")
+            .arg(format)
+            .arg(mft_sample_name("win11_system.MFT"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "mft_dump failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        insta::assert_snapshot!(format!("cli_{format}_win11_system"), stdout);
     }
 }
