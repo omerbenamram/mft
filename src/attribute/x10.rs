@@ -10,9 +10,9 @@ use serde::Serialize;
 use std::io::{Cursor, ErrorKind};
 
 /// A `$STANDARD_INFORMATION` attribute: the file's timestamps and flags and, since NTFS 3.0, its
-/// quota owner and charge, security id and update sequence number. The older, 48-byte layout lacks
-/// those four, which [`StandardInfoAttr::from_slice`] reads as 0, and files can keep it on a newer
-/// volume; [`StandardInfoAttr::V3_SIZE`] tells the layouts apart.
+/// quota owner, quota charge, security id and update sequence number. The older, 48-byte layout
+/// lacks those four, which [`StandardInfoAttr::from_slice`] reads as 0. Files can keep that layout
+/// on a newer volume; [`StandardInfoAttr::V3_SIZE`] tells the layouts apart.
 #[derive(Serialize, Debug, Clone)]
 pub struct StandardInfoAttr {
     #[serde(serialize_with = "crate::utils::serialize_timestamp")]
@@ -28,30 +28,34 @@ pub struct StandardInfoAttr {
     pub max_version: u32,
     pub version: u32,
     pub class_id: u32,
-    /// The key of the file's owner in `$Quota`, or 0 if quotas are disabled.
+    /// The key of the file's owner in `$Extend\$Quota`. 0 if quotas have never been enabled on
+    /// the volume, or in the older layout.
     pub owner_id: u32,
-    /// The key of the file's security descriptor in `$Secure`, or 0 if it has none there, such as
-    /// a file that kept its [`$SECURITY_DESCRIPTOR`](crate::attribute::x50::SecurityDescriptorAttr)
-    /// from before NTFS 3.0.
+    /// The key of the file's security descriptor in `$Secure`. 0 for a file with no descriptor
+    /// there (for example one with its own
+    /// [`$SECURITY_DESCRIPTOR`](crate::attribute::x50::SecurityDescriptorAttr)), or in the older
+    /// layout.
     pub security_id: u32,
-    /// The bytes charged to the owner's quota, or 0 if quotas are disabled.
+    /// The bytes charged to the owner's quota. 0 if quotas have never been enabled on the volume,
+    /// or in the older layout.
     pub quota: u64,
-    /// The update sequence number of the last change journal (`$UsnJrnl`) record written for the
-    /// file, or 0 if none was.
+    /// The update sequence number of the file's last change journal (`$Extend\$UsnJrnl`) record,
+    /// which may no longer be in the journal. 0 if the file has had no record since the journal
+    /// was created, or in the older layout.
     pub usn: u64,
 }
 
 impl StandardInfoAttr {
     /// The size of the NTFS 3.0 layout. An attribute whose
     /// [`value_size`](crate::attribute::header::MftAttributeHeader::value_size) is at least this
-    /// has `owner_id`, `security_id`, `quota` and `usn`; a 48-byte one has none of them.
+    /// has `owner_id`, `security_id`, `quota` and `usn`.
     pub const V3_SIZE: usize = 72;
 
     /// Parse a Standard Information attribute buffer whose length is the attribute value size.
     ///
     /// NTFS uses (at least) two layouts:
-    /// - **48 bytes** (NTFS < 3.0): ends at `class_id`
-    /// - **72 bytes** (NTFS >= 3.0): includes `owner_id`, `security_id`, `quota`, and `usn`
+    /// - **48 bytes** (NTFS < 3.0): ends at `class_id`; the four later fields are set to 0
+    /// - **72 bytes or more** (NTFS >= 3.0): includes `owner_id`, `security_id`, `quota`, and `usn`
     pub fn from_slice(value: &[u8]) -> Result<StandardInfoAttr> {
         if value.len() < 48 {
             return Err(std::io::Error::from(ErrorKind::UnexpectedEof).into());

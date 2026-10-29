@@ -77,11 +77,10 @@ pub struct FlatMftEntryWithName {
     /// The `$LogFile` sequence number of the record's last change.
     pub lsn: u64,
     /// The update sequence number of the file's last change in `$Extend\$UsnJrnl`, from
-    /// `$STANDARD_INFORMATION`. 0 if the journal hasn't recorded the file, and empty if the
-    /// attribute predates NTFS 3.0 and has no USN.
+    /// [`StandardInfoAttr::usn`]. Empty if the attribute has the older, 48-byte layout.
     pub usn: Option<u64>,
-    /// The file's security descriptor id in `$Secure`, from `$STANDARD_INFORMATION`. Empty if the
-    /// attribute predates NTFS 3.0 and has no id.
+    /// The file's security descriptor id in `$Secure`, from [`StandardInfoAttr::security_id`].
+    /// Empty if the attribute has the older, 48-byte layout.
     pub security_id: Option<u32>,
     /// The object id from `$OBJECT_ID`, if the file has one.
     pub object_id: Option<Guid>,
