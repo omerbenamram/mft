@@ -662,6 +662,11 @@ pub(crate) mod tests {
         assert!(first.is_err());
     }
 
+    /// An MFT reference to `entry`: its number in the low 48 bits and `sequence` in the high 16.
+    pub(crate) fn mft_reference_bytes(entry: u64, sequence: u16) -> [u8; 8] {
+        (entry | (u64::from(sequence) << 48)).to_le_bytes()
+    }
+
     /// A `$FILE_NAME` value for an ASCII `name` in the root, based on the example in the
     /// `attribute::x30` docs. Its timestamps, sizes and flags are arbitrary but valid.
     pub(crate) fn filename_value_bytes(name: &str, namespace: FileNamespace) -> Vec<u8> {

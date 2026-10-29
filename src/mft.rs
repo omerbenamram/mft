@@ -7,7 +7,7 @@ use crate::EntryHeader;
 use log::{debug, trace, warn};
 
 use lru::LruCache;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::num::NonZeroUsize;
@@ -47,6 +47,9 @@ pub struct MftParser<T: Read + Seek> {
     entry_size: u32,
     size: u64,
     entries_cache: LruCache<u64, PathBuf>,
+    /// The directories that parent loops were cut at, which resolve as orphans. Kept outside
+    /// `entries_cache`, so a loop stays cut after its paths leave it.
+    cycle_cuts: BTreeSet<u64>,
     /// Extension record IDs by base record ID, built on first use by scanning the whole MFT.
     /// Only needed for entries whose `$ATTRIBUTE_LIST` is non-resident, since the clusters
     /// holding it aren't in the MFT.
@@ -104,6 +107,7 @@ impl<T: Read + Seek> MftParser<T> {
             entries_cache: LruCache::new(
                 NonZeroUsize::new(cache_size).expect("clamped to at least 1,000"),
             ),
+            cycle_cuts: BTreeSet::new(),
             extensions_index: None,
             next_read_offset: Some(0),
         })
@@ -308,11 +312,11 @@ impl<T: Read + Seek> MftParser<T> {
     /// Classifies an entry for path resolution, as the parent of another entry.
     fn path_step(&mut self, entry: &MftEntry) -> PathStep {
         let name = self.best_name(entry);
-        Self::path_step_named(entry, name)
+        self.path_step_named(entry, name)
     }
 
     /// [`MftParser::path_step`], given the entry's [`MftParser::best_name`].
-    fn path_step_named(entry: &MftEntry, name: Option<(String, u64)>) -> PathStep {
+    fn path_step_named(&self, entry: &MftEntry, name: Option<(String, u64)>) -> PathStep {
         match name {
             // A parent that isn't a directory can't be trusted.
             Some(_) if !entry.is_dir() => PathStep::Final(PathBuf::from("[Unknown]")),
@@ -323,6 +327,9 @@ impl<T: Read + Seek> MftParser<T> {
                     0 => PathParent::Orphan,
                     id if id == entry.header.record_number => {
                         trace!("Found self-referential file path, for entry ID {id}");
+                        PathParent::Orphan
+                    }
+                    _ if self.cycle_cuts.contains(&entry.header.record_number) => {
                         PathParent::Orphan
                     }
                     id => PathParent::Entry(id),
@@ -339,36 +346,53 @@ impl<T: Read + Seek> MftParser<T> {
     }
 
     /// Resolves the path of a directory, given its own step, by walking up its ancestors.
-    /// Caches the path of every directory on the way.
+    /// Caches the path of every directory its path goes through.
     ///
     /// The walk is iterative, so deep or cyclic parent chains can't overflow the stack.
-    /// A cycle is cut at its lowest entry ID, which becomes `[Orphaned]/<name>`. This keeps
-    /// paths independent of the order in which entries are resolved.
+    /// A cycle is cut at its named entry with the lowest ID, which becomes `[Orphaned]/<name>`
+    /// (in a cycle without names, every entry is `[Orphaned]`). This keeps paths independent of
+    /// the order in which entries are resolved.
     fn resolve_directory_path(&mut self, entry_id: u64, first_step: PathStep) -> PathBuf {
-        // Directories from `entry_id` upwards, each with its name.
-        let mut chain: Vec<(u64, String)> = Vec::new();
+        // Most directories' parents are cached.
+        if let PathStep::Named {
+            name,
+            parent: PathParent::Entry(parent_id),
+        } = &first_step
+            && let Some(cached) = self.entries_cache.get(parent_id)
+        {
+            let mut path = path_with_room(cached, 1 + name.len());
+            path.push(name);
+            self.entries_cache.put(entry_id, path.clone());
+            return path;
+        }
+
+        // Directories from `entry_id` upwards, each with its name, or none if it takes its base
+        // entry's path.
+        let mut chain: Vec<(u64, Option<String>)> = Vec::new();
         // The length of their names, joined into a path.
         let mut names_len = 0;
-        let mut visited: HashSet<u64> = HashSet::new();
+        // Where each directory is in `chain`.
+        let mut positions: HashMap<u64, usize> = HashMap::new();
         let mut current_id = entry_id;
         let mut step = first_step;
 
         let mut prefix = loop {
-            let next_id = match step {
+            let (name, parent) = match step {
                 PathStep::Final(path) => {
                     self.entries_cache.put(current_id, path.clone());
                     break path;
                 }
-                PathStep::Alias(base) => base,
+                PathStep::Alias(base) => (None, PathParent::Entry(base)),
                 PathStep::Named { name, parent } => {
                     names_len += 1 + name.len();
-                    chain.push((current_id, name));
-                    match parent {
-                        PathParent::Root => break PathBuf::with_capacity(names_len),
-                        PathParent::Orphan => break PathBuf::from("[Orphaned]"),
-                        PathParent::Entry(id) => id,
-                    }
+                    (Some(name), parent)
                 }
+            };
+            chain.push((current_id, name));
+            let next_id = match parent {
+                PathParent::Root => break PathBuf::with_capacity(names_len),
+                PathParent::Orphan => break PathBuf::from("[Orphaned]"),
+                PathParent::Entry(id) => id,
             };
 
             if let Some(cached) = self.entries_cache.get(&next_id) {
@@ -376,18 +400,19 @@ impl<T: Read + Seek> MftParser<T> {
             }
 
             // Most directories' parents are cached, so this is only built past a miss.
-            visited.insert(current_id);
-            if visited.contains(&next_id) {
-                match chain.iter().position(|(id, _)| *id == next_id) {
-                    Some(cycle_start) => {
-                        trace!("Found a cycle in parent references at entry ID {next_id}");
-                        let path = self.cut_cycle(&chain[cycle_start..]);
-                        chain.truncate(cycle_start);
-                        break path;
-                    }
-                    // A cycle made only of entries without names.
-                    None => break PathBuf::from("[Orphaned]"),
+            positions.insert(current_id, chain.len() - 1);
+            if let Some(&cycle_start) = positions.get(&next_id) {
+                trace!("Found a cycle in parent references at entry ID {next_id}");
+                // Cut at the named directory with the lowest ID, which becomes an orphan. The ones
+                // past it resolve through it when they are asked for.
+                if let Some(cut) = (cycle_start..chain.len())
+                    .filter(|&i| chain[i].1.is_some())
+                    .min_by_key(|&i| chain[i].0)
+                {
+                    self.cycle_cuts.insert(chain[cut].0);
+                    chain.truncate(cut + 1);
                 }
+                break PathBuf::from("[Orphaned]");
             }
 
             current_id = next_id;
@@ -399,35 +424,10 @@ impl<T: Read + Seek> MftParser<T> {
         };
 
         for (id, name) in chain.iter().rev() {
-            prefix.push(name);
+            prefix.extend(name);
             self.entries_cache.put(*id, prefix.clone());
         }
         prefix
-    }
-
-    /// Assigns paths to the members of a parent cycle (child first, each one's parent is the
-    /// next, and the last one's parent is the first), cutting it at the lowest entry ID.
-    /// Caches them, and returns the path of the first member.
-    fn cut_cycle(&mut self, cycle: &[(u64, String)]) -> PathBuf {
-        let cut = cycle
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, (id, _))| *id)
-            .map_or(0, |(i, _)| i);
-
-        // Walk from the cut member down to its children, wrapping around the cycle.
-        let mut path = PathBuf::from("[Orphaned]");
-        let mut first_member_path = PathBuf::new();
-        for offset in 0..cycle.len() {
-            let i = (cut + cycle.len() - offset) % cycle.len();
-            let (id, name) = &cycle[i];
-            path.push(name);
-            self.entries_cache.put(*id, path.clone());
-            if i == 0 {
-                first_member_path = path.clone();
-            }
-        }
-        first_member_path
     }
 
     /// Gets the full path of the directory with the given entry ID.
@@ -491,7 +491,7 @@ impl<T: Read + Seek> MftParser<T> {
             if let Some(cached) = self.entries_cache.get(&entry_id) {
                 return Ok(Some(cached.clone()));
             }
-            let step = Self::path_step_named(entry, filename_header);
+            let step = self.path_step_named(entry, filename_header);
             return Ok(Some(self.resolve_directory_path(entry_id, step)));
         }
 
@@ -510,8 +510,10 @@ impl<T: Read + Seek> MftParser<T> {
 
 #[cfg(test)]
 mod tests {
+    use crate::entry::tests::mft_reference_bytes;
     use crate::tests::fixtures::mft_sample;
     use crate::{MftEntry, MftParser};
+    use itertools::Itertools;
     use std::io::{self, Cursor, Read, Seek, SeekFrom};
     use std::path::PathBuf;
 
@@ -537,9 +539,7 @@ mod tests {
         let mut offset = 0x38;
         if let Some((name, parent)) = name {
             let mut value = Vec::new();
-            let mut parent_ref = parent.to_le_bytes();
-            parent_ref[6..8].copy_from_slice(&1u16.to_le_bytes());
-            value.extend_from_slice(&parent_ref);
+            value.extend_from_slice(&mft_reference_bytes(parent, 1));
             const FT: [u8; 8] = [0xD5, 0x2D, 0x48, 0x58, 0x43, 0x5F, 0xCE, 0x01];
             for _ in 0..4 {
                 value.extend_from_slice(&FT);
@@ -566,31 +566,58 @@ mod tests {
         e
     }
 
-    fn cyclic_mft() -> Vec<u8> {
-        // Entries 0-4 are placeholders, 5 is the root, 6 and 7 are directories that claim
-        // each other as parents, and 8 is a file inside 6.
+    /// An MFT whose entries 0-4 are placeholders, 5 is the root, and 6 on are `entries`.
+    fn mft_of(entries: impl IntoIterator<Item = Vec<u8>>) -> Vec<u8> {
         let mut mft = Vec::new();
         for _ in 0..5 {
             mft.extend(synthetic_entry(false, None));
         }
         mft.extend(synthetic_entry(true, Some((".", 5))));
-        mft.extend(synthetic_entry(true, Some(("A", 7))));
-        mft.extend(synthetic_entry(true, Some(("B", 6))));
-        mft.extend(synthetic_entry(false, Some(("f.txt", 6))));
+        mft.extend(entries.into_iter().flatten());
         mft
     }
 
-    fn resolve_in_order(order: &[u64]) -> Vec<(u64, PathBuf)> {
-        let mut parser = MftParser::from_buffer(cyclic_mft()).unwrap();
+    fn cyclic_mft() -> Vec<u8> {
+        // 6 and 7 are directories that claim each other as parents, and 8 is a file inside 6.
+        mft_of([
+            synthetic_entry(true, Some(("A", 7))),
+            synthetic_entry(true, Some(("B", 6))),
+            synthetic_entry(false, Some(("f.txt", 6))),
+        ])
+    }
+
+    /// A directory without a name, which takes the path of its base entry.
+    fn nameless_directory(base: u64) -> Vec<u8> {
+        let mut e = synthetic_entry(true, None);
+        e[0x20..0x28].copy_from_slice(&mft_reference_bytes(base, 1)); // base record
+        e
+    }
+
+    fn full_path(parser: &mut MftParser<Cursor<Vec<u8>>>, id: u64) -> PathBuf {
+        let entry = parser.get_entry(id).unwrap();
+        parser.get_full_path_for_entry(&entry).unwrap().unwrap()
+    }
+
+    fn resolve_in_order(mft: &[u8], order: &[u64]) -> Vec<(u64, PathBuf)> {
+        let mut parser = MftParser::from_buffer(mft.to_vec()).unwrap();
         let mut paths: Vec<(u64, PathBuf)> = order
             .iter()
-            .map(|&id| {
-                let entry = parser.get_entry(id).unwrap();
-                (id, parser.get_full_path_for_entry(&entry).unwrap().unwrap())
-            })
+            .map(|&id| (id, full_path(&mut parser, id)))
             .collect();
         paths.sort();
         paths
+    }
+
+    /// Checks that each of `expected`'s entries gets its `/`-separated path, in every order.
+    fn assert_paths_in_any_order(mft: &[u8], expected: &[(u64, &str)]) {
+        let expected: Vec<(u64, PathBuf)> = expected
+            .iter()
+            .map(|&(id, path)| (id, path.split('/').collect()))
+            .collect();
+        let ids = expected.iter().map(|&(id, _)| id);
+        for order in ids.permutations(expected.len()) {
+            assert_eq!(resolve_in_order(mft, &order), expected, "order {order:?}");
+        }
     }
 
     /// Reads at most half an entry per call, and fails once mid-entry when `fail` is set.
@@ -635,16 +662,93 @@ mod tests {
     #[test]
     fn test_get_full_path_breaks_parent_cycles() {
         // The cycle is cut at its lowest entry ID (6).
-        let expected = vec![
-            (6, PathBuf::from("[Orphaned]").join("A")),
-            (7, PathBuf::from("[Orphaned]").join("A").join("B")),
-            (8, PathBuf::from("[Orphaned]").join("A").join("f.txt")),
-        ];
+        assert_paths_in_any_order(
+            &cyclic_mft(),
+            &[
+                (6, "[Orphaned]/A"),
+                (7, "[Orphaned]/A/B"),
+                (8, "[Orphaned]/A/f.txt"),
+            ],
+        );
+    }
 
-        // Paths don't depend on the order entries are resolved in.
-        assert_eq!(resolve_in_order(&[6, 7, 8]), expected);
-        assert_eq!(resolve_in_order(&[7, 6, 8]), expected);
-        assert_eq!(resolve_in_order(&[8, 7, 6]), expected);
+    #[test]
+    fn test_get_full_path_keeps_parent_cycles_cut_after_eviction() {
+        let mut parser = MftParser::from_buffer(cyclic_mft()).unwrap();
+        let a = PathBuf::from("[Orphaned]").join("A");
+        assert_eq!(full_path(&mut parser, 7), a.join("B"));
+
+        // The cycle was cut at 6, which stays cut once it leaves the cache instead of taking a
+        // path through 7.
+        parser.entries_cache.pop(&6);
+        assert_eq!(full_path(&mut parser, 8), a.join("f.txt"));
+    }
+
+    #[test]
+    fn test_get_full_path_through_a_nameless_directory() {
+        // 7 is a directory without a name, which takes the path of 6 ("A", in the root).
+        let mft = mft_of([
+            synthetic_entry(true, Some(("A", 5))),
+            nameless_directory(6),
+            synthetic_entry(false, Some(("f.txt", 7))),
+        ]);
+        assert_paths_in_any_order(&mft, &[(6, "A"), (7, "A"), (8, "A/f.txt")]);
+    }
+
+    #[test]
+    fn test_get_full_path_breaks_parent_cycles_through_nameless_directories() {
+        // 6 ("A") is in 8 ("B"), which is in 7, a directory without a name that takes the path of
+        // 6. The cycle is cut at its lowest named entry (6), wherever resolving starts.
+        let mft = mft_of([
+            synthetic_entry(true, Some(("A", 8))),
+            nameless_directory(6),
+            synthetic_entry(true, Some(("B", 7))),
+            synthetic_entry(false, Some(("f.txt", 7))),
+        ]);
+        assert_paths_in_any_order(
+            &mft,
+            &[
+                (6, "[Orphaned]/A"),
+                (7, "[Orphaned]/A"),
+                (8, "[Orphaned]/A/B"),
+                (9, "[Orphaned]/A/f.txt"),
+            ],
+        );
+
+        // With the nameless directory first (6, taking the path of 8), the cut is at 7 ("A").
+        let mft = mft_of([
+            nameless_directory(8),
+            synthetic_entry(true, Some(("A", 6))),
+            synthetic_entry(true, Some(("B", 7))),
+            synthetic_entry(false, Some(("f.txt", 6))),
+        ]);
+        assert_paths_in_any_order(
+            &mft,
+            &[
+                (6, "[Orphaned]/A/B"),
+                (7, "[Orphaned]/A"),
+                (8, "[Orphaned]/A/B"),
+                (9, "[Orphaned]/A/B/f.txt"),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_get_full_path_breaks_parent_cycles_without_names() {
+        // 6 and 7 are directories without names, each taking the path of the other.
+        let mft = mft_of([
+            nameless_directory(7),
+            nameless_directory(6),
+            synthetic_entry(false, Some(("f.txt", 6))),
+        ]);
+        assert_paths_in_any_order(
+            &mft,
+            &[
+                (6, "[Orphaned]"),
+                (7, "[Orphaned]"),
+                (8, "[Orphaned]/f.txt"),
+            ],
+        );
     }
 
     #[test]

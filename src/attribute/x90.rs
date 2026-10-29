@@ -440,20 +440,7 @@ impl<'a> IndexEntries<'a> {
 mod tests {
     use super::*;
     use crate::attribute::x30::FileNamespace;
-
-    fn mft_reference_bytes(entry: u64, sequence: u16) -> [u8; 8] {
-        // NTFS MFT reference is a 48-bit entry number plus a 16-bit sequence number (little-endian).
-        let mut out = [0u8; 8];
-        out[0] = (entry & 0xFF) as u8;
-        out[1] = ((entry >> 8) & 0xFF) as u8;
-        out[2] = ((entry >> 16) & 0xFF) as u8;
-        out[3] = ((entry >> 24) & 0xFF) as u8;
-        out[4] = ((entry >> 32) & 0xFF) as u8;
-        out[5] = ((entry >> 40) & 0xFF) as u8;
-        out[6] = (sequence & 0xFF) as u8;
-        out[7] = (sequence >> 8) as u8;
-        out
-    }
+    use crate::entry::tests::mft_reference_bytes;
 
     /// A view index entry with `key` and `data`, padded to 8 bytes like NTFS writes them.
     fn view_entry(key: &[u8], data: &[u8], flags: u16) -> Vec<u8> {
