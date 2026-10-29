@@ -24,15 +24,23 @@ pub struct StandardInfoAttr {
     pub max_version: u32,
     pub version: u32,
     pub class_id: u32,
+    /// The owner's key in `$Quota`, or 0 when quotas are off.
     pub owner_id: u32,
+    /// The key of the file's security descriptor in `$Secure`, or 0 when the record holds its own
+    /// `$SECURITY_DESCRIPTOR` attribute instead, as records did before NTFS 3.0.
     pub security_id: u32,
+    /// The bytes charged to the owner's quota, or 0 when quotas are off.
     pub quota: u64,
+    /// The update sequence number of the file's last change journal (`$UsnJrnl`) record, or 0
+    /// when it has none.
     pub usn: u64,
 }
 
 impl StandardInfoAttr {
     /// The size of the NTFS 3.0 layout, the first with `owner_id`, `security_id`, `quota` and
-    /// `usn`. The parser sets those to 0 in the older, 48-byte one.
+    /// `usn`. The parser sets those to 0 in the older, 48-byte one, where 0 means what it means in
+    /// the newer layout. To tell the two apart, compare the attribute's
+    /// [`value_size`](crate::attribute::header::MftAttributeHeader::value_size) with this.
     pub const V3_SIZE: usize = 72;
 
     /// Parse a Standard Information attribute buffer whose length is the attribute value size.
