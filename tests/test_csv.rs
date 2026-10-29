@@ -92,11 +92,27 @@ fn stream_rows_add_a_row_per_named_stream() {
 #[test]
 #[cfg(feature = "mft_dump")]
 fn extra_rows_need_csv_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let previous = dir.path().join("previous.json");
+    std::fs::write(&previous, "earlier output").unwrap();
+
     let output = assert_cmd::cargo::cargo_bin_cmd!("mft_dump")
-        .args(["-o", "json", "--stream-rows"])
+        .args([
+            "-o",
+            "json",
+            "--stream-rows",
+            "--no-confirm-overwrite",
+            "-f",
+        ])
+        .arg(&previous)
         .arg(mft_sample())
         .output()
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("only apply to `-o csv`"));
+    // The mistake is caught before the output file is truncated.
+    assert_eq!(
+        std::fs::read_to_string(&previous).unwrap(),
+        "earlier output"
+    );
 }

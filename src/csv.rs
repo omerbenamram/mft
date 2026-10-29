@@ -1,7 +1,7 @@
 use crate::attribute::x10::StandardInfoAttr;
 use crate::attribute::x30::FileNameAttr;
 use crate::attribute::{FileAttributeFlags, MftAttributeType};
-use crate::entry::{BestNames, EntryFlags, find_best_name_attribute_in, is_long_name};
+use crate::entry::{BestNames, EntryFlags, is_long_name};
 use crate::{MftAttribute, MftEntry, MftParser};
 
 use serde::Serialize;
@@ -110,7 +110,17 @@ impl FlatMftEntryWithName {
         extensions: &[MftEntry],
         full_path: PathBuf,
     ) -> FlatMftEntryWithName {
-        let mut entry_attributes: Vec<MftAttribute> = Vec::new();
+        let (attributes, file_name) = Self::file_attributes(entry, extensions);
+        Self::from_attributes(entry, &attributes, file_name.as_ref(), full_path)
+    }
+
+    /// The attributes of a file that its rows are built from, from its base record and its
+    /// extension records, and its best name ([`crate::entry::find_best_name_attribute_in`]).
+    fn file_attributes<'a>(
+        entry: &'a MftEntry,
+        extensions: &'a [MftEntry],
+    ) -> (Vec<MftAttribute<'a>>, Option<FileNameAttr<'a>>) {
+        let mut entry_attributes = Vec::new();
         // The name `find_best_name_attribute_in` picks, chosen in the same pass.
         let mut names = BestNames::default();
         let records = std::iter::once((entry, true)).chain(extensions.iter().map(|e| (e, false)));
@@ -130,8 +140,15 @@ impl FlatMftEntryWithName {
                 entry_attributes.push(attribute);
             }
         }
-        let file_name = names.best();
+        (entry_attributes, names.best())
+    }
 
+    fn from_attributes(
+        entry: &MftEntry,
+        entry_attributes: &[MftAttribute<'_>],
+        file_name: Option<&FileNameAttr<'_>>,
+        full_path: PathBuf,
+    ) -> FlatMftEntryWithName {
         let standard_info_attribute = entry_attributes
             .iter()
             .find(|a| a.header.type_code == MftAttributeType::StandardInformation);
@@ -156,7 +173,7 @@ impl FlatMftEntryWithName {
 
         // A stream spread over several records has a header in each, so keep its first.
         let mut alternate_data_streams = String::new();
-        for a in &entry_attributes {
+        for a in entry_attributes {
             if a.header.type_code == MftAttributeType::DATA
                 && !a.header.name.is_empty()
                 && !a.header.is_continuation()
@@ -203,7 +220,7 @@ impl FlatMftEntryWithName {
             file_size,
             full_path,
         };
-        row.set_file_name(file_name.as_ref());
+        row.set_file_name(file_name);
         row
     }
 
@@ -217,33 +234,24 @@ impl FlatMftEntryWithName {
         rows: CsvRows,
         mut link_path: impl FnMut(&FileNameAttr<'_>) -> PathBuf,
     ) -> Vec<FlatMftEntryWithName> {
-        let row = Self::from_entry_with_path(entry, extensions, full_path);
-        // An extension record isn't a file of its own, and a directory can't have hard links.
+        let (attributes, best) = Self::file_attributes(entry, extensions);
+        let row = Self::from_attributes(entry, &attributes, best.as_ref(), full_path);
+        // An extension record isn't a file of its own.
         if !(rows.hard_links || rows.streams) || !entry.header.is_base_record() {
             return vec![row];
         }
 
-        let attributes: Vec<MftAttribute> = std::iter::once(entry)
-            .chain(extensions)
-            .flat_map(|record| {
-                record.iter_attributes_matching(Some(vec![
-                    MftAttributeType::FileName,
-                    MftAttributeType::DATA,
-                ]))
-            })
-            .filter_map(Result::ok)
-            .collect();
-
-        let mut out = vec![row.clone()];
+        let mut extra = Vec::new();
+        // A directory can't have hard links.
         if rows.hard_links && !entry.is_dir() {
-            let best = find_best_name_attribute_in(entry, extensions);
             for name in attributes.iter().filter_map(|a| a.data.as_file_name()) {
-                // The `Dos` name is another spelling of a long one, not a link.
+                // The `Dos` name is another spelling of a long one, not a link. A copy of the best
+                // name would only repeat the file's own row.
                 if is_long_name(name) && Some(name) != best.as_ref() {
                     let mut link = row.clone();
                     link.set_file_name(Some(name));
                     link.full_path = link_path(name);
-                    out.push(link);
+                    extra.push(link);
                 }
             }
         }
@@ -260,10 +268,11 @@ impl FlatMftEntryWithName {
                     file_name.push_str(&suffix);
                 }
                 stream.file_size = header.value_size();
-                out.push(stream);
+                extra.push(stream);
             }
         }
-        out
+        extra.insert(0, row);
+        extra
     }
 
     /// Fills the `FileName*` columns from `name`.
@@ -284,6 +293,6 @@ pub struct CsvRows {
     /// `FileName*` columns.
     pub hard_links: bool,
     /// A row for each named `$DATA` stream, with `:stream` appended to `FullPath` and `FileName`
-    /// and the stream's size in `FileSize`.
+    /// and the stream's size in `FileSize`. These use the file's own path, not its other links'.
     pub streams: bool,
 }

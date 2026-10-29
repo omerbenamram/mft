@@ -113,6 +113,17 @@ impl MftDump {
             OutputFormat::from_str(output_format).expect("Validated with clap default values");
         let backtraces_enabled = matches.get_flag("backtraces");
 
+        // Checked before the output file is created, which would truncate it.
+        let csv_rows = CsvRows {
+            hard_links: matches.get_flag("hard-link-rows"),
+            streams: matches.get_flag("stream-rows"),
+        };
+        if (csv_rows.hard_links || csv_rows.streams) && output_format != OutputFormat::CSV {
+            return Err(anyhow!(
+                "`--hard-link-rows` and `--stream-rows` only apply to `-o csv`"
+            ));
+        }
+
         let output: Option<Box<dyn Write>> = if let Some(path) = output_target {
             match Self::create_output_file(path, !matches.get_flag("no-confirm-overwrite")) {
                 Ok(f) => Some(Box::new(BufWriter::with_capacity(1 << 16, f))),
@@ -144,16 +155,6 @@ impl MftDump {
                 Some(Level::Trace)
             }
         };
-
-        let csv_rows = CsvRows {
-            hard_links: matches.get_flag("hard-link-rows"),
-            streams: matches.get_flag("stream-rows"),
-        };
-        if (csv_rows.hard_links || csv_rows.streams) && output_format != OutputFormat::CSV {
-            return Err(anyhow!(
-                "`--hard-link-rows` and `--stream-rows` only apply to `-o csv`"
-            ));
-        }
 
         let ranges = match matches.get_one::<String>("entry-range") {
             Some(range) => Some(Ranges::from_str(range)?),
@@ -538,7 +539,8 @@ fn main() -> Result<()> {
                 .long("stream-rows")
                 .action(ArgAction::SetTrue)
                 .help(indoc!("With `-o csv`, also writes a row for each named data stream (ADS) of a file, with
-                             `:<stream>` appended to `FullPath` and `FileName`, and the stream's size as `FileSize`.")),
+                             `:<stream>` appended to `FullPath` and `FileName`, and the stream's size as `FileSize`.
+                             Stream rows use the file's main path, not the paths of its other hard links.")),
         )
         .arg(
             Arg::new("no-confirm-overwrite")
