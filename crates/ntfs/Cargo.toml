@@ -33,7 +33,7 @@ forensic-image = { path = "../forensic-image" }
 aff = { path = "../aff" }
 
 # Reuse the existing MFT parser for record decoding (MIT/Apache).
-mft = { path = "../..", version = "0.9.0" }
+mft = { path = "../..", version = "0.9.1" }
 
 # EWF/E01 reader/writer (extracted from `ntfs::image::ewf`).
 ewf = { path = "../ewf" }
