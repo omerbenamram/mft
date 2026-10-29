@@ -3,6 +3,7 @@ use jiff::Timestamp;
 use serde::Serializer;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use winstructs::guid::Guid;
 
 /// Length of the string produced by [`format_timestamp`]: `YYYY-MM-DDTHH:MM:SS.fffffffZ`.
 const TIMESTAMP_LEN: usize = 28;
@@ -266,6 +267,11 @@ pub(crate) fn read_u32(buf: &[u8], offset: usize) -> Option<u32> {
 pub(crate) fn read_u64(buf: &[u8], offset: usize) -> Option<u64> {
     buf.get(offset..offset.checked_add(8)?)
         .map(LittleEndian::read_u64)
+}
+
+/// Reads a GUID at `offset`, or `None` past the end of `buf`.
+pub(crate) fn read_guid(buf: &[u8], offset: usize) -> Option<Guid> {
+    Guid::from_buffer(buf.get(offset..offset.checked_add(16)?)?).ok()
 }
 
 #[cfg(test)]

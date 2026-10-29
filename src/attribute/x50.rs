@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use crate::attribute::raw::data_as_hex;
 use crate::impl_serialize_for_bitflags;
-use crate::utils::{read_u16, read_u32};
+use crate::utils::{read_guid, read_u16, read_u32};
 use bitflags::bitflags;
 use serde::Serialize;
 use winstructs::guid::Guid;
@@ -208,8 +208,7 @@ impl<'a> Ace<'a> {
                     ),
                 ] {
                     if object_flags & present != 0 {
-                        *object_type =
-                            Some(Guid::from_buffer(body.get(offset..offset + 16)?).ok()?);
+                        *object_type = Some(read_guid(body, offset)?);
                         offset += 16;
                     }
                 }

@@ -1,10 +1,12 @@
+use crate::attribute::MftAttributeType;
 use crate::attribute::raw::data_as_hex;
 use crate::attribute::x50::sid;
+use crate::attribute::xc0::tag_name;
 use crate::err::{Error, Result};
 use crate::impl_serialize_for_bitflags;
-use crate::utils::{read_u16, read_u32, read_u64, windows_filetime_to_timestamp};
+use crate::utils::{read_guid, read_u32, read_u64, windows_filetime_to_timestamp};
 
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
 
 use bitflags::bitflags;
 use jiff::Timestamp;
@@ -63,9 +65,6 @@ bitflags! {
 }
 impl_serialize_for_bitflags! {IndexRootFlags}
 
-/// The attribute type a `$FILE_NAME` index (`$I30`) indexes.
-const FILE_NAME_ATTRIBUTE_TYPE: u32 = 0x30;
-
 impl<'a> IndexRootAttr<'a> {
     /// Data size should be either 16 or 64
     pub fn from_slice(value: &'a [u8]) -> Result<IndexRootAttr<'a>> {
@@ -94,7 +93,7 @@ impl<'a> IndexRootAttr<'a> {
         // Indexes of `$FILE_NAME` (`$I30`) index attribute type 0x30. Every other index is a view
         // index, such as `$Secure:$SDH`, which indexes no attribute (type 0) and whose entries carry
         // a key and data.
-        let index_entries = if attribute_type == FILE_NAME_ATTRIBUTE_TYPE {
+        let index_entries = if attribute_type == MftAttributeType::FileName as u32 {
             IndexEntries::from_slice(
                 value,
                 index_node_length,
@@ -265,6 +264,8 @@ pub enum ViewIndexValue<'a> {
     /// `$Extend\$Reparse:$R`: a file with a reparse point, by tag.
     Reparse {
         tag: u32,
+        /// The name of a documented tag, as in `ReparsePointAttr::tag_name`.
+        tag_name: Option<&'static str>,
         mft_reference: MftReference,
     },
     /// Any other index.
@@ -288,13 +289,13 @@ impl<'a> ViewIndexEntry<'a> {
         let mut entries = Vec::new();
         let mut offset = 0;
         while offset < node.len() {
-            let data_offset = usize::from(read_u16(node, offset).ok_or_else(truncated)?);
-            let data_length = usize::from(read_u16(node, offset + 2).ok_or_else(truncated)?);
-            let length = usize::from(read_u16(node, offset + 8).ok_or_else(truncated)?);
-            let key_length = usize::from(read_u16(node, offset + 10).ok_or_else(truncated)?);
-            let flags = IndexEntryFlags::from_bits_retain(u32::from(
-                read_u16(node, offset + 12).ok_or_else(truncated)?,
-            ));
+            let header = node
+                .get(offset..offset + ENTRY_HEADER_LEN)
+                .ok_or_else(truncated)?;
+            let field = |at| usize::from(LittleEndian::read_u16(&header[at..]));
+            let (data_offset, data_length) = (field(0), field(2));
+            let (length, key_length) = (field(8), field(10));
+            let flags = IndexEntryFlags::from_bits_retain(field(12) as u32);
             if flags.contains(IndexEntryFlags::INDEX_ENTRY_END) {
                 break;
             }
@@ -324,7 +325,12 @@ impl<'a> ViewIndexValue<'a> {
     /// Decodes the key and data of a known index, or `None` if they don't match its layout.
     fn decode(collation_rule: IndexCollationRules, key: &[u8], data: &[u8]) -> Option<Self> {
         let reference = |buf: &[u8], offset: usize| read_u64(buf, offset).map(MftReference::from);
-        let guid = |offset: usize| Guid::from_buffer(data.get(offset..offset + 16)?).ok();
+        // A SID that fills `buf`.
+        let whole_sid = |buf: &[u8]| {
+            sid(buf, 0)
+                .filter(|&(_, length)| length == buf.len())
+                .map(|(sid, _)| sid)
+        };
 
         Some(match (collation_rule, key.len(), data.len()) {
             // The data is the descriptor's `$SDS` entry header, which starts with its hash and id.
@@ -342,53 +348,41 @@ impl<'a> ViewIndexValue<'a> {
                 }
             }
             (IndexCollationRules::CollationNtofsUlongs, 16, 56) => ViewIndexValue::ObjectId {
-                object_id: Guid::from_buffer(key).ok()?,
+                object_id: read_guid(key, 0)?,
                 mft_reference: reference(data, 0)?,
-                birth_volume_id: guid(8)?,
-                birth_object_id: guid(24)?,
-                domain_id: guid(40)?,
+                birth_volume_id: read_guid(data, 8)?,
+                birth_object_id: read_guid(data, 24)?,
+                domain_id: read_guid(data, 40)?,
             },
-            (IndexCollationRules::CollationNtofsUlongs, 12, 0) => ViewIndexValue::Reparse {
-                tag: read_u32(key, 0)?,
-                mft_reference: reference(key, 4)?,
-            },
-            (IndexCollationRules::CollationNtofsSid, _, 4) => {
-                let (sid, sid_length) = sid(key, 0)?;
-                if sid_length != key.len() {
-                    return None;
-                }
-                ViewIndexValue::QuotaOwner {
-                    sid,
-                    owner_id: read_u32(data, 0)?,
+            (IndexCollationRules::CollationNtofsUlongs, 12, 0) => {
+                let tag = read_u32(key, 0)?;
+                ViewIndexValue::Reparse {
+                    tag,
+                    tag_name: tag_name(tag),
+                    mft_reference: reference(key, 4)?,
                 }
             }
-            (IndexCollationRules::CollationNtofsUlong, 4, 48..) => {
-                let exceeded_time = read_u64(data, 40)?;
-                let sid = match &data[48..] {
+            (IndexCollationRules::CollationNtofsSid, _, 4) => ViewIndexValue::QuotaOwner {
+                sid: whole_sid(key)?,
+                owner_id: read_u32(data, 0)?,
+            },
+            (IndexCollationRules::CollationNtofsUlong, 4, 48..) => ViewIndexValue::Quota {
+                owner_id: read_u32(key, 0)?,
+                version: read_u32(data, 0)?,
+                quota_flags: read_u32(data, 4)?,
+                bytes_used: read_u64(data, 8)?,
+                change_time: windows_filetime_to_timestamp(read_u64(data, 16)?).ok()?,
+                warning_limit: read_u64(data, 24)? as i64,
+                hard_limit: read_u64(data, 32)? as i64,
+                exceeded_time: match read_u64(data, 40)? {
+                    0 => None,
+                    t => Some(windows_filetime_to_timestamp(t).ok()?),
+                },
+                sid: match &data[48..] {
                     [] => None,
-                    rest => {
-                        let (sid, sid_length) = sid(rest, 0)?;
-                        if sid_length != rest.len() {
-                            return None;
-                        }
-                        Some(sid)
-                    }
-                };
-                ViewIndexValue::Quota {
-                    owner_id: read_u32(key, 0)?,
-                    version: read_u32(data, 0)?,
-                    quota_flags: read_u32(data, 4)?,
-                    bytes_used: read_u64(data, 8)?,
-                    change_time: windows_filetime_to_timestamp(read_u64(data, 16)?).ok()?,
-                    warning_limit: read_u64(data, 24)? as i64,
-                    hard_limit: read_u64(data, 32)? as i64,
-                    exceeded_time: match exceeded_time {
-                        0 => None,
-                        t => Some(windows_filetime_to_timestamp(t).ok()?),
-                    },
-                    sid,
-                }
-            }
+                    rest => Some(whole_sid(rest)?),
+                },
+            },
             _ => return None,
         })
     }
@@ -523,6 +517,7 @@ mod tests {
             entries[0].value,
             ViewIndexValue::Reparse {
                 tag: 0xA000_0003,
+                tag_name: Some("MOUNT_POINT"),
                 mft_reference: MftReference::new(1234, 7),
             }
         );
