@@ -11,8 +11,8 @@ use bitflags::bitflags;
 use serde::Serialize;
 use serde::ser::{self, SerializeSeq, SerializeStruct, Serializer};
 
-use crate::attribute::header::MftAttributeHeader;
-use crate::attribute::x30::{FileNameAttr, FileNamespace};
+use crate::attribute::header::{MftAttributeHeader, ResidentialHeader};
+use crate::attribute::x30::{FileNameAttr, FileNamespace, NameInParent};
 use crate::attribute::{MftAttribute, MftAttributeContent, MftAttributeType};
 
 use std::cell::RefCell;
@@ -273,7 +273,44 @@ impl MftEntry {
     /// with the entry's extension records (see [`crate::MftParser::get_extension_entries`]) to
     /// also consider names stored there.
     pub fn find_best_name_attribute(&self) -> Option<FileNameAttr<'_>> {
-        best_name_of([self])
+        self.find_best_file_name(|value| {
+            let name = FileNameAttr::from_slice(value).ok()?;
+            Some((name.namespace, name))
+        })
+    }
+
+    /// The name and parent of [`MftEntry::find_best_name_attribute`], for path resolution, which
+    /// skips the sizes and flags of each `$FILE_NAME`.
+    pub(crate) fn find_best_name_in_parent(&self) -> Option<NameInParent<'_>> {
+        self.find_best_file_name(|value| {
+            let name = NameInParent::from_slice(value)?;
+            Some((name.namespace, name))
+        })
+    }
+
+    /// The [`BestName`] of this record's `$FILE_NAME` values, each read by `parse`.
+    fn find_best_file_name<'a, N: Clone>(
+        &'a self,
+        parse: impl Fn(&'a [u8]) -> Option<(FileNamespace, N)>,
+    ) -> Option<N> {
+        let mut names = BestName::default();
+        for (header, record) in self
+            .iter_attribute_records_where(|type_code| {
+                type_code == MftAttributeType::FileName as u32
+            })
+            .filter_map(Result::ok)
+        {
+            // Like `MftAttributeContent::from_record`, which only parses a resident `$FILE_NAME`.
+            if let ResidentialHeader::Resident(resident) = &header.residential_header
+                && let Some((namespace, name)) = resident.value(record).ok().and_then(&parse)
+            {
+                names.offer(namespace, &name);
+                if names.is_decided() {
+                    break;
+                }
+            }
+        }
+        names.best()
     }
 
     /// Applies the update sequence array fixups.
@@ -334,12 +371,25 @@ impl MftEntry {
         &self,
         types: Option<Vec<MftAttributeType>>,
     ) -> impl Iterator<Item = Result<(MftAttributeHeader<'_>, &[u8])>> + '_ {
-        let data = self.data.as_slice();
-        let mut offset = self.header.first_attribute_record_offset as usize;
-        let mut exhausted = false;
         // Filter on raw type codes so attributes with an unknown type code can still be skipped.
         let type_codes: Option<Vec<u32>> =
             types.map(|types| types.into_iter().map(|t| t as u32).collect());
+        self.iter_attribute_records_where(move |type_code| {
+            type_codes
+                .as_ref()
+                .is_none_or(|codes| codes.contains(&type_code))
+        })
+    }
+
+    /// [`MftEntry::iter_attribute_records_matching`], for the attributes whose raw type code
+    /// passes `wanted`.
+    fn iter_attribute_records_where<'a>(
+        &'a self,
+        wanted: impl Fn(u32) -> bool + 'a,
+    ) -> impl Iterator<Item = Result<(MftAttributeHeader<'a>, &'a [u8])>> + 'a {
+        let data = self.data.as_slice();
+        let mut offset = self.header.first_attribute_record_offset as usize;
+        let mut exhausted = false;
 
         std::iter::from_fn(move || {
             loop {
@@ -410,9 +460,7 @@ impl MftEntry {
 
                 // Skip filtered-out attributes before parsing their header, so an attribute the
                 // caller did not ask for (including one with an unknown type code) never errors.
-                if let Some(filter) = &type_codes
-                    && !filter.contains(&type_code_value)
-                {
+                if !wanted(type_code_value) {
                     continue;
                 }
 
@@ -464,57 +512,50 @@ pub fn find_best_name_attribute_in<'a>(
     names.best()
 }
 
-/// Whether a name is more than an 8.3 short name.
-pub(crate) fn is_long_name(name: &FileNameAttr<'_>) -> bool {
-    name.namespace != FileNamespace::DOS
-}
-
-fn best_name_of<'a>(entries: impl IntoIterator<Item = &'a MftEntry>) -> Option<FileNameAttr<'a>> {
-    let mut names = BestName::default();
-    for attr in entries.into_iter().flat_map(|entry| {
-        entry
-            .iter_attributes_matching(Some(vec![MftAttributeType::FileName]))
-            .filter_map(Result::ok)
-    }) {
-        if let Some(fname) = attr.data.as_file_name() {
-            names.offer(fname);
-        }
-    }
-    names.best()
-}
-
 /// Picks the best of the names offered to it: the first `Win32` one, else the first long one,
 /// else the first one.
-#[derive(Default)]
-struct BestName<'a> {
-    first: Option<FileNameAttr<'a>>,
-    first_long: Option<FileNameAttr<'a>>,
-    best_win32: Option<FileNameAttr<'a>>,
+struct BestName<N> {
+    first: Option<N>,
+    first_long: Option<N>,
+    best_win32: Option<N>,
 }
 
-impl<'a> BestName<'a> {
-    fn offer(&mut self, fname: &FileNameAttr<'a>) {
-        if self.first.is_none() {
-            self.first = Some(fname.clone());
+// Not derived, which would require `N: Default`.
+impl<N> Default for BestName<N> {
+    fn default() -> Self {
+        BestName {
+            first: None,
+            first_long: None,
+            best_win32: None,
         }
-        if self.first_long.is_none() && is_long_name(fname) {
-            self.first_long = Some(fname.clone());
+    }
+}
+
+impl<N: Clone> BestName<N> {
+    fn offer(&mut self, namespace: FileNamespace, name: &N) {
+        if self.first.is_none() {
+            self.first = Some(name.clone());
+        }
+        if self.first_long.is_none() && namespace.is_long() {
+            self.first_long = Some(name.clone());
         }
 
-        if matches!(
-            fname.namespace,
-            FileNamespace::Win32 | FileNamespace::Win32AndDos
-        ) {
+        if matches!(namespace, FileNamespace::Win32 | FileNamespace::Win32AndDos) {
             // Preserve the first Win32/Win32AndDos name for stability.
             // MFT entries can contain multiple Win32 names (e.g. hard links), and there
             // isn't a canonical choice without directory context.
             if self.best_win32.is_none() {
-                self.best_win32 = Some(fname.clone());
+                self.best_win32 = Some(name.clone());
             }
         }
     }
 
-    fn best(self) -> Option<FileNameAttr<'a>> {
+    /// Whether no name offered later can be picked over the ones so far.
+    fn is_decided(&self) -> bool {
+        self.best_win32.is_some()
+    }
+
+    fn best(self) -> Option<N> {
         // A `POSIX` name is still a long name, better than the `Dos` one.
         self.best_win32.or(self.first_long).or(self.first)
     }
@@ -524,21 +565,21 @@ impl<'a> BestName<'a> {
 /// [`find_best_name_attribute_in`].
 #[derive(Default)]
 pub(crate) struct BestNames<'a> {
-    base: BestName<'a>,
-    all: BestName<'a>,
+    base: BestName<FileNameAttr<'a>>,
+    all: BestName<FileNameAttr<'a>>,
 }
 
 impl<'a> BestNames<'a> {
     pub(crate) fn offer(&mut self, fname: &FileNameAttr<'a>, in_base_record: bool) {
         if in_base_record {
-            self.base.offer(fname);
+            self.base.offer(fname.namespace, fname);
         }
-        self.all.offer(fname);
+        self.all.offer(fname.namespace, fname);
     }
 
     pub(crate) fn best(self) -> Option<FileNameAttr<'a>> {
         let base_name = self.base.best();
-        if base_name.as_ref().is_some_and(is_long_name) {
+        if base_name.as_ref().is_some_and(|n| n.namespace.is_long()) {
             return base_name;
         }
         self.all.best()
@@ -547,10 +588,12 @@ impl<'a> BestNames<'a> {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::{EntryHeader, MftEntry};
+    use super::{EntryHeader, MftEntry, find_best_name_attribute_in};
+    use crate::MftParser;
     use crate::attribute::x30::FileNamespace;
     use crate::attribute::{MftAttribute, MftAttributeType};
     use crate::err::{Error, Result};
+    use crate::tests::fixtures::mft_sample;
     use std::io::Cursor;
 
     const HEADER_38357: &[u8] = &[
@@ -619,9 +662,9 @@ pub(crate) mod tests {
         assert!(first.is_err());
     }
 
-    fn filename_value_bytes(name: &str, namespace: FileNamespace) -> Vec<u8> {
-        // Based on the example in `attribute::x30` docs; timestamps/flags are arbitrary
-        // but valid. Only `namespace` + `name` matter for this test.
+    /// A `$FILE_NAME` value for an ASCII `name` in the root, based on the example in the
+    /// `attribute::x30` docs. Its timestamps, sizes and flags are arbitrary but valid.
+    pub(crate) fn filename_value_bytes(name: &str, namespace: FileNamespace) -> Vec<u8> {
         let mut v = Vec::new();
 
         // Parent directory reference (8 bytes): entry=5, sequence=5.
@@ -647,7 +690,7 @@ pub(crate) mod tests {
         v.push(name_len);
         v.push(namespace as u8);
 
-        // UTF-16LE bytes (ASCII-only for this test).
+        // UTF-16LE bytes.
         for b in name.as_bytes() {
             v.push(*b);
             v.push(0);
@@ -793,5 +836,23 @@ pub(crate) mod tests {
             .expect("expected an attribute")
             .expect("expected $PROPERTY_SET to parse");
         assert_eq!(attr.header.type_code, MftAttributeType::PropertySet);
+    }
+
+    #[test]
+    fn find_best_name_in_parent_picks_the_best_name_attribute() {
+        let mut parser = MftParser::from_path(mft_sample()).unwrap();
+
+        let mut named = 0;
+        for entry in parser.iter_entries().filter_map(Result::ok) {
+            let name = entry
+                .find_best_name_in_parent()
+                .map(|n| (n.parent, n.namespace, n.name));
+            // Parses each attribute whole, unlike the lookups on `MftEntry`.
+            let full = find_best_name_attribute_in(&entry, &[])
+                .map(|f| (f.parent.entry, f.namespace, f.name));
+            named += usize::from(full.is_some());
+            assert_eq!(name, full, "entry {}", entry.header.record_number);
+        }
+        assert!(named > 0);
     }
 }

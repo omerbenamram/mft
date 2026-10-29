@@ -1,6 +1,6 @@
 use crate::FileNameAttr;
 use crate::attribute::{MftAttributeContent, MftAttributeType};
-use crate::entry::{MftEntry, find_best_name_attribute_in, is_long_name};
+use crate::entry::{MftEntry, find_best_name_attribute_in};
 use crate::err::{Error, Result};
 
 use crate::EntryHeader;
@@ -28,6 +28,17 @@ enum PathParent {
     Orphan,
     Entry(u64),
 }
+
+/// A copy of `path` with room for `extra` more bytes, so pushing them doesn't copy it again.
+fn path_with_room(path: &Path, extra: usize) -> PathBuf {
+    let mut copy = PathBuf::with_capacity(path.as_os_str().len() + extra);
+    copy.push(path);
+    copy
+}
+
+/// The most directory paths a parser caches. A directory that fell out of the cache is read again
+/// for its next file, which past this size is rare: see H11 in `PERF.md`.
+const MAX_CACHED_DIRECTORIES: usize = 65_536;
 
 pub struct MftParser<T: Read + Seek> {
     data: T,
@@ -80,11 +91,19 @@ impl<T: Read + Seek> MftParser<T> {
 
         data.rewind()?;
 
+        // `LruCache::new` allocates the whole table up front, so a small MFT gets a smaller cache,
+        // though not below 1,000 paths: a corrupt MFT's parent references past its end are cached
+        // too.
+        let entry_count = usize::try_from(size / u64::from(entry_size)).unwrap_or(usize::MAX);
+        let cache_size = entry_count.clamp(1_000, MAX_CACHED_DIRECTORIES);
+
         Ok(Self {
             data,
             entry_size,
             size,
-            entries_cache: LruCache::new(NonZeroUsize::new(1000).expect("1000 > 0")),
+            entries_cache: LruCache::new(
+                NonZeroUsize::new(cache_size).expect("clamped to at least 1,000"),
+            ),
             extensions_index: None,
             next_read_offset: Some(0),
         })
@@ -274,16 +293,16 @@ impl<T: Read + Seek> MftParser<T> {
     /// [`find_best_name_attribute_in`]. Extension records are only read when the base record has
     /// no long name.
     fn best_name(&mut self, entry: &MftEntry) -> Option<(String, u64)> {
-        let to_owned = |fname: FileNameAttr<'_>| (fname.name.to_utf8_string(), fname.parent.entry);
-
-        let base_name = entry.find_best_name_attribute();
-        if base_name.as_ref().is_some_and(is_long_name) {
-            return base_name.map(to_owned);
+        if let Some(name) = entry.find_best_name_in_parent()
+            && name.namespace.is_long()
+        {
+            return Some((name.name.to_utf8_string(), name.parent));
         }
 
         // Without an `$ATTRIBUTE_LIST`, there are no extension records and nothing is read.
         let extensions = self.get_extension_entries(entry);
-        find_best_name_attribute_in(entry, &extensions).map(to_owned)
+        find_best_name_attribute_in(entry, &extensions)
+            .map(|fname| (fname.name.to_utf8_string(), fname.parent.entry))
     }
 
     /// Classifies an entry for path resolution, as the parent of another entry.
@@ -328,12 +347,13 @@ impl<T: Read + Seek> MftParser<T> {
     fn resolve_directory_path(&mut self, entry_id: u64, first_step: PathStep) -> PathBuf {
         // Directories from `entry_id` upwards, each with its name.
         let mut chain: Vec<(u64, String)> = Vec::new();
+        // The length of their names, joined into a path.
+        let mut names_len = 0;
         let mut visited: HashSet<u64> = HashSet::new();
         let mut current_id = entry_id;
         let mut step = first_step;
 
         let mut prefix = loop {
-            visited.insert(current_id);
             let next_id = match step {
                 PathStep::Final(path) => {
                     self.entries_cache.put(current_id, path.clone());
@@ -341,9 +361,10 @@ impl<T: Read + Seek> MftParser<T> {
                 }
                 PathStep::Alias(base) => base,
                 PathStep::Named { name, parent } => {
+                    names_len += 1 + name.len();
                     chain.push((current_id, name));
                     match parent {
-                        PathParent::Root => break PathBuf::new(),
+                        PathParent::Root => break PathBuf::with_capacity(names_len),
                         PathParent::Orphan => break PathBuf::from("[Orphaned]"),
                         PathParent::Entry(id) => id,
                     }
@@ -351,9 +372,11 @@ impl<T: Read + Seek> MftParser<T> {
             };
 
             if let Some(cached) = self.entries_cache.get(&next_id) {
-                break cached.clone();
+                break path_with_room(cached, names_len);
             }
 
+            // Most directories' parents are cached, so this is only built past a miss.
+            visited.insert(current_id);
             if visited.contains(&next_id) {
                 match chain.iter().position(|(id, _)| *id == next_id) {
                     Some(cycle_start) => {
@@ -376,7 +399,7 @@ impl<T: Read + Seek> MftParser<T> {
         };
 
         for (id, name) in chain.iter().rev() {
-            prefix = prefix.join(name);
+            prefix.push(name);
             self.entries_cache.put(*id, prefix.clone());
         }
         prefix
@@ -398,7 +421,7 @@ impl<T: Read + Seek> MftParser<T> {
         for offset in 0..cycle.len() {
             let i = (cut + cycle.len() - offset) % cycle.len();
             let (id, name) = &cycle[i];
-            path = path.join(name);
+            path.push(name);
             self.entries_cache.put(*id, path.clone());
             if i == 0 {
                 first_member_path = path.clone();
@@ -444,7 +467,15 @@ impl<T: Read + Seek> MftParser<T> {
                 trace!("Found self-referential file path, for entry ID {entry_id}");
                 PathBuf::from("[Orphaned]").join(name)
             }
-            id => self.get_directory_path(id).join(name),
+            id => {
+                // Most parents are cached.
+                let mut path = match self.entries_cache.get(&id) {
+                    Some(parent) => path_with_room(parent, 1 + name.len()),
+                    None => self.get_directory_path(id),
+                };
+                path.push(name);
+                path
+            }
         }
     }
 

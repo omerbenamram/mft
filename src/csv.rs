@@ -2,7 +2,7 @@ use crate::attribute::header::MftAttributeHeader;
 use crate::attribute::x10::StandardInfoAttr;
 use crate::attribute::x30::FileNameAttr;
 use crate::attribute::{FileAttributeFlags, MftAttributeType};
-use crate::entry::{BestNames, EntryFlags, is_long_name};
+use crate::entry::{BestNames, EntryFlags};
 use crate::{MftAttribute, MftEntry, MftParser};
 
 use serde::Serialize;
@@ -242,7 +242,7 @@ impl FlatMftEntryWithName {
             for name in attributes.iter().filter_map(|a| a.data.as_file_name()) {
                 // The `Dos` name is another spelling of a long one, not a link. A copy of the best
                 // name would only repeat the file's own row.
-                if is_long_name(name) && Some(name) != best.as_ref() {
+                if name.namespace.is_long() && Some(name) != best.as_ref() {
                     let mut link = out[0].clone();
                     link.set_file_name(Some(name));
                     link.full_path = link_path(name);
