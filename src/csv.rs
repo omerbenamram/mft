@@ -1,3 +1,4 @@
+use crate::attribute::header::MftAttributeHeader;
 use crate::attribute::x10::StandardInfoAttr;
 use crate::attribute::x30::FileNameAttr;
 use crate::attribute::{FileAttributeFlags, MftAttributeType};
@@ -171,20 +172,14 @@ impl FlatMftEntryWithName {
             .find_map(|a| a.data.as_object_id())
             .map(|o| o.object_id.clone());
 
-        // A stream spread over several records has a header in each, so keep its first.
         let mut alternate_data_streams = String::new();
-        for a in entry_attributes {
-            if a.header.type_code == MftAttributeType::DATA
-                && !a.header.name.is_empty()
-                && !a.header.is_continuation()
-            {
-                if !alternate_data_streams.is_empty() {
-                    alternate_data_streams.push('|');
-                }
-                a.header
-                    .name
-                    .with_utf8(|name| alternate_data_streams.push_str(name));
+        for header in named_streams(entry_attributes) {
+            if !alternate_data_streams.is_empty() {
+                alternate_data_streams.push('|');
             }
+            header
+                .name
+                .with_utf8(|name| alternate_data_streams.push_str(name));
         }
 
         let mut row = FlatMftEntryWithName {
@@ -236,30 +231,28 @@ impl FlatMftEntryWithName {
     ) -> Vec<FlatMftEntryWithName> {
         let (attributes, best) = Self::file_attributes(entry, extensions);
         let row = Self::from_attributes(entry, &attributes, best.as_ref(), full_path);
+        let mut out = vec![row];
         // An extension record isn't a file of its own.
-        if !(rows.hard_links || rows.streams) || !entry.header.is_base_record() {
-            return vec![row];
+        if !entry.header.is_base_record() {
+            return out;
         }
 
-        let mut extra = Vec::new();
         // A directory can't have hard links.
         if rows.hard_links && !entry.is_dir() {
             for name in attributes.iter().filter_map(|a| a.data.as_file_name()) {
                 // The `Dos` name is another spelling of a long one, not a link. A copy of the best
                 // name would only repeat the file's own row.
                 if is_long_name(name) && Some(name) != best.as_ref() {
-                    let mut link = row.clone();
+                    let mut link = out[0].clone();
                     link.set_file_name(Some(name));
                     link.full_path = link_path(name);
-                    extra.push(link);
+                    out.push(link);
                 }
             }
         }
         if rows.streams {
-            for header in attributes.iter().map(|a| &a.header).filter(|h| {
-                h.type_code == MftAttributeType::DATA && !h.name.is_empty() && !h.is_continuation()
-            }) {
-                let mut stream = row.clone();
+            for header in named_streams(&attributes) {
+                let mut stream = out[0].clone();
                 let suffix = format!(":{}", header.name.to_utf8_string());
                 let mut path = stream.full_path.into_os_string();
                 path.push(&suffix);
@@ -268,11 +261,10 @@ impl FlatMftEntryWithName {
                     file_name.push_str(&suffix);
                 }
                 stream.file_size = header.value_size();
-                extra.push(stream);
+                out.push(stream);
             }
         }
-        extra.insert(0, row);
-        extra
+        out
     }
 
     /// Fills the `FileName*` columns from `name`.
@@ -286,6 +278,16 @@ impl FlatMftEntryWithName {
     }
 }
 
+/// The headers of a file's named `$DATA` streams. A stream spread over several records has a
+/// header in each, and only its first one is kept.
+fn named_streams<'a, 'b>(
+    attributes: &'a [MftAttribute<'b>],
+) -> impl Iterator<Item = &'a MftAttributeHeader<'b>> {
+    attributes.iter().map(|a| &a.header).filter(|h| {
+        h.type_code == MftAttributeType::DATA && !h.name.is_empty() && !h.is_continuation()
+    })
+}
+
 /// The extra CSV rows to write for each file, besides its own.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CsvRows {
@@ -295,4 +297,11 @@ pub struct CsvRows {
     /// A row for each named `$DATA` stream, with `:stream` appended to `FullPath` and `FileName`
     /// and the stream's size in `FileSize`. These use the file's own path, not its other links'.
     pub streams: bool,
+}
+
+impl CsvRows {
+    /// Whether any extra rows are asked for.
+    pub fn any(&self) -> bool {
+        self.hard_links || self.streams
+    }
 }

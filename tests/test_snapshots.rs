@@ -5,7 +5,6 @@
 mod fixtures;
 
 use fixtures::*;
-use mft::MftEntry;
 use mft::mft::MftParser;
 use std::collections::BTreeSet;
 
@@ -95,12 +94,7 @@ fn test_win11_entry_snapshots() {
     ensure_env_logger_initialized();
 
     for &(entry_id, name) in WIN11_ENTRIES {
-        let path = win11_sample(&format!("entry_{entry_id}_{name}"));
-        let data = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        // The record number stored at 0x2C catches a fixture cut from the wrong offset.
-        let stored = u32::from_le_bytes(data[0x2C..0x30].try_into().unwrap());
-        assert_eq!(u64::from(stored), entry_id, "{}", path.display());
-        let entry = MftEntry::from_buffer(data, entry_id).unwrap();
+        let entry = win11_entry(entry_id, name);
         let json = serde_json::to_string_pretty(&entry).unwrap();
         insta::assert_snapshot!(format!("win11_entry_{entry_id}_{name}"), json);
     }

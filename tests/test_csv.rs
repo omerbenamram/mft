@@ -5,10 +5,14 @@ use mft::MftEntry;
 use mft::csv::{CsvRows, FlatMftEntryWithName};
 use std::path::PathBuf;
 
-fn win11_entry(entry_id: u64, name: &str) -> MftEntry {
-    let data = std::fs::read(win11_sample(&format!("entry_{entry_id}_{name}"))).unwrap();
-    MftEntry::from_buffer(data, entry_id).unwrap()
-}
+const HARD_LINKS: CsvRows = CsvRows {
+    hard_links: true,
+    streams: false,
+};
+const STREAMS: CsvRows = CsvRows {
+    hard_links: false,
+    streams: true,
+};
 
 /// The rows of a single record, with `link_path` standing in for path resolution.
 fn rows(entry: &MftEntry, rows: CsvRows) -> Vec<FlatMftEntryWithName> {
@@ -25,13 +29,7 @@ fn hard_link_rows_add_a_row_per_other_long_name() {
 
     assert_eq!(rows(&entry, CsvRows::default()).len(), 1);
 
-    let links = rows(
-        &entry,
-        CsvRows {
-            hard_links: true,
-            ..CsvRows::default()
-        },
-    );
+    let links = rows(&entry, HARD_LINKS);
     let paths: Vec<_> = links.iter().map(|row| row.full_path.clone()).collect();
     assert_eq!(
         paths,
@@ -44,23 +42,13 @@ fn hard_link_rows_add_a_row_per_other_long_name() {
 
     // A file's only long name gets no extra row.
     let single = win11_entry(358, "appexeclink");
-    let hard_links = CsvRows {
-        hard_links: true,
-        ..CsvRows::default()
-    };
-    assert_eq!(rows(&single, hard_links).len(), 1);
+    assert_eq!(rows(&single, HARD_LINKS).len(), 1);
 }
 
 #[test]
 fn stream_rows_add_a_row_per_named_stream() {
     let entry = win11_entry(95063, "usn_journal");
-    let streams = rows(
-        &entry,
-        CsvRows {
-            streams: true,
-            ..CsvRows::default()
-        },
-    );
+    let streams = rows(&entry, STREAMS);
 
     let summary: Vec<_> = streams
         .iter()

@@ -118,7 +118,7 @@ impl MftDump {
             hard_links: matches.get_flag("hard-link-rows"),
             streams: matches.get_flag("stream-rows"),
         };
-        if (csv_rows.hard_links || csv_rows.streams) && output_format != OutputFormat::CSV {
+        if csv_rows.any() && output_format != OutputFormat::CSV {
             return Err(anyhow!(
                 "`--hard-link-rows` and `--stream-rows` only apply to `-o csv`"
             ));
@@ -429,10 +429,17 @@ impl MftDump {
         full_path: Option<PathBuf>,
         writer: &mut csv::Writer<W>,
     ) -> Result<()> {
+        let full_path = full_path.unwrap_or_default();
+        if !self.csv_rows.any() {
+            writer.serialize(FlatMftEntryWithName::from_entry_with_path(
+                entry, extensions, full_path,
+            ))?;
+            return Ok(());
+        }
         for row in FlatMftEntryWithName::rows_with_path(
             entry,
             extensions,
-            full_path.unwrap_or_default(),
+            full_path,
             self.csv_rows,
             |name| parser.get_full_path_for_name(entry, name),
         ) {
