@@ -448,11 +448,20 @@ pub fn find_best_name_attribute_in<'a>(
     base: &'a MftEntry,
     extensions: &'a [MftEntry],
 ) -> Option<FileNameAttr<'a>> {
-    let base_name = base.find_best_name_attribute();
-    if base_name.as_ref().is_some_and(is_long_name) {
-        return base_name;
+    let mut names = BestNames::default();
+    for (record, is_base) in
+        std::iter::once((base, true)).chain(extensions.iter().map(|e| (e, false)))
+    {
+        for attr in record
+            .iter_attributes_matching(Some(vec![MftAttributeType::FileName]))
+            .filter_map(Result::ok)
+        {
+            if let Some(fname) = attr.data.as_file_name() {
+                names.offer(fname, is_base);
+            }
+        }
     }
-    best_name_of(std::iter::once(base).chain(extensions))
+    names.best()
 }
 
 /// Whether a name is more than an 8.3 short name.
@@ -461,24 +470,35 @@ pub(crate) fn is_long_name(name: &FileNameAttr<'_>) -> bool {
 }
 
 fn best_name_of<'a>(entries: impl IntoIterator<Item = &'a MftEntry>) -> Option<FileNameAttr<'a>> {
-    let mut first: Option<FileNameAttr<'a>> = None;
-    let mut first_long: Option<FileNameAttr<'a>> = None;
-    let mut best_win32: Option<FileNameAttr<'a>> = None;
-
+    let mut names = BestName::default();
     for attr in entries.into_iter().flat_map(|entry| {
         entry
             .iter_attributes_matching(Some(vec![MftAttributeType::FileName]))
             .filter_map(Result::ok)
     }) {
-        let Some(fname) = attr.data.as_file_name() else {
-            continue;
-        };
-
-        if first.is_none() {
-            first = Some(fname.clone());
+        if let Some(fname) = attr.data.as_file_name() {
+            names.offer(fname);
         }
-        if first_long.is_none() && is_long_name(fname) {
-            first_long = Some(fname.clone());
+    }
+    names.best()
+}
+
+/// Picks the best of the names offered to it: the first `Win32` one, else the first long one,
+/// else the first one.
+#[derive(Default)]
+struct BestName<'a> {
+    first: Option<FileNameAttr<'a>>,
+    first_long: Option<FileNameAttr<'a>>,
+    best_win32: Option<FileNameAttr<'a>>,
+}
+
+impl<'a> BestName<'a> {
+    fn offer(&mut self, fname: &FileNameAttr<'a>) {
+        if self.first.is_none() {
+            self.first = Some(fname.clone());
+        }
+        if self.first_long.is_none() && is_long_name(fname) {
+            self.first_long = Some(fname.clone());
         }
 
         if matches!(
@@ -488,14 +508,41 @@ fn best_name_of<'a>(entries: impl IntoIterator<Item = &'a MftEntry>) -> Option<F
             // Preserve the first Win32/Win32AndDos name for stability.
             // MFT entries can contain multiple Win32 names (e.g. hard links), and there
             // isn't a canonical choice without directory context.
-            if best_win32.is_none() {
-                best_win32 = Some(fname.clone());
+            if self.best_win32.is_none() {
+                self.best_win32 = Some(fname.clone());
             }
         }
     }
 
-    // A `POSIX` name is still a long name, better than the `Dos` one.
-    best_win32.or(first_long).or(first)
+    fn best(self) -> Option<FileNameAttr<'a>> {
+        // A `POSIX` name is still a long name, better than the `Dos` one.
+        self.best_win32.or(self.first_long).or(self.first)
+    }
+}
+
+/// The best name of a base record and its extension records, offered in one pass: see
+/// [`find_best_name_attribute_in`].
+#[derive(Default)]
+pub(crate) struct BestNames<'a> {
+    base: BestName<'a>,
+    all: BestName<'a>,
+}
+
+impl<'a> BestNames<'a> {
+    pub(crate) fn offer(&mut self, fname: &FileNameAttr<'a>, in_base_record: bool) {
+        if in_base_record {
+            self.base.offer(fname);
+        }
+        self.all.offer(fname);
+    }
+
+    pub(crate) fn best(self) -> Option<FileNameAttr<'a>> {
+        let base_name = self.base.best();
+        if base_name.as_ref().is_some_and(is_long_name) {
+            return base_name;
+        }
+        self.all.best()
+    }
 }
 
 #[cfg(test)]
