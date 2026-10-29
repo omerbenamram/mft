@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
+  # Called by auto-tag.yml after it pushes the tag; there github.ref is master, not the tag.
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag (vX.Y.Z)"
+        required: true
+        type: string
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   # Fails a bad tag or a missing crates.io token before anything is built or published.
@@ -19,7 +29,7 @@ jobs:
       - name: Check tag matches Cargo.toml
         run: |
           CRATE="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
-          [ "$CRATE" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != Cargo.toml $CRATE"; exit 1; }
+          [ "$CRATE" = "$RELEASE_TAG" ] || { echo "tag $RELEASE_TAG != Cargo.toml $CRATE"; exit 1; }
 
       - name: Check CRATES_IO_TOKEN is set
         env:
@@ -98,7 +108,7 @@ jobs:
         run: |
           set -euo pipefail
           release_dir="target/${{ matrix.target }}/release"
-          version="${GITHUB_REF_NAME}"
+          version="${RELEASE_TAG}"
           mkdir -p dist
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             src="${release_dir}/mft_dump.exe"
@@ -136,9 +146,9 @@ jobs:
         run: ls -R dist
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: dist/**
           generate_release_notes: true
         env:
