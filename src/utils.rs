@@ -1,9 +1,9 @@
+use crate::Guid;
 use byteorder::{ByteOrder, LittleEndian};
 use jiff::Timestamp;
 use serde::Serializer;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use winstructs::guid::Guid;
 
 /// Length of the string produced by [`format_timestamp`]: `YYYY-MM-DDTHH:MM:SS.fffffffZ`.
 const TIMESTAMP_LEN: usize = 28;

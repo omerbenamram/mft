@@ -1,10 +1,10 @@
 use std::borrow::Cow;
 
+use crate::Guid;
 use crate::Utf16LeStr;
 use crate::attribute::raw::data_as_hex;
 use crate::utils::{read_guid, read_u16, read_u32};
 use serde::Serialize;
-use winstructs::guid::Guid;
 
 /// $REPARSE_POINT Attribute.
 /// <https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_reparse_data_buffer>

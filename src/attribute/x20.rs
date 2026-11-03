@@ -3,8 +3,8 @@ use crate::err::{Error, Result};
 
 use serde::Serialize;
 
+use crate::MftReference;
 use std::io::Cursor;
-use winstructs::ntfs::mft_reference::MftReference;
 
 /// The AttributeListAttr represents the $20 attribute, which contains a list
 /// of attribute entries in child entries.

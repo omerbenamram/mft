@@ -1,8 +1,8 @@
 use std::io::{Read, Seek};
 
+use crate::Guid;
 use crate::err::{Error, Result};
 use serde::Serialize;
-use winstructs::guid::Guid;
 
 /// $Data Attribute
 #[derive(Serialize, Clone, Debug)]

@@ -6,13 +6,13 @@ use crate::err::{Error, Result};
 use crate::EntryHeader;
 use log::{debug, trace, warn};
 
+use crate::MftReference;
 use lru::LruCache;
 use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use winstructs::ntfs::mft_reference::MftReference;
 
 /// How an entry contributes to the paths of its children.
 enum PathStep {
