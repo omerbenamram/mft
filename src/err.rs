@@ -42,13 +42,11 @@ pub enum Error {
         fixup_bytes: Vec<u8>,
     },
     #[error("Failed to read MftReference")]
-    FailedToReadMftReference { source: winstructs::err::Error },
-    #[error("Failed to read WindowsTime")]
-    FailedToReadWindowsTime { source: winstructs::err::Error },
+    FailedToReadMftReference { source: std::io::Error },
     #[error("Windows FILETIME value {filetime_100ns} is out of range for jiff::Timestamp")]
     FiletimeTimestampOutOfRange { filetime_100ns: u64 },
     #[error("Failed to read GUID")]
-    FailedToReadGuid { source: winstructs::err::Error },
+    FailedToReadGuid { source: std::io::Error },
     #[error("Failed to decode data runs")]
     FailedToDecodeDataRuns { bad_data_runs: Vec<u8> },
     #[error("An unexpected error has occurred: {}", detail)]
@@ -56,15 +54,11 @@ pub enum Error {
 }
 
 impl Error {
-    pub fn failed_to_read_windows_time(source: winstructs::err::Error) -> Error {
-        Error::FailedToReadWindowsTime { source }
-    }
-
-    pub fn failed_to_read_mft_reference(source: winstructs::err::Error) -> Error {
+    pub fn failed_to_read_mft_reference(source: std::io::Error) -> Error {
         Error::FailedToReadMftReference { source }
     }
 
-    pub fn failed_to_read_guid(source: winstructs::err::Error) -> Error {
+    pub fn failed_to_read_guid(source: std::io::Error) -> Error {
         Error::FailedToReadGuid { source }
     }
 

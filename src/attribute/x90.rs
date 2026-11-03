@@ -8,14 +8,14 @@ use crate::utils::{read_guid, read_u32, read_u64, windows_filetime_to_timestamp}
 
 use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
 
+use crate::Guid;
+use crate::MftReference;
 use bitflags::bitflags;
 use jiff::Timestamp;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use serde::Serialize;
 use std::io::Cursor;
-use winstructs::guid::Guid;
-use winstructs::ntfs::mft_reference::MftReference;
 
 use crate::attribute::x30::FileNameAttr;
 

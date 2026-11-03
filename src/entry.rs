@@ -3,7 +3,7 @@ use crate::impl_serialize_for_bitflags;
 
 use log::{trace, warn};
 
-use winstructs::ntfs::mft_reference::MftReference;
+use crate::MftReference;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 

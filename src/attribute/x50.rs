@@ -1,11 +1,11 @@
 use std::fmt::Write;
 
+use crate::Guid;
 use crate::attribute::raw::data_as_hex;
 use crate::impl_serialize_for_bitflags;
 use crate::utils::{read_guid, read_u16, read_u32};
 use bitflags::bitflags;
 use serde::Serialize;
-use winstructs::guid::Guid;
 
 /// $SECURITY_DESCRIPTOR Attribute: a self-relative security descriptor.
 /// <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/7d4dac05-9cef-4563-a058-f108abecce1d>
@@ -14,8 +14,9 @@ use winstructs::guid::Guid;
 /// descriptor itself is in `$Secure`, so a resident one is mostly found on system files and on
 /// volumes that started out as NTFS 1.x.
 ///
-/// Parsed here rather than with `winstructs::security`, which in 0.3.2 drops the control flags,
-/// miscomputes SID authorities and reads object ACE GUIDs whether or not they are present.
+/// Parsed here rather than with `winstructs::security` (which mft used to depend on): in 0.3.2
+/// it drops the control flags, miscomputes SID authorities and reads object ACE GUIDs whether or
+/// not they are present.
 #[derive(Serialize, Clone, Debug)]
 pub struct SecurityDescriptorAttr<'a> {
     pub revision: u8,

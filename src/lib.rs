@@ -13,13 +13,17 @@ pub use jiff::Timestamp;
 
 pub use crate::mft::MftParser;
 pub use entry::{EntryHeader, MftEntry};
+pub use guid::Guid;
+pub use mft_reference::MftReference;
 
 pub mod attribute;
 pub mod bodyfile;
 pub mod csv;
 pub mod entry;
 pub mod err;
+pub mod guid;
 pub mod mft;
+pub mod mft_reference;
 pub mod ntfs;
 pub mod utf16;
 

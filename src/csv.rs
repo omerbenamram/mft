@@ -7,10 +7,10 @@ use crate::{MftAttribute, MftEntry, MftParser};
 
 use serde::Serialize;
 
+use crate::Guid;
 use jiff::Timestamp;
 use std::io::{Read, Seek};
 use std::path::PathBuf;
-use winstructs::guid::Guid;
 
 /// Used for CSV output
 #[derive(Serialize, Clone)]
@@ -169,7 +169,7 @@ impl FlatMftEntryWithName {
         let object_id = entry_attributes
             .iter()
             .find_map(|a| a.data.as_object_id())
-            .map(|o| o.object_id.clone());
+            .map(|o| o.object_id);
 
         let mut alternate_data_streams = String::new();
         for header in named_streams(entry_attributes) {
