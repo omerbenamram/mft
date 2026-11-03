@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Breaking:** mft no longer depends on `winstructs`, which took `chrono` along with it, so `chrono` is out of the dependency tree. `Guid` and `MftReference` are now mft's own types, at `mft::Guid` and `mft::MftReference` (also `mft::guid` and `mft::mft_reference`), with the same fields, constructors, `Display` and JSON output. Code that names `winstructs::guid::Guid` or `winstructs::ntfs::mft_reference::MftReference` should use the mft paths. `Guid` is now also `Copy`, `Eq`, `Ord` and `Hash`. `Error::FailedToReadMftReference` and `Error::FailedToReadGuid` carry a `std::io::Error` source instead of a `winstructs::err::Error`, and the never-used `Error::FailedToReadWindowsTime` is gone.
 
+## [0.9.2] - 2026-11-03
+
 ### Fixed
 - A file whose parent directory's record was reused for another file is now `[Orphaned]\<name>`, instead of getting a path through the record's new file (or `[Unknown]\<name>` when that file isn't a directory). Path resolution now checks the sequence number in each `$FILE_NAME` parent reference and base record reference. A deleted directory still holds the paths of the deleted files in it: Windows bumps a record's sequence number by one when it frees the record, so a freed parent one ahead of the reference still matches. In three of our sample images, this changes the paths of 43–99% of the deleted files, almost all of them from `[Unknown]\<name>`, and of no allocated files. Thanks @mcardonaes (#150).
 
