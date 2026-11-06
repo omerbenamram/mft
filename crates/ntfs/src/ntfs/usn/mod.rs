@@ -96,6 +96,14 @@ pub fn reason_flag_names(flags: UsnReasonFlags) -> impl Iterator<Item = &'static
             UsnReasonFlags::USN_REASON_TRANSACTED_CHANGE,
             "USN_REASON_TRANSACTED_CHANGE",
         ),
+        (
+            UsnReasonFlags::USN_REASON_INTEGRITY_CHANGE,
+            "USN_REASON_INTEGRITY_CHANGE",
+        ),
+        (
+            UsnReasonFlags::USN_REASON_DESIRED_STORAGE_CLASS_CHANGE,
+            "USN_REASON_DESIRED_STORAGE_CLASS_CHANGE",
+        ),
         (UsnReasonFlags::USN_REASON_CLOSE, "USN_REASON_CLOSE"),
     ];
 
@@ -122,6 +130,10 @@ pub fn source_flag_names(flags: UsnSourceFlags) -> impl Iterator<Item = &'static
         (
             UsnSourceFlags::USN_SOURCE_REPLICATION_MANAGEMENT,
             "USN_SOURCE_REPLICATION_MANAGEMENT",
+        ),
+        (
+            UsnSourceFlags::USN_SOURCE_CLIENT_REPLICATION_MANAGEMENT,
+            "USN_SOURCE_CLIENT_REPLICATION_MANAGEMENT",
         ),
     ];
     MAP.iter().filter_map(move |(flag, name)| {

@@ -298,6 +298,10 @@ pub struct FlatUsnRecord {
     pub sequence: u16,
     pub parent_entry_id: u64,
     pub parent_sequence: u16,
+    /// The high 64 bits of a v3 or v4 record's file ids, when they aren't zero (ReFS): then
+    /// `EntryId` and `Sequence` are only the low 64 bits.
+    pub file_id_high: Option<u64>,
+    pub parent_id_high: Option<u64>,
     pub reason: UsnReasonFlags,
     pub source_info: UsnSourceFlags,
     pub file_attributes: Option<FileAttributeFlags>,
@@ -342,6 +346,8 @@ impl FlatUsnRecord {
             sequence: record.file_reference.sequence,
             parent_entry_id: record.parent_reference.entry,
             parent_sequence: record.parent_reference.sequence,
+            file_id_high: record.file_id_high.map(|high| high.file),
+            parent_id_high: record.file_id_high.map(|high| high.parent),
             reason: record.reason,
             source_info: record.source_info,
             file_attributes,

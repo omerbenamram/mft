@@ -123,9 +123,9 @@ impl IndxRecord {
         )
         .map_err(|e| invalid(format!("update sequence array: {e}")))?;
 
-        let entries_start = NODE_HEADER_OFFSET + entries_offset;
-        let entries_end = NODE_HEADER_OFFSET + used;
-        let allocated_end = NODE_HEADER_OFFSET + allocated;
+        let entries_start = NODE_HEADER_OFFSET.saturating_add(entries_offset);
+        let entries_end = NODE_HEADER_OFFSET.saturating_add(used);
+        let allocated_end = NODE_HEADER_OFFSET.saturating_add(allocated);
         if entries_start > entries_end || entries_end > allocated_end || allocated_end > data.len()
         {
             return Err(invalid(format!(
@@ -150,6 +150,15 @@ impl IndxRecord {
 
     /// The node's current entries, up to its end entry.
     pub fn entries(&self) -> Result<Vec<IndxEntry<'_>>> {
+        match self.entries_until_error() {
+            (entries, None) => Ok(entries),
+            (_, Some(error)) => Err(error),
+        }
+    }
+
+    /// Like [`IndxRecord::entries`], but on a damaged entry gives the entries before it along
+    /// with the error, rather than only the error.
+    pub fn entries_until_error(&self) -> (Vec<IndxEntry<'_>>, Option<Error>) {
         let mut entries = Vec::new();
         let mut at = self.entries_start;
         while at + ENTRY_HEADER_SIZE <= self.entries_end {
@@ -162,13 +171,23 @@ impl IndxRecord {
             }
             if length < ENTRY_HEADER_SIZE + FILE_NAME_HEADER_SIZE || at + length > self.entries_end
             {
-                return Err(Error::InvalidIndexRecord {
+                let error = Error::InvalidIndexRecord {
                     offset: self.offset,
                     detail: format!("entry at {at} has length {length}"),
-                });
+                };
+                return (entries, Some(error));
             }
             let file_name =
-                FileNameAttr::from_slice(&self.data[at + ENTRY_HEADER_SIZE..at + length])?;
+                match FileNameAttr::from_slice(&self.data[at + ENTRY_HEADER_SIZE..at + length]) {
+                    Ok(file_name) => file_name,
+                    Err(e) => {
+                        let error = Error::InvalidIndexRecord {
+                            offset: self.offset,
+                            detail: format!("entry at {at}: {e}"),
+                        };
+                        return (entries, Some(error));
+                    }
+                };
             entries.push(IndxEntry {
                 offset: self.offset + at as u64,
                 from_slack: false,
@@ -180,7 +199,7 @@ impl IndxRecord {
             });
             at += length;
         }
-        Ok(entries)
+        (entries, None)
     }
 
     /// The entries found in the node's slack space: the bytes after its end entry, up to the end
@@ -277,7 +296,7 @@ fn plausible_file_name(buf: &[u8]) -> Option<FileNameAttr<'_>> {
     if buf.len() < FILE_NAME_HEADER_SIZE || buf[0x40] == 0 || buf[0x41] > 3 {
         return None;
     }
-    if read_u16(buf, 6)? == 0 && read_u64(buf, 0)? != 0 {
+    if read_u16(buf, 6)? == 0 {
         return None;
     }
     let file_name = FileNameAttr::from_slice(buf).ok()?;
@@ -353,12 +372,23 @@ impl<R: Read> IndxFile<R> {
             if data.is_empty() {
                 return Ok(None);
             }
-            let record_size = *self.record_size.get_or_insert_with(|| {
-                match (data.starts_with(b"INDX"), read_u16(&data, 6)) {
-                    (true, Some(usa_count)) if usa_count >= 2 => (usize::from(usa_count) - 1) * 512,
-                    _ => DEFAULT_INDX_RECORD_SIZE,
+            let record_size = match self.record_size {
+                Some(record_size) => record_size,
+                // Until the first record, skip zeros a sector at a time, so the size comes from
+                // a real record.
+                None if data.iter().all(|&b| b == 0) => {
+                    self.offset += data.len() as u64;
+                    continue;
                 }
-            });
+                None => *self.record_size.insert(
+                    match (data.starts_with(b"INDX"), read_u16(&data, 6)) {
+                        (true, Some(usa_count)) if usa_count >= 2 => {
+                            (usize::from(usa_count) - 1) * 512
+                        }
+                        _ => DEFAULT_INDX_RECORD_SIZE,
+                    },
+                ),
+            };
             if data.len() == 512 {
                 self.read_up_to(&mut data, record_size.saturating_sub(512))?;
             }
@@ -396,7 +426,12 @@ impl<R: Read> Iterator for IndxFile<R> {
 pub struct FlatIndxEntry {
     pub offset: u64,
     pub record_vcn: u64,
+    pub record_lsn: u64,
+    /// `false` when the record was torn by an interrupted write, so its entries may be stale.
+    pub record_valid_fixup: bool,
     pub from_slack: bool,
+    /// The index entry's flags, unless the entry's header was overwritten.
+    pub flags: Option<IndexEntryFlags>,
     pub entry_id: Option<u64>,
     pub sequence: Option<u16>,
     pub parent_entry_id: u64,
@@ -428,7 +463,10 @@ impl FlatIndxEntry {
         FlatIndxEntry {
             offset: entry.offset,
             record_vcn: record.vcn,
+            record_lsn: record.lsn,
+            record_valid_fixup: record.valid_fixup,
             from_slack: entry.from_slack,
+            flags: entry.flags.clone(),
             entry_id: entry.mft_reference.map(|r| r.entry),
             sequence: entry.mft_reference.map(|r| r.sequence),
             parent_entry_id: f.parent.entry,
