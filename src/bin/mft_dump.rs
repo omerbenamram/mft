@@ -452,8 +452,15 @@ impl MftDump {
             Some(path) => Some(MftParser::from_path(path)?),
             None => None,
         };
-        let records = UsnJournal::new(File::open(&self.filepath)?)
-            .filter_map(|record| record.map_err(|error| eprintln!("{error}")).ok());
+        let records =
+            UsnJournal::new(File::open(&self.filepath)?).filter_map(|record| match record {
+                Ok(record) => Some(Ok(record)),
+                Err(error @ mft::err::Error::InvalidUsnRecord { .. }) => {
+                    eprintln!("{error}");
+                    None
+                }
+                Err(error) => Some(Err(error)),
+            });
         let mut full_path = |record: &UsnRecord| {
             let (parser, name) = (parser.as_mut()?, record.name()?);
             Some(parser.get_full_path_in_directory(
@@ -470,12 +477,14 @@ impl MftDump {
         if self.output_format == OutputFormat::CSV {
             let mut writer = csv::Writer::from_writer(out);
             for record in records {
+                let record = record?;
                 writer.serialize(FlatUsnRecord::from_record(&record, full_path(&record)))?;
             }
             writer.flush()?;
             return Ok(());
         }
         for record in records {
+            let record = record?;
             let json_record = JsonUsnRecord {
                 full_path: full_path(&record),
                 record: &record,

@@ -482,6 +482,8 @@ impl<R: Read> Iterator for UsnJournal<R> {
             let record = if length <= left_in_page {
                 if let Err(e) = self.fill(length) {
                     self.eof = true;
+                    self.buf.clear();
+                    self.pos = 0;
                     return Some(Err(e.into()));
                 }
                 UsnRecord::from_slice(&self.buf[self.pos..], offset)

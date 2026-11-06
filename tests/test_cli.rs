@@ -211,7 +211,8 @@ fn it_dumps_a_usn_journal_as_csv() {
     let sample = testdata_dir().join("usn").join("narcos-head.J");
 
     let mut cmd = cargo_bin_cmd!("mft_dump");
-    cmd.args(["-o", "csv", "--input-type", "usn"]).arg(sample.as_os_str());
+    cmd.args(["-o", "csv", "--input-type", "usn"])
+        .arg(sample.as_os_str());
     let output = cmd.output().unwrap();
     assert!(output.status.success(), "{output:?}");
     let csv = String::from_utf8(output.stdout).unwrap();
