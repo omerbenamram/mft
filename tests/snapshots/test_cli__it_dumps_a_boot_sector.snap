@@ -1,0 +1,5 @@
+---
+source: tests/test_cli.rs
+expression: "String::from_utf8(output.stdout).unwrap()"
+---
+{"oem_id":"NTFS    ","bytes_per_sector":512,"sectors_per_cluster":8,"cluster_size":4096,"media_descriptor":248,"sectors_per_track":63,"number_of_heads":255,"hidden_sectors":1259520,"total_sectors":61652991,"volume_size":31566331392,"mft_lcn":786432,"mft_offset":3221225472,"mft_mirror_lcn":2,"mft_mirror_offset":8192,"mft_entry_size":1024,"index_entry_size":4096,"volume_serial_number":16473238322159994104,"volume_serial":"9CB2-C4F8","checksum":0}
