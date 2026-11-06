@@ -60,8 +60,9 @@ enum InputType {
 
 impl InputType {
     /// Tells an `$MFT` (which starts with a `FILE` or `BAAD` record) and an `$I30` (an `INDX`
-    /// record) from a `$J` (whose first bytes that aren't zero are a USN record). Reads at most
-    /// 64 MiB of a `$J`'s sparse start.
+    /// record) from a `$J` (whose first bytes that aren't zero are a USN record). The sparse
+    /// start of a `$J` can run to gigabytes of zeros, so all of it is skipped. Anything else is
+    /// read as an `$MFT`, as before `$J` support, such as an `$MFT` whose first record was wiped.
     fn detect(path: &Path) -> Result<Self> {
         let mut f = File::open(path)?;
         let mut signature = [0u8; 4];
@@ -74,12 +75,10 @@ impl InputType {
             }
         }
         f.rewind()?;
-        match UsnJournal::new(f.take(64 << 20)).next() {
+        match UsnJournal::new(f).next() {
             Some(Ok(_)) => Ok(InputType::Usn),
-            _ => Err(anyhow!(
-                "Can't tell what kind of file `{}` is, pass `--input-type`",
-                path.display()
-            )),
+            Some(Err(mft::err::Error::InvalidUsnRecord { .. })) | None => Ok(InputType::Mft),
+            Some(Err(error)) => Err(error.into()),
         }
     }
 }
@@ -591,24 +590,16 @@ impl MftDump {
     }
 
     pub fn print_json_entry(&mut self, entry: &MftEntry, full_path: Option<PathBuf>) -> Result<()> {
+        self.print_json(&JsonEntry { full_path, entry })
+    }
+
+    /// Writes `value` as one JSON (`-o json`) or JSONL (`-o jsonl`) output record.
+    fn print_json(&mut self, value: &impl Serialize) -> Result<()> {
         let out = self
             .output
             .as_mut()
             .expect("CSV Flow cannot occur, so `Mftdump` should still Own `output`");
-
-        let json_entry = JsonEntry { full_path, entry };
-
-        self.json_buf.clear();
-        if self.output_format == OutputFormat::JSON {
-            sonic_json::to_writer_pretty(&mut self.json_buf, &json_entry)?;
-        } else {
-            // JSONL is the performance-critical mode; use a faster serializer.
-            sonic_json::to_writer(&mut self.json_buf, &json_entry)?;
-        }
-        self.json_buf.push(b'\n');
-        out.write_all(&self.json_buf)?;
-
-        Ok(())
+        write_json_line(&mut self.json_buf, self.output_format, out, value)
     }
 
     pub fn print_bodyfile_entry(
@@ -701,6 +692,7 @@ fn write_json_line(
     if format == OutputFormat::JSON {
         sonic_json::to_writer_pretty(&mut *buf, value)?;
     } else {
+        // JSONL is the performance-critical mode; use a faster serializer.
         sonic_json::to_writer(&mut *buf, value)?;
     }
     buf.push(b'\n');
