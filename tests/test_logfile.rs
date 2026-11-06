@@ -35,8 +35,12 @@ fn it_reads_the_restart_pages() {
 
 #[test]
 fn it_reads_the_record_pages() {
-    let mut log = sample();
-    let pages: Vec<_> = log.record_pages().map(Result::unwrap).collect();
+    let log = sample();
+    let pages: Vec<_> = log
+        .record_pages()
+        .iter()
+        .map(|page| page.as_ref().unwrap())
+        .collect();
     assert_eq!(pages.len(), 27);
     assert!(pages.iter().all(|page| page.valid_fixup));
     // Two buffer pages with copies of the log's tail, then the log itself.

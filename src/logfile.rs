@@ -131,13 +131,13 @@ pub struct RecordPage {
 /// let restart = log.restart_page();
 /// println!("checkpoint at LSN {}", restart.restart_area.current_lsn);
 /// for page in log.record_pages() {
-///     let page = page?;
+///     let page = page.as_ref().map_err(|e| e.to_string()).unwrap();
 ///     println!("{} {}", page.offset, page.last_end_lsn);
 /// }
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LogFile {
     data: Vec<u8>,
     /// The restart pages that parse, in file order.
@@ -145,13 +145,13 @@ pub struct LogFile {
     /// The index in `restart_pages` of the newer one.
     current: usize,
     page_size: usize,
-    /// Where the first record page is.
-    record_pages_start: usize,
+    /// The record pages that were written, in file order.
+    record_pages: Vec<Result<RecordPage>>,
 }
 
 impl LogFile {
-    /// Reads the restart pages of `data`, the whole file. Fails unless at least one of them is
-    /// intact. Record pages are read by [`LogFile::record_pages`].
+    /// Reads `data`, the whole file, and applies the fixups of each page. Fails unless at least
+    /// one of the restart pages is intact.
     pub fn from_buffer(mut data: Vec<u8>) -> Result<Self> {
         let mut restart_pages = Vec::new();
         let mut first_error = None;
@@ -184,12 +184,20 @@ impl LogFile {
                 detail: format!("log page size {page_size}"),
             });
         }
+        // A page that is all zeros or all `0xFF` was never written.
+        let start = (2 * second).min(data.len());
+        let record_pages = data[start..]
+            .chunks_exact_mut(page_size)
+            .enumerate()
+            .filter(|(_, page)| !page.iter().all(|&b| b == 0) && !page.iter().all(|&b| b == 0xFF))
+            .map(|(i, page)| RecordPage::from_page(page, (2 * second + i * page_size) as u64))
+            .collect();
         Ok(LogFile {
-            record_pages_start: 2 * second,
             data,
             restart_pages,
             current,
             page_size,
+            record_pages,
         })
     }
 
@@ -208,7 +216,7 @@ impl LogFile {
         self.page_size
     }
 
-    /// The file, with fixups applied to the pages read so far.
+    /// The file, with the fixups of its pages applied.
     pub fn data(&self) -> &[u8] {
         &self.data
     }
@@ -225,24 +233,10 @@ impl LogFile {
         (offset < self.data.len() as u64).then_some(offset)
     }
 
-    /// The record pages, in file order, with their fixups applied. A page that is all zeros
-    /// or all `0xFF` (never written) is skipped, and one without the `RCRD` signature gives an
-    /// error.
-    pub fn record_pages(&mut self) -> impl Iterator<Item = Result<RecordPage>> + '_ {
-        let (page_size, len) = (self.page_size, self.data.len());
-        let starts = (self.record_pages_start..len)
-            .step_by(page_size)
-            .filter(move |start| start + page_size <= len);
-        starts.filter_map(move |start| {
-            let page = &self.data[start..start + page_size];
-            if page.iter().all(|&b| b == 0) || page.iter().all(|&b| b == 0xFF) {
-                return None;
-            }
-            Some(RecordPage::from_page(
-                &mut self.data[start..start + page_size],
-                start as u64,
-            ))
-        })
+    /// The record pages that were written, in file order: a page that is all zeros or all
+    /// `0xFF` is left out, and one without the `RCRD` signature is an error.
+    pub fn record_pages(&self) -> &[Result<RecordPage>] {
+        &self.record_pages
     }
 }
 
