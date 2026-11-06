@@ -243,3 +243,36 @@ fn it_dumps_i30_entries_with_slack() {
         .collect();
     insta::assert_debug_snapshot!(deleted);
 }
+
+#[test]
+fn it_dumps_a_boot_sector() {
+    let sample = testdata_dir().join("boot").join("narcos.Boot");
+
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.args(["-o", "jsonl"]).arg(sample.as_os_str());
+    let output = cmd.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+#[test]
+fn it_dumps_security_descriptors() {
+    let sample = testdata_dir().join("secure").join("narcos-head.SDS");
+
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.args(["-o", "csv"]).arg(sample.as_os_str());
+    let output = cmd.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+#[test]
+fn it_rejects_mft_for_inputs_without_paths() {
+    let sample = testdata_dir().join("boot").join("narcos.Boot");
+
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.arg("--mft").arg(mft_sample()).arg(sample.as_os_str());
+    let output = cmd.output().unwrap();
+    assert!(!output.status.success(), "{output:?}");
+}

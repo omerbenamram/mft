@@ -31,6 +31,7 @@ Some examples
   - `mft_dump --extract-resident-streams <output_directory> -o json <input_file>` will extract all resident streams in MFT to files in <output_directory>.
   - `mft_dump -o csv --mft <$MFT> <$J>` will dump the records of a USN change journal (`$Extend\$UsnJrnl:$J`), with each file's full path from the volume's `$MFT`. `mft_dump` tells a `$J` from an `$MFT` by its first bytes; `--input-type usn` says so outright.
   - `mft_dump -o csv --mft <$MFT> <$I30>` will dump the entries of a directory's `$INDEX_ALLOCATION:$I30` index records, including deleted entries recovered from their slack space (`FromSlack`).
+  - `mft_dump <$Boot>` will dump the boot sector (cluster size, `$MFT` location, record sizes, volume serial), and `mft_dump -o csv <$SDS>` the security descriptors of `$Secure:$SDS`, each with its security ID, owner and SDDL.
 
 # Library usage:
 ```rust,no_run
