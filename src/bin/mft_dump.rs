@@ -57,7 +57,9 @@ enum InputType {
 
 impl InputType {
     /// Tells an `$MFT` (which starts with a `FILE` or `BAAD` record) from a `$J` (whose first
-    /// bytes that aren't zero are a USN record). Reads at most 64 MiB of a `$J`'s sparse start.
+    /// bytes that aren't zero are a USN record). The sparse start of a `$J` can run to gigabytes
+    /// of zeros, so all of it is skipped. Anything that isn't a `$J` is read as an `$MFT`, as
+    /// before `$J` support, such as an `$MFT` whose first record was wiped.
     fn detect(path: &Path) -> Result<Self> {
         let mut f = File::open(path)?;
         let mut signature = [0u8; 4];
@@ -66,12 +68,10 @@ impl InputType {
             return Ok(InputType::Mft);
         }
         f.rewind()?;
-        match UsnJournal::new(f.take(64 << 20)).next() {
+        match UsnJournal::new(f).next() {
             Some(Ok(_)) => Ok(InputType::Usn),
-            _ => Err(anyhow!(
-                "Can't tell what kind of file `{}` is, pass `--input-type`",
-                path.display()
-            )),
+            Some(Err(mft::err::Error::InvalidUsnRecord { .. })) | None => Ok(InputType::Mft),
+            Some(Err(error)) => Err(error.into()),
         }
     }
 }
@@ -469,12 +469,11 @@ impl MftDump {
                 record.parent_reference,
             ))
         };
-        let mut out = self
-            .output
-            .take()
-            .expect("There can only be one flow accessing the output at a time");
-
         if self.output_format == OutputFormat::CSV {
+            let out = self
+                .output
+                .take()
+                .expect("There can only be one flow accessing the output at a time");
             let mut writer = csv::Writer::from_writer(out);
             for record in records {
                 let record = record?;
@@ -485,20 +484,15 @@ impl MftDump {
         }
         for record in records {
             let record = record?;
-            let json_record = JsonUsnRecord {
+            self.print_json(&JsonUsnRecord {
                 full_path: full_path(&record),
                 record: &record,
-            };
-            self.json_buf.clear();
-            if self.output_format == OutputFormat::JSON {
-                sonic_json::to_writer_pretty(&mut self.json_buf, &json_record)?;
-            } else {
-                sonic_json::to_writer(&mut self.json_buf, &json_record)?;
-            }
-            self.json_buf.push(b'\n');
-            out.write_all(&self.json_buf)?;
+            })?;
         }
-        out.flush()?;
+        self.output
+            .as_mut()
+            .expect("CSV Flow cannot occur, so `Mftdump` should still Own `output`")
+            .flush()?;
         Ok(())
     }
 
@@ -516,19 +510,22 @@ impl MftDump {
     }
 
     pub fn print_json_entry(&mut self, entry: &MftEntry, full_path: Option<PathBuf>) -> Result<()> {
+        self.print_json(&JsonEntry { full_path, entry })
+    }
+
+    /// Writes `value` as one JSON (`-o json`) or JSONL (`-o jsonl`) output record.
+    fn print_json(&mut self, value: &impl Serialize) -> Result<()> {
         let out = self
             .output
             .as_mut()
             .expect("CSV Flow cannot occur, so `Mftdump` should still Own `output`");
 
-        let json_entry = JsonEntry { full_path, entry };
-
         self.json_buf.clear();
         if self.output_format == OutputFormat::JSON {
-            sonic_json::to_writer_pretty(&mut self.json_buf, &json_entry)?;
+            sonic_json::to_writer_pretty(&mut self.json_buf, value)?;
         } else {
             // JSONL is the performance-critical mode; use a faster serializer.
-            sonic_json::to_writer(&mut self.json_buf, &json_entry)?;
+            sonic_json::to_writer(&mut self.json_buf, value)?;
         }
         self.json_buf.push(b'\n');
         out.write_all(&self.json_buf)?;
