@@ -24,6 +24,7 @@ pub mod entry;
 pub mod err;
 pub mod guid;
 pub mod indx;
+pub mod logfile;
 pub mod mft;
 pub mod mft_reference;
 pub mod ntfs;
