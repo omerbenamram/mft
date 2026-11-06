@@ -7,6 +7,7 @@ use serde::Serialize;
 use mft::MftEntry;
 use mft::attribute::MftAttributeType;
 use mft::mft::MftParser;
+use mft::usn::{FlatUsnRecord, UsnJournal, UsnRecord};
 
 use dialoguer::Confirm;
 use mft::csv::{CsvRows, FlatMftEntryWithName};
@@ -42,6 +43,35 @@ impl OutputFormat {
             "csv" => Some(OutputFormat::CSV),
             "bodyfile" => Some(OutputFormat::Bodyfile),
             _ => None,
+        }
+    }
+}
+
+/// What kind of file `INPUT` is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputType {
+    Mft,
+    /// The `$UsnJrnl:$J` change journal.
+    Usn,
+}
+
+impl InputType {
+    /// Tells an `$MFT` (which starts with a `FILE` or `BAAD` record) from a `$J` (whose first
+    /// bytes that aren't zero are a USN record). The sparse start of a `$J` can run to gigabytes
+    /// of zeros, so all of it is skipped. Anything that isn't a `$J` is read as an `$MFT`, as
+    /// before `$J` support, such as an `$MFT` whose first record was wiped.
+    fn detect(path: &Path) -> Result<Self> {
+        let mut f = File::open(path)?;
+        let mut signature = [0u8; 4];
+        let read = f.read(&mut signature)?;
+        if read == 4 && matches!(&signature, b"FILE" | b"BAAD") {
+            return Ok(InputType::Mft);
+        }
+        f.rewind()?;
+        match UsnJournal::new(f).next() {
+            Some(Ok(_)) => Ok(InputType::Usn),
+            Some(Err(mft::err::Error::InvalidUsnRecord { .. })) | None => Ok(InputType::Mft),
+            Some(Err(error)) => Err(error.into()),
         }
     }
 }
@@ -89,6 +119,19 @@ struct JsonEntry<'a> {
     entry: &'a MftEntry,
 }
 
+/// A JSON output record for a `$J` input: the USN record plus the file's full path, when an
+/// `$MFT` was given to resolve it.
+#[derive(Serialize)]
+struct JsonUsnRecord<'a> {
+    #[serde(
+        serialize_with = "mft::serialize_option_windows_path",
+        skip_serializing_if = "Option::is_none"
+    )]
+    full_path: Option<PathBuf>,
+    #[serde(flatten)]
+    record: &'a UsnRecord,
+}
+
 struct MftDump {
     filepath: PathBuf,
     // We use an option here to be able to move the output out of mftdump from a mutable reference.
@@ -100,6 +143,9 @@ struct MftDump {
     json_buf: Vec<u8>,
     backtraces_enabled: bool,
     csv_rows: CsvRows,
+    input_type: Option<InputType>,
+    /// The `$MFT` to resolve the paths of the files in a `$J` with.
+    paths_mft: Option<PathBuf>,
 }
 
 impl MftDump {
@@ -156,6 +202,13 @@ impl MftDump {
             }
         };
 
+        let input_type = match matches.get_one::<String>("input-type").map(String::as_str) {
+            Some("mft") => Some(InputType::Mft),
+            Some("usn") => Some(InputType::Usn),
+            _ => None,
+        };
+        let paths_mft = matches.get_one::<String>("mft").map(PathBuf::from);
+
         let ranges = match matches.get_one::<String>("entry-range") {
             Some(range) => Some(Ranges::from_str(range)?),
             None => None,
@@ -171,6 +224,8 @@ impl MftDump {
             json_buf: Vec::with_capacity(64 * 1024),
             backtraces_enabled,
             csv_rows,
+            input_type,
+            paths_mft,
         })
     }
 
@@ -243,6 +298,17 @@ impl MftDump {
     /// Main entry point for `EvtxDump`
     pub fn run(&mut self) -> Result<()> {
         self.try_to_initialize_logging();
+
+        let input_type = match self.input_type {
+            Some(input_type) => input_type,
+            None => InputType::detect(&self.filepath)?,
+        };
+        if input_type == InputType::Usn {
+            return self.run_usn();
+        }
+        if self.paths_mft.is_some() {
+            return Err(anyhow!("`--mft` only applies to a `$J` input"));
+        }
 
         let mut parser = MftParser::from_path(&self.filepath)?;
 
@@ -371,6 +437,65 @@ impl MftDump {
         Ok(())
     }
 
+    /// Dumps the records of a `$J` change journal.
+    fn run_usn(&mut self) -> Result<()> {
+        if self.output_format == OutputFormat::Bodyfile {
+            return Err(anyhow!("`-o bodyfile` doesn't apply to a `$J` input"));
+        }
+        if self.ranges.is_some() || self.data_streams_output.is_some() || self.csv_rows.any() {
+            return Err(anyhow!(
+                "`--ranges`, `--extract-resident-streams`, `--hard-link-rows` and `--stream-rows` \
+                 only apply to an `$MFT` input"
+            ));
+        }
+        let mut parser = match &self.paths_mft {
+            Some(path) => Some(MftParser::from_path(path)?),
+            None => None,
+        };
+        let records =
+            UsnJournal::new(File::open(&self.filepath)?).filter_map(|record| match record {
+                Ok(record) => Some(Ok(record)),
+                Err(error @ mft::err::Error::InvalidUsnRecord { .. }) => {
+                    eprintln!("{error}");
+                    None
+                }
+                Err(error) => Some(Err(error)),
+            });
+        let mut full_path = |record: &UsnRecord| {
+            let (parser, name) = (parser.as_mut()?, record.name()?);
+            Some(parser.get_full_path_in_directory(
+                record.file_reference.entry,
+                name,
+                record.parent_reference,
+            ))
+        };
+        if self.output_format == OutputFormat::CSV {
+            let out = self
+                .output
+                .take()
+                .expect("There can only be one flow accessing the output at a time");
+            let mut writer = csv::Writer::from_writer(out);
+            for record in records {
+                let record = record?;
+                writer.serialize(FlatUsnRecord::from_record(&record, full_path(&record)))?;
+            }
+            writer.flush()?;
+            return Ok(());
+        }
+        for record in records {
+            let record = record?;
+            self.print_json(&JsonUsnRecord {
+                full_path: full_path(&record),
+                record: &record,
+            })?;
+        }
+        self.output
+            .as_mut()
+            .expect("CSV Flow cannot occur, so `Mftdump` should still Own `output`")
+            .flush()?;
+        Ok(())
+    }
+
     fn try_to_initialize_logging(&self) {
         if let Some(level) = self.verbosity_level {
             match simplelog::WriteLogger::init(
@@ -385,19 +510,22 @@ impl MftDump {
     }
 
     pub fn print_json_entry(&mut self, entry: &MftEntry, full_path: Option<PathBuf>) -> Result<()> {
+        self.print_json(&JsonEntry { full_path, entry })
+    }
+
+    /// Writes `value` as one JSON (`-o json`) or JSONL (`-o jsonl`) output record.
+    fn print_json(&mut self, value: &impl Serialize) -> Result<()> {
         let out = self
             .output
             .as_mut()
             .expect("CSV Flow cannot occur, so `Mftdump` should still Own `output`");
 
-        let json_entry = JsonEntry { full_path, entry };
-
         self.json_buf.clear();
         if self.output_format == OutputFormat::JSON {
-            sonic_json::to_writer_pretty(&mut self.json_buf, &json_entry)?;
+            sonic_json::to_writer_pretty(&mut self.json_buf, value)?;
         } else {
             // JSONL is the performance-critical mode; use a faster serializer.
-            sonic_json::to_writer(&mut self.json_buf, &json_entry)?;
+            sonic_json::to_writer(&mut self.json_buf, value)?;
         }
         self.json_buf.push(b'\n');
         out.write_all(&self.json_buf)?;
@@ -498,8 +626,25 @@ fn main() -> Result<()> {
     let matches = clap::Command::new("MFT Parser")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Omer B. <omerbenamram@gmail.com>")
-        .about("Utility for parsing MFT snapshots")
+        .about("Utility for parsing MFT snapshots and USN change journals ($UsnJrnl:$J)")
         .arg(Arg::new("INPUT").required(true))
+        .arg(
+            Arg::new("input-type")
+                .long("input-type")
+                .action(ArgAction::Set)
+                .value_parser(clap::builder::PossibleValuesParser::new(["auto", "mft", "usn"]))
+                .default_value("auto")
+                .help(indoc!("What INPUT is: an `$MFT`, or a `usn` change journal (`$Extend\\$UsnJrnl:$J`).
+                             `auto` tells them apart by their first bytes.")),
+        )
+        .arg(
+            Arg::new("mft")
+                .long("mft")
+                .short('m')
+                .action(ArgAction::Set)
+                .help(indoc!("With a `$J` input, the volume's `$MFT`, to add each file's full path.
+                             A path through a directory whose record was reused since starts with `[Orphaned]`.")),
+        )
         .arg(
             Arg::new("output-format")
                 .short('o')

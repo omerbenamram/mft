@@ -25,6 +25,7 @@ pub mod guid;
 pub mod mft;
 pub mod mft_reference;
 pub mod ntfs;
+pub mod usn;
 pub mod utf16;
 
 pub(crate) mod macros;
