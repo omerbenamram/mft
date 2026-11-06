@@ -173,6 +173,14 @@ struct JsonIndxEntry<'a> {
     entry: &'a IndxEntry<'a>,
 }
 
+/// An `$SDS` entry, with its descriptor as SDDL too.
+#[derive(Serialize)]
+struct JsonSdsEntry<'a> {
+    sddl: Option<String>,
+    #[serde(flatten)]
+    entry: &'a SdsEntry<'a>,
+}
+
 struct MftDump {
     filepath: PathBuf,
     // We use an option here to be able to move the output out of mftdump from a mutable reference.
@@ -599,7 +607,11 @@ impl MftDump {
             match &mut sink {
                 Sink::Csv(writer) => writer.serialize(FlatSdsEntry::from_entry(&entry))?,
                 Sink::Json(out) => {
-                    write_json_line(&mut self.json_buf, self.output_format, out, &entry)?
+                    let json_entry = JsonSdsEntry {
+                        sddl: entry.descriptor.as_ref().map(|d| d.to_sddl()),
+                        entry: &entry,
+                    };
+                    write_json_line(&mut self.json_buf, self.output_format, out, &json_entry)?
                 }
             }
         }

@@ -156,7 +156,7 @@ impl SecurityDescriptorAttr<'_> {
     /// Formats the descriptor in the Security Descriptor Definition Language, as
     /// `ConvertSecurityDescriptorToStringSecurityDescriptorW` would, except that SIDs and access
     /// masks are always written out (`S-1-5-18` rather than `SY`, `0x1f01ff` rather than `FA`),
-    /// and a callback ACE's condition is left out.
+    /// and a callback ACE's condition and a resource attribute ACE's attribute are left out.
     /// <https://learn.microsoft.com/en-us/windows/win32/secauthz/security-descriptor-string-format>
     ///
     /// # Example
