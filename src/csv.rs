@@ -89,8 +89,8 @@ pub struct FlatMftEntryWithName {
     pub alternate_data_streams: String,
     /// Why attributes this row reads ($STANDARD_INFORMATION, $FILE_NAME, $OBJECT_ID, $DATA)
     /// failed to parse, separated by `|`. The columns that come from such an attribute are
-    /// empty, and so are those from the attributes after it in its record if its header is
-    /// broken. Empty if every attribute parsed.
+    /// empty, and so are those from the attributes after it in its record if its header (or
+    /// the length of any attribute record) is broken. Empty if every attribute parsed.
     pub attribute_errors: String,
 }
 
@@ -127,36 +127,31 @@ impl FlatMftEntryWithName {
         extensions: &'a [MftEntry],
     ) -> (Vec<MftAttribute<'a>>, Option<FileNameAttr<'a>>, String) {
         let mut entry_attributes = Vec::new();
-        let mut errors = String::new();
+        let mut errors = Vec::new();
         // The name `find_best_name_attribute_in` picks, chosen in the same pass.
         let mut names = BestNames::default();
         let records = std::iter::once((entry, true)).chain(extensions.iter().map(|e| (e, false)));
         for (record, is_base) in records {
-            for attribute in record
-                .iter_attributes_matching(Some(vec![
-                    MftAttributeType::StandardInformation,
-                    MftAttributeType::FileName,
-                    MftAttributeType::ObjectId,
-                    MftAttributeType::DATA,
-                ]))
-                .filter_map(|attribute| {
-                    attribute
-                        .map_err(|e| {
-                            if !errors.is_empty() {
-                                errors.push('|');
-                            }
-                            errors.push_str(&error_chain_message(&e));
-                        })
-                        .ok()
-                })
-            {
+            for attribute in record.iter_attributes_matching(Some(vec![
+                MftAttributeType::StandardInformation,
+                MftAttributeType::FileName,
+                MftAttributeType::ObjectId,
+                MftAttributeType::DATA,
+            ])) {
+                let attribute = match attribute {
+                    Ok(attribute) => attribute,
+                    Err(e) => {
+                        errors.push(error_chain_message(&e));
+                        continue;
+                    }
+                };
                 if let Some(name) = attribute.data.as_file_name() {
                     names.offer(name, is_base);
                 }
                 entry_attributes.push(attribute);
             }
         }
-        (entry_attributes, names.best(), errors)
+        (entry_attributes, names.best(), errors.join("|"))
     }
 
     fn from_attributes(
