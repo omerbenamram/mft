@@ -69,8 +69,9 @@ enum InputType {
 
 impl InputType {
     /// Tells an `$MFT` (which starts with a `FILE` or `BAAD` record), an `$I30` (an `INDX`
-    /// record), a `$LogFile` (an `RSTR` page), a `$Boot` (`NTFS    ` at offset 3) and an `$SDS` (an entry at offset 0 whose hash
-    /// matches its descriptor) from a `$J` (whose first bytes that aren't zero are a USN record).
+    /// record), a `$LogFile` (an `RSTR` or `CHKD` restart page), a `$Boot` (`NTFS    ` at offset
+    /// 3) and an `$SDS` (an entry at offset 0 whose hash matches its descriptor) from a `$J`
+    /// (whose first bytes that aren't zero are a USN record).
     /// The sparse start of a `$J` can run to gigabytes of zeros, so all of it is skipped. Anything
     /// else is read as an `$MFT`, as before `$J` support, such as an `$MFT` whose first record
     /// was wiped.
@@ -81,7 +82,8 @@ impl InputType {
         match start.get(..4) {
             Some(b"FILE" | b"BAAD") => return Ok(InputType::Mft),
             Some(b"INDX") => return Ok(InputType::I30),
-            Some(b"RSTR") => return Ok(InputType::LogFile),
+            // `chkdsk` marks the restart pages it has worked on `CHKD`.
+            Some(b"RSTR" | b"CHKD") => return Ok(InputType::LogFile),
             _ => {}
         }
         if start.get(3..11) == Some(b"NTFS    ") {

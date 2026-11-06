@@ -147,6 +147,8 @@ pub struct LogFile {
     /// The index in `restart_pages` of the newer one.
     current: usize,
     page_size: usize,
+    /// Where the first record page starts, after the restart pages.
+    record_pages_start: usize,
     /// The record pages that were written, in file order.
     record_pages: Vec<Result<RecordPage>>,
 }
@@ -215,6 +217,7 @@ impl LogFile {
             restart_pages,
             current,
             page_size,
+            record_pages_start: restart_end,
             record_pages,
         })
     }
@@ -611,7 +614,10 @@ impl LogFile {
             .flatten()
             .flat_map(move |page| {
                 let start = page.offset as usize;
-                (start + data_offset..start + page_size - LOG_RECORD_HEADER_SIZE + 1).step_by(8)
+                // LSNs count 8-byte units, so a record starts on an 8-byte boundary.
+                ((start + data_offset).next_multiple_of(8)
+                    ..start + page_size - LOG_RECORD_HEADER_SIZE + 1)
+                    .step_by(8)
             })
             .filter_map(move |offset| self.record_at(offset, data_offset))
     }
@@ -625,7 +631,7 @@ impl LogFile {
         if lsn == 0
             || self.lsn_offset(lsn) != Some(offset as u64)
             || !(1..=2).contains(&record_type)
-            || client_data_length as usize > self.data.len()
+            || client_data_length as usize > self.data.len() - offset - LOG_RECORD_HEADER_SIZE
         {
             return None;
         }
@@ -659,10 +665,15 @@ impl LogFile {
         let mut client_data = Vec::with_capacity(length);
         while client_data.len() < length {
             // A record whose header ends a page continues after the next page's header.
-            if offset % self.page_size < data_offset {
-                offset = offset - offset % self.page_size + data_offset;
+            // Record pages follow the restart pages, which needn't be a record page long.
+            let page_start = offset - (offset - self.record_pages_start) % self.page_size;
+            // A page the record continues into must be a record page: a page that was never
+            // written, or that holds something else, isn't the rest of this record.
+            if offset == page_start && self.data.get(page_start..page_start + 4) != Some(b"RCRD") {
+                return None;
             }
-            let page_end = (offset / self.page_size + 1) * self.page_size;
+            offset = offset.max(page_start + data_offset);
+            let page_end = page_start + self.page_size;
             let n = (page_end - offset).min(length - client_data.len());
             client_data.extend_from_slice(self.data.get(offset..offset + n)?);
             offset = page_end;
