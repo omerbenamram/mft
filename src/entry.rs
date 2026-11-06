@@ -82,7 +82,7 @@ impl ser::Serialize for MftEntry {
 
 /// Formats an error with its chain of sources, e.g. "An I/O error has occurred: failed to fill
 /// whole buffer", since the top-level message alone often doesn't say what went wrong.
-fn error_chain_message(error: &Error) -> String {
+pub(crate) fn error_chain_message(error: &Error) -> String {
     let mut message = error.to_string();
     let mut source = std::error::Error::source(error);
     while let Some(cause) = source {

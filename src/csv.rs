@@ -2,7 +2,7 @@ use crate::attribute::header::MftAttributeHeader;
 use crate::attribute::x10::StandardInfoAttr;
 use crate::attribute::x30::FileNameAttr;
 use crate::attribute::{FileAttributeFlags, MftAttributeType};
-use crate::entry::{BestNames, EntryFlags};
+use crate::entry::{error_chain_message, BestNames, EntryFlags};
 use crate::{MftAttribute, MftEntry, MftParser};
 
 use serde::Serialize;
@@ -87,6 +87,11 @@ pub struct FlatMftEntryWithName {
     /// The names of the named `$DATA` streams, separated by `|`, which Windows doesn't allow in
     /// names. These include the streams of NTFS metadata files, such as `$Secure:$SDS`.
     pub alternate_data_streams: String,
+    /// Why attributes this row reads ($STANDARD_INFORMATION, $FILE_NAME, $OBJECT_ID, $DATA)
+    /// failed to parse, separated by `|`. The columns that come from such an attribute are
+    /// empty, and so are those from the attributes after it in its record if its header is
+    /// broken. Empty if every attribute parsed.
+    pub attribute_errors: String,
 }
 
 impl FlatMftEntryWithName {
@@ -110,17 +115,19 @@ impl FlatMftEntryWithName {
         extensions: &[MftEntry],
         full_path: PathBuf,
     ) -> FlatMftEntryWithName {
-        let (attributes, file_name) = Self::file_attributes(entry, extensions);
-        Self::from_attributes(entry, &attributes, file_name.as_ref(), full_path)
+        let (attributes, file_name, errors) = Self::file_attributes(entry, extensions);
+        Self::from_attributes(entry, &attributes, file_name.as_ref(), full_path, errors)
     }
 
     /// The attributes of a file that its rows are built from, from its base record and its
-    /// extension records, and its best name ([`crate::entry::find_best_name_attribute_in`]).
+    /// extension records, its best name ([`crate::entry::find_best_name_attribute_in`]), and
+    /// the errors of the attributes that failed to parse, separated by `|`.
     fn file_attributes<'a>(
         entry: &'a MftEntry,
         extensions: &'a [MftEntry],
-    ) -> (Vec<MftAttribute<'a>>, Option<FileNameAttr<'a>>) {
+    ) -> (Vec<MftAttribute<'a>>, Option<FileNameAttr<'a>>, String) {
         let mut entry_attributes = Vec::new();
+        let mut errors = String::new();
         // The name `find_best_name_attribute_in` picks, chosen in the same pass.
         let mut names = BestNames::default();
         let records = std::iter::once((entry, true)).chain(extensions.iter().map(|e| (e, false)));
@@ -132,7 +139,16 @@ impl FlatMftEntryWithName {
                     MftAttributeType::ObjectId,
                     MftAttributeType::DATA,
                 ]))
-                .filter_map(Result::ok)
+                .filter_map(|attribute| {
+                    attribute
+                        .map_err(|e| {
+                            if !errors.is_empty() {
+                                errors.push('|');
+                            }
+                            errors.push_str(&error_chain_message(&e));
+                        })
+                        .ok()
+                })
             {
                 if let Some(name) = attribute.data.as_file_name() {
                     names.offer(name, is_base);
@@ -140,7 +156,7 @@ impl FlatMftEntryWithName {
                 entry_attributes.push(attribute);
             }
         }
-        (entry_attributes, names.best())
+        (entry_attributes, names.best(), errors)
     }
 
     fn from_attributes(
@@ -148,6 +164,7 @@ impl FlatMftEntryWithName {
         entry_attributes: &[MftAttribute<'_>],
         file_name: Option<&FileNameAttr<'_>>,
         full_path: PathBuf,
+        attribute_errors: String,
     ) -> FlatMftEntryWithName {
         let standard_info_attribute = entry_attributes
             .iter()
@@ -211,6 +228,7 @@ impl FlatMftEntryWithName {
             security_id: standard_info_v3.map(|i| i.security_id),
             object_id,
             alternate_data_streams,
+            attribute_errors,
             file_size,
             full_path,
         };
@@ -228,8 +246,8 @@ impl FlatMftEntryWithName {
         rows: CsvRows,
         mut link_path: impl FnMut(&FileNameAttr<'_>) -> PathBuf,
     ) -> Vec<FlatMftEntryWithName> {
-        let (attributes, best) = Self::file_attributes(entry, extensions);
-        let row = Self::from_attributes(entry, &attributes, best.as_ref(), full_path);
+        let (attributes, best, errors) = Self::file_attributes(entry, extensions);
+        let row = Self::from_attributes(entry, &attributes, best.as_ref(), full_path, errors);
         let mut out = vec![row];
         // An extension record isn't a file of its own.
         if !entry.header.is_base_record() {
