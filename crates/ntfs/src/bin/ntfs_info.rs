@@ -386,7 +386,17 @@ fn cmd_usn(fs: &FileSystem) -> Result<()> {
     for raw in journal.iter_record_bytes() {
         let raw = raw?;
 
-        let rec = ntfs::ntfs::usn::UsnRecord::from_slice(&raw.bytes, raw.offset)?;
+        // A damaged record (such as one with a timestamp out of range) doesn't end the dump.
+        let rec = match ntfs::ntfs::usn::UsnRecord::from_slice(&raw.bytes, raw.offset) {
+            Ok(rec) => rec,
+            Err(error) => {
+                writeln!(out, "USN record:")?;
+                writeln!(out, "\tOffset\t\t\t\t: 0x{:x}", raw.offset)?;
+                writeln!(out, "\tError\t\t\t\t: {error}")?;
+                writeln!(out)?;
+                continue;
+            }
+        };
         writeln!(out, "USN record:")?;
         writeln!(out, "\tOffset\t\t\t\t: 0x{:x}", raw.offset)?;
         if let Some(timestamp) = rec.timestamp() {

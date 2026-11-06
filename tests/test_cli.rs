@@ -231,14 +231,17 @@ fn it_dumps_i30_entries_with_slack() {
 
     let csv = String::from_utf8(output.stdout).unwrap();
     let mut reader = csv::Reader::from_reader(csv.as_bytes());
+    let headers = reader.headers().unwrap().clone();
+    let column = |name: &str| headers.iter().position(|h| h == name).unwrap();
+    let (from_slack, name) = (column("FromSlack"), column("Name"));
     let rows: Vec<csv::StringRecord> = reader.records().map(Result::unwrap).collect();
-    let (slack, live): (Vec<_>, Vec<_>) = rows.iter().partition(|row| &row[2] == "true");
+    let (slack, live): (Vec<_>, Vec<_>) = rows.iter().partition(|row| &row[from_slack] == "true");
     assert_eq!(live.len(), 99);
     // The deleted names: in slack, but no longer in the index.
-    let live_names: std::collections::BTreeSet<_> = live.iter().map(|row| &row[7]).collect();
+    let live_names: std::collections::BTreeSet<_> = live.iter().map(|row| &row[name]).collect();
     let deleted: std::collections::BTreeSet<_> = slack
         .iter()
-        .map(|row| &row[7])
+        .map(|row| &row[name])
         .filter(|name| !live_names.contains(name))
         .collect();
     insta::assert_debug_snapshot!(deleted);

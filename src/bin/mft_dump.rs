@@ -22,7 +22,7 @@ use sonic_rs as sonic_json;
 use std::backtrace::Backtrace;
 use std::fmt::{self, Write as FmtWrite};
 use std::fs::File;
-use std::io::{BufWriter, Read, Seek, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use mft::entry::ZERO_HEADER;
@@ -71,7 +71,9 @@ impl InputType {
     /// Tells an `$MFT` (which starts with a `FILE` or `BAAD` record), an `$I30` (an `INDX`
     /// record), a `$LogFile` (an `RSTR` page), a `$Boot` (`NTFS    ` at offset 3) and an `$SDS` (an entry at offset 0 whose hash
     /// matches its descriptor) from a `$J` (whose first bytes that aren't zero are a USN record).
-    /// Reads at most 64 MiB of a `$J`'s sparse start.
+    /// The sparse start of a `$J` can run to gigabytes of zeros, so all of it is skipped. Anything
+    /// else is read as an `$MFT`, as before `$J` support, such as an `$MFT` whose first record
+    /// was wiped.
     fn detect(path: &Path) -> Result<Self> {
         let mut f = File::open(path)?;
         let mut start = Vec::new();
@@ -89,12 +91,22 @@ impl InputType {
             return Ok(InputType::Sds);
         }
         f.rewind()?;
-        match UsnJournal::new(f.take(64 << 20)).next() {
+        match UsnJournal::new(f).next() {
             Some(Ok(_)) => Ok(InputType::Usn),
-            _ => Err(anyhow!(
-                "Can't tell what kind of file `{}` is, pass `--input-type`",
-                path.display()
-            )),
+            // An `$I30` can start with records that were allocated but never used, all zeros.
+            Some(Err(mft::err::Error::InvalidUsnRecord { offset, .. })) if offset % 512 == 0 => {
+                let mut f = File::open(path)?;
+                f.seek(SeekFrom::Start(offset))?;
+                let mut signature = [0u8; 4];
+                let read = f.read(&mut signature)?;
+                if read == 4 && &signature == b"INDX" {
+                    Ok(InputType::I30)
+                } else {
+                    Ok(InputType::Mft)
+                }
+            }
+            Some(Err(mft::err::Error::InvalidUsnRecord { .. })) | None => Ok(InputType::Mft),
+            Some(Err(error)) => Err(error.into()),
         }
     }
 }
@@ -163,6 +175,14 @@ struct JsonIndxEntry<'a> {
     record_valid_fixup: bool,
     #[serde(flatten)]
     entry: &'a IndxEntry<'a>,
+}
+
+/// An `$SDS` entry, with its descriptor as SDDL too.
+#[derive(Serialize)]
+struct JsonSdsEntry<'a> {
+    sddl: Option<String>,
+    #[serde(flatten)]
+    entry: &'a SdsEntry<'a>,
 }
 
 struct MftDump {
@@ -534,10 +554,10 @@ impl MftDump {
                 }
                 Err(error) => return Err(error.into()),
             };
-            let live = record.entries().unwrap_or_else(|error| {
+            let (live, error) = record.entries_until_error();
+            if let Some(error) = error {
                 eprintln!("{error}");
-                Vec::new()
-            });
+            }
             for entry in live.iter().chain(&record.slack_entries()) {
                 let full_path = parser.as_mut().map(|parser| {
                     parser.get_full_path_in_directory(
@@ -593,7 +613,11 @@ impl MftDump {
             match &mut sink {
                 Sink::Csv(writer) => writer.serialize(FlatSdsEntry::from_entry(&entry))?,
                 Sink::Json(out) => {
-                    write_json_line(&mut self.json_buf, self.output_format, out, &entry)?
+                    let json_entry = JsonSdsEntry {
+                        sddl: entry.descriptor.as_ref().map(|d| d.to_sddl()),
+                        entry: &entry,
+                    };
+                    write_json_line(&mut self.json_buf, self.output_format, out, &json_entry)?
                 }
             }
         }
@@ -675,24 +699,16 @@ impl MftDump {
     }
 
     pub fn print_json_entry(&mut self, entry: &MftEntry, full_path: Option<PathBuf>) -> Result<()> {
+        self.print_json(&JsonEntry { full_path, entry })
+    }
+
+    /// Writes `value` as one JSON (`-o json`) or JSONL (`-o jsonl`) output record.
+    fn print_json(&mut self, value: &impl Serialize) -> Result<()> {
         let out = self
             .output
             .as_mut()
             .expect("CSV Flow cannot occur, so `Mftdump` should still Own `output`");
-
-        let json_entry = JsonEntry { full_path, entry };
-
-        self.json_buf.clear();
-        if self.output_format == OutputFormat::JSON {
-            sonic_json::to_writer_pretty(&mut self.json_buf, &json_entry)?;
-        } else {
-            // JSONL is the performance-critical mode; use a faster serializer.
-            sonic_json::to_writer(&mut self.json_buf, &json_entry)?;
-        }
-        self.json_buf.push(b'\n');
-        out.write_all(&self.json_buf)?;
-
-        Ok(())
+        write_json_line(&mut self.json_buf, self.output_format, out, value)
     }
 
     pub fn print_bodyfile_entry(
@@ -785,6 +801,7 @@ fn write_json_line(
     if format == OutputFormat::JSON {
         sonic_json::to_writer_pretty(&mut *buf, value)?;
     } else {
+        // JSONL is the performance-critical mode; use a faster serializer.
         sonic_json::to_writer(&mut *buf, value)?;
     }
     buf.push(b'\n');

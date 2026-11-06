@@ -122,7 +122,13 @@ impl<'a> Iterator for SdsEntries<'a> {
             }
             match SdsEntry::from_slice(self.sds, self.offset) {
                 Some(entry) => {
-                    self.offset += (entry.length as usize).next_multiple_of(16);
+                    // A hash that doesn't match may mean a damaged length, which would skip the
+                    // entries after it, so only a matching one is trusted to step over the entry.
+                    self.offset += if entry.valid_hash {
+                        (entry.length as usize).next_multiple_of(16)
+                    } else {
+                        16
+                    };
                     return Some(entry);
                 }
                 // The zeros after a block's last entry, or a damaged entry.
@@ -134,7 +140,8 @@ impl<'a> Iterator for SdsEntries<'a> {
 }
 
 /// The owner and the SDDL of each security ID in `$SDS`, to resolve the security ID of a file's
-/// `$STANDARD_INFORMATION`. Where an ID has more than one entry, the last one wins.
+/// `$STANDARD_INFORMATION`. Where an ID has more than one entry, the last one wins, except that
+/// an entry whose hash doesn't match never replaces one whose hash does.
 #[derive(Debug, Clone, Default)]
 pub struct SecurityIds(HashMap<u32, ResolvedSecurityId>);
 
@@ -147,18 +154,25 @@ pub struct ResolvedSecurityId {
 
 impl SecurityIds {
     pub fn from_sds(sds: &[u8]) -> Self {
+        // Whether the kept entry of each ID had a matching hash: a damaged entry doesn't replace
+        // an intact one.
+        let mut ids: HashMap<u32, (bool, ResolvedSecurityId)> = HashMap::new();
+        for entry in SdsEntries::new(sds) {
+            let Some(descriptor) = entry.descriptor else {
+                continue;
+            };
+            if !entry.valid_hash && ids.get(&entry.security_id).is_some_and(|(valid, _)| *valid) {
+                continue;
+            }
+            let resolved = ResolvedSecurityId {
+                sddl: descriptor.to_sddl(),
+                owner: descriptor.owner,
+            };
+            ids.insert(entry.security_id, (entry.valid_hash, resolved));
+        }
         SecurityIds(
-            SdsEntries::new(sds)
-                .filter_map(|entry| {
-                    let descriptor = entry.descriptor?;
-                    Some((
-                        entry.security_id,
-                        ResolvedSecurityId {
-                            sddl: descriptor.to_sddl(),
-                            owner: descriptor.owner,
-                        },
-                    ))
-                })
+            ids.into_iter()
+                .map(|(id, (_, resolved))| (id, resolved))
                 .collect(),
         )
     }
@@ -248,6 +262,32 @@ mod tests {
         let ids = SecurityIds::from_sds(&sds);
         assert_eq!(ids.len(), 3);
         assert_eq!(ids.get(0x101).unwrap().owner.as_deref(), Some("S-1-5-18"));
+    }
+
+    #[test]
+    fn a_damaged_length_does_not_hide_the_next_entries() {
+        let mut sds = vec![0u8; 256];
+        put_entry(&mut sds, 0, 0x100);
+        put_entry(&mut sds, 64, 0x101);
+        // The first entry claims to run over the second.
+        sds[16..20].copy_from_slice(&200u32.to_le_bytes());
+
+        let entries: Vec<_> = SdsEntries::new(&sds).collect();
+        let ids: Vec<_> = entries.iter().map(|e| e.security_id).collect();
+        assert_eq!(ids, [0x100, 0x101]);
+        assert!(!entries[0].valid_hash);
+        assert!(entries[1].valid_hash);
+    }
+
+    #[test]
+    fn a_damaged_entry_does_not_replace_an_intact_one() {
+        let mut sds = vec![0u8; 128];
+        put_entry(&mut sds, 0, 0x100);
+        put_entry(&mut sds, 64, 0x100);
+        // Make the second entry's owner S-1-5-19, which no longer matches its hash.
+        sds[64 + 20 + 28] = 0x13;
+        let ids = SecurityIds::from_sds(&sds);
+        assert_eq!(ids.get(0x100).unwrap().owner.as_deref(), Some("S-1-5-18"));
     }
 
     #[test]
