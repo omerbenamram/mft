@@ -124,7 +124,8 @@ fn attribute_errors_column_names_the_attributes_that_failed() {
 
     let row = &rows(&entry, CsvRows::default())[0];
     assert!(
-        row.attribute_errors.contains("Unhandled resident flag: 127"),
+        row.attribute_errors
+            .contains("Unhandled resident flag: 127"),
         "unexpected errors: {}",
         row.attribute_errors
     );

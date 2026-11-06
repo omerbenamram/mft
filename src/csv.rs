@@ -2,7 +2,7 @@ use crate::attribute::header::MftAttributeHeader;
 use crate::attribute::x10::StandardInfoAttr;
 use crate::attribute::x30::FileNameAttr;
 use crate::attribute::{FileAttributeFlags, MftAttributeType};
-use crate::entry::{error_chain_message, BestNames, EntryFlags};
+use crate::entry::{BestNames, EntryFlags, error_chain_message};
 use crate::{MftAttribute, MftEntry, MftParser};
 
 use serde::Serialize;
