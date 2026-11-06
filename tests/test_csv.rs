@@ -104,3 +104,33 @@ fn extra_rows_need_csv_output() {
         "earlier output"
     );
 }
+
+#[test]
+fn attribute_errors_column_names_the_attributes_that_failed() {
+    let mut parser = mft::MftParser::from_path(mft_sample()).unwrap();
+    let mut entry = parser.get_entry(0).unwrap();
+    assert_eq!(rows(&entry, CsvRows::default())[0].attribute_errors, "");
+
+    // Corrupt the form code (byte 8 of the header) of the second attribute ($FILE_NAME) so its
+    // header fails to parse.
+    let second = entry
+        .iter_attributes()
+        .nth(1)
+        .unwrap()
+        .unwrap()
+        .header
+        .start_offset as usize;
+    entry.data[second + 8] = 0x7F;
+
+    let row = &rows(&entry, CsvRows::default())[0];
+    assert!(
+        row.attribute_errors
+            .contains("Unhandled resident flag: 127"),
+        "unexpected errors: {}",
+        row.attribute_errors
+    );
+    assert!(!row.attribute_errors.contains('|'));
+    // The row's $FILE_NAME columns are empty, the $STANDARD_INFORMATION ones are still there.
+    assert_eq!(row.file_name, None);
+    assert!(row.standard_info_created.is_some());
+}
