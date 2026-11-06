@@ -131,8 +131,7 @@ pub struct RecordPage {
 /// let log = LogFile::from_buffer(std::fs::read("$LogFile")?)?;
 /// let restart = log.restart_page();
 /// println!("checkpoint at LSN {}", restart.restart_area.current_lsn);
-/// for page in log.record_pages() {
-///     let page = page.as_ref().map_err(|e| e.to_string()).unwrap();
+/// for page in log.record_pages().iter().flatten() {
 ///     println!("{} {}", page.offset, page.last_end_lsn);
 /// }
 /// # Ok(())
@@ -156,42 +155,58 @@ impl LogFile {
     pub fn from_buffer(mut data: Vec<u8>) -> Result<Self> {
         let mut restart_pages = Vec::new();
         let mut first_error = None;
-        // The second restart page follows the first, which is a system page long.
+        // The second restart page follows the first, which is a system page long. When the first
+        // page's size is damaged, the second page is looked for at each page size it could be.
+        let is_restart_page = |at: usize| matches!(data.get(at..at + 4), Some(b"RSTR" | b"CHKD"));
         let second = read_u32(&data, 0x10)
             .map(|size| size as usize)
             .filter(|&size| is_valid_page_size(size))
+            .or_else(|| {
+                (9..=16)
+                    .map(|bits| 1usize << bits)
+                    .find(|&size| is_restart_page(size))
+            })
             .unwrap_or(DEFAULT_PAGE_SIZE);
+        // Neither restart page may reach into the record pages that follow them.
+        let restart_end = (2 * second).min(data.len());
         for offset in [0, second] {
-            match RestartPage::from_page(&mut data, offset) {
+            match RestartPage::from_page(&mut data[..restart_end], offset) {
                 Ok(page) => restart_pages.push(page),
                 Err(error) => {
                     first_error.get_or_insert(error);
                 }
             }
         }
+        // A page torn by an interrupted write fails its fixups: prefer one that doesn't.
         let Some(current) = restart_pages
             .iter()
             .enumerate()
-            .max_by_key(|(_, page)| page.restart_area.current_lsn)
+            .max_by_key(|(_, page)| (page.valid_fixup, page.restart_area.current_lsn))
             .map(|(index, _)| index)
         else {
             return Err(first_error.expect("a page failed"));
         };
 
         let page_size = restart_pages[current].log_page_size as usize;
-        if !is_valid_page_size(page_size) {
-            return Err(Error::InvalidLogFile {
-                offset: restart_pages[current].offset,
-                detail: format!("log page size {page_size}"),
-            });
-        }
-        // A page that is all zeros or all `0xFF` was never written.
-        let start = (2 * second).min(data.len());
-        let record_pages = data[start..]
-            .chunks_exact_mut(page_size)
+        // A page that is all zeros or all `0xFF` was never written. A last page that is cut short
+        // is an error.
+        let record_pages = data[restart_end..]
+            .chunks_mut(page_size)
             .enumerate()
-            .filter(|(_, page)| !page.iter().all(|&b| b == 0) && !page.iter().all(|&b| b == 0xFF))
-            .map(|(i, page)| RecordPage::from_page(page, (2 * second + i * page_size) as u64))
+            .filter(|(_, page)| {
+                let first = page[0];
+                !((first == 0 || first == 0xFF) && page.iter().all(|&b| b == first))
+            })
+            .map(|(i, page)| {
+                let offset = (restart_end + i * page_size) as u64;
+                if page.len() < page_size {
+                    return Err(Error::InvalidLogFile {
+                        offset,
+                        detail: "record page cut short".to_string(),
+                    });
+                }
+                RecordPage::from_page(page, offset)
+            })
             .collect();
         Ok(LogFile {
             data,
@@ -246,6 +261,12 @@ fn is_valid_page_size(size: usize) -> bool {
     (512..=0x10000).contains(&size) && size.is_power_of_two()
 }
 
+/// Whether an update sequence array of `usa_count` entries has a value for every 512-byte sector
+/// of `page`, so that none is left without its fixup.
+fn covers_every_sector(page: &[u8], usa_count: u16) -> bool {
+    usize::from(usa_count) == page.len() / 512 + 1
+}
+
 impl RestartPage {
     /// Parses the restart page at `offset` of `data`, applying its fixups in place.
     fn from_page(data: &mut [u8], offset: usize) -> Result<Self> {
@@ -256,9 +277,10 @@ impl RestartPage {
         let header = data
             .get(offset..offset + 0x30)
             .ok_or_else(|| invalid("restart page cut short".to_string()))?;
-        if &header[..4] != b"RSTR" {
+        // `chkdsk` marks the restart pages it has worked on `CHKD`.
+        if &header[..4] != b"RSTR" && &header[..4] != b"CHKD" {
             return Err(invalid(format!(
-                "signature {:02x?} isn't RSTR",
+                "signature {:02x?} isn't RSTR or CHKD",
                 &header[..4]
             )));
         }
@@ -275,6 +297,9 @@ impl RestartPage {
         if !is_valid_page_size(page_size) {
             return Err(invalid(format!("system page size {page_size}")));
         }
+        if !is_valid_page_size(log_page_size as usize) {
+            return Err(invalid(format!("log page size {log_page_size}")));
+        }
         let page = data
             .get_mut(offset..offset + page_size)
             .ok_or_else(|| invalid("restart page cut short".to_string()))?;
@@ -284,7 +309,8 @@ impl RestartPage {
             usa_count,
             |_| {},
         )
-        .map_err(|e| invalid(format!("update sequence array: {e}")))?;
+        .map_err(|e| invalid(format!("update sequence array: {e}")))?
+            && covers_every_sector(page, usa_count);
 
         let restart_area = RestartArea::from_slice(page, restart_offset)
             .ok_or_else(|| invalid(format!("restart area at {restart_offset} cut short")))?;
@@ -359,28 +385,26 @@ impl RecordPage {
         if &page[..4] != b"RCRD" {
             return Err(invalid(format!("signature {:02x?} isn't RCRD", &page[..4])));
         }
-        let field16 = |at| read_u16(page, at).unwrap_or_default();
-        let (usa_offset, usa_count) = (field16(4), field16(6));
-        let header = RecordPage {
-            offset,
-            last_lsn: read_u64(page, 8).unwrap_or_default(),
-            flags: RecordPageFlags::from_bits_retain(read_u32(page, 0x10).unwrap_or_default()),
-            page_count: field16(0x14),
-            page_position: field16(0x16),
-            next_record_offset: field16(0x18),
-            last_end_lsn: read_u64(page, 0x20).unwrap_or_default(),
-            valid_fixup: false,
-        };
+        let field16 = |page: &[u8], at| read_u16(page, at).unwrap_or_default();
+        let (usa_offset, usa_count) = (field16(page, 4), field16(page, 6));
+        // The header is in the first sector, before any bytes the fixups replace.
         let valid_fixup = crate::ntfs::apply_update_sequence_array_fixups_in_place_with(
             page,
             usa_offset,
             usa_count,
             |_| {},
         )
-        .map_err(|e| invalid(format!("update sequence array: {e}")))?;
+        .map_err(|e| invalid(format!("update sequence array: {e}")))?
+            && covers_every_sector(page, usa_count);
         Ok(RecordPage {
+            offset,
+            last_lsn: read_u64(page, 8).unwrap_or_default(),
+            flags: RecordPageFlags::from_bits_retain(read_u32(page, 0x10).unwrap_or_default()),
+            page_count: field16(page, 0x14),
+            page_position: field16(page, 0x16),
+            next_record_offset: field16(page, 0x18),
+            last_end_lsn: read_u64(page, 0x20).unwrap_or_default(),
             valid_fixup,
-            ..header
         })
     }
 }
@@ -446,6 +470,29 @@ mod tests {
             0x1000
         );
         assert!(LogFile::from_buffer(vec![0u8; 0x4000]).is_err());
+    }
+
+    #[test]
+    fn the_second_restart_page_is_found_past_a_damaged_first_one() {
+        let mut data = vec![0u8; 0x2000];
+        data.extend(restart_page(0x2000, 20));
+        data.resize(0x8000, 0);
+        assert_eq!(
+            LogFile::from_buffer(data).unwrap().restart_page().offset,
+            0x2000
+        );
+    }
+
+    #[test]
+    fn a_torn_restart_page_is_not_current() {
+        let mut data = restart_page(0x1000, 10);
+        let mut torn = restart_page(0x1000, 20);
+        torn[0x3FE] = 7;
+        data.extend(torn);
+        data.resize(0x4000, 0);
+        let log = LogFile::from_buffer(data).unwrap();
+        assert_eq!(log.restart_pages().len(), 2);
+        assert_eq!(log.restart_page().restart_area.current_lsn, 10);
     }
 
     #[test]
