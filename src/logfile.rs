@@ -16,6 +16,7 @@ use serde::Serialize;
 
 use crate::err::{Error, Result};
 use crate::impl_serialize_for_bitflags;
+use crate::utf16::Utf16LeStr;
 use crate::utils::{read_u16, read_u32, read_u64};
 
 /// The size of the record page header, before the update sequence array.
@@ -158,7 +159,7 @@ impl LogFile {
         // The second restart page follows the first, which is a system page long.
         let second = read_u32(&data, 0x10)
             .map(|size| size as usize)
-            .filter(|size| (512..=0x10000).contains(size) && size.is_power_of_two())
+            .filter(|&size| is_valid_page_size(size))
             .unwrap_or(DEFAULT_PAGE_SIZE);
         for offset in [0, second] {
             match RestartPage::from_page(&mut data, offset) {
@@ -178,7 +179,7 @@ impl LogFile {
         };
 
         let page_size = restart_pages[current].log_page_size as usize;
-        if !(512..=0x10000).contains(&page_size) || !page_size.is_power_of_two() {
+        if !is_valid_page_size(page_size) {
             return Err(Error::InvalidLogFile {
                 offset: restart_pages[current].offset,
                 detail: format!("log page size {page_size}"),
@@ -240,6 +241,11 @@ impl LogFile {
     }
 }
 
+/// Whether `size` can be a `$LogFile` page size: a power of two from 512 bytes to 64 KiB.
+fn is_valid_page_size(size: usize) -> bool {
+    (512..=0x10000).contains(&size) && size.is_power_of_two()
+}
+
 impl RestartPage {
     /// Parses the restart page at `offset` of `data`, applying its fixups in place.
     fn from_page(data: &mut [u8], offset: usize) -> Result<Self> {
@@ -266,7 +272,7 @@ impl RestartPage {
         let major_version = field16(0x1C) as i16;
 
         let page_size = system_page_size as usize;
-        if !(512..=0x10000).contains(&page_size) || !page_size.is_power_of_two() {
+        if !is_valid_page_size(page_size) {
             return Err(invalid(format!("system page size {page_size}")));
         }
         let page = data
@@ -330,10 +336,8 @@ impl LogClient {
         let client = client.get(..0xA0)?;
         // The name is at most 64 UTF-16 code units.
         let name_length = (read_u32(client, 0x1C)? as usize).min(128) & !1;
-        let (units, _) = client[0x20..0x20 + name_length].as_chunks::<2>();
-        let name = char::decode_utf16(units.iter().map(|unit| u16::from_le_bytes(*unit)))
-            .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
-            .collect();
+        let name =
+            Utf16LeStr::from_utf16le_bytes(&client[0x20..0x20 + name_length]).to_utf8_string();
         Some(LogClient {
             oldest_lsn: read_u64(client, 0)?,
             client_restart_lsn: read_u64(client, 8)?,
