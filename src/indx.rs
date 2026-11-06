@@ -295,10 +295,9 @@ fn plausible_file_name(buf: &[u8]) -> Option<FileNameAttr<'_>> {
     {
         return None;
     }
-    let mut name_ok = true;
-    file_name.name.with_utf8(|name| {
-        name_ok = !name.chars().any(|c| c.is_control() || c == '\u{FFFD}');
-    });
+    let name_ok = file_name
+        .name
+        .with_utf8(|name| !name.chars().any(|c| c.is_control() || c == '\u{FFFD}'));
     name_ok.then_some(file_name)
 }
 
@@ -340,58 +339,34 @@ impl<R: Read> IndxFile<R> {
         }
     }
 
-    /// Reads up to `buf.len()` bytes, fewer only at the end of the input.
-    fn read_full(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut read = 0;
-        while read < buf.len() {
-            match self.reader.read(&mut buf[read..]) {
-                Ok(0) => break,
-                Ok(n) => read += n,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(read)
+    /// Appends up to `n` bytes to `buf`, fewer only at the end of the input.
+    fn read_up_to(&mut self, buf: &mut Vec<u8>, n: usize) -> io::Result<()> {
+        (&mut self.reader).take(n as u64).read_to_end(buf)?;
+        Ok(())
     }
 
+    /// Reads the next record that isn't all zeros.
     fn next_record(&mut self) -> Result<Option<IndxRecord>> {
-        let mut first = vec![0u8; 512];
-        let read = self.read_full(&mut first)?;
-        if read == 0 {
-            return Ok(None);
-        }
-        let record_size = *self.record_size.get_or_insert_with(|| {
-            match (&first[..4] == b"INDX", read_u16(&first, 6)) {
-                (true, Some(usa_count)) if usa_count >= 2 => (usize::from(usa_count) - 1) * 512,
-                _ => DEFAULT_INDX_RECORD_SIZE,
+        loop {
+            let mut data = Vec::with_capacity(self.record_size.unwrap_or(DEFAULT_INDX_RECORD_SIZE));
+            self.read_up_to(&mut data, 512)?;
+            if data.is_empty() {
+                return Ok(None);
             }
-        });
-        let mut data = first;
-        data.resize(record_size.max(512), 0);
-        let read = read + self.read_full(&mut data[512.min(record_size)..])?;
-        data.truncate(read);
-        let offset = self.offset;
-        self.offset += read as u64;
-        if data.iter().all(|&b| b == 0) {
-            return Ok(Some(IndxRecord::empty(offset)));
-        }
-        IndxRecord::from_buffer(data, offset).map(Some)
-    }
-}
-
-impl IndxRecord {
-    /// A stand-in for a record that is all zeros, which [`IndxFile`] skips.
-    fn empty(offset: u64) -> IndxRecord {
-        IndxRecord {
-            offset,
-            lsn: 0,
-            vcn: 0,
-            flags: IndexNodeFlags::empty(),
-            valid_fixup: true,
-            entries_start: 0,
-            entries_end: 0,
-            allocated_end: 0,
-            data: Vec::new(),
+            let record_size = *self.record_size.get_or_insert_with(|| {
+                match (data.starts_with(b"INDX"), read_u16(&data, 6)) {
+                    (true, Some(usa_count)) if usa_count >= 2 => (usize::from(usa_count) - 1) * 512,
+                    _ => DEFAULT_INDX_RECORD_SIZE,
+                }
+            });
+            if data.len() == 512 {
+                self.read_up_to(&mut data, record_size.saturating_sub(512))?;
+            }
+            let offset = self.offset;
+            self.offset += data.len() as u64;
+            if data.iter().any(|&b| b != 0) {
+                return IndxRecord::from_buffer(data, offset).map(Some);
+            }
         }
     }
 }
@@ -402,7 +377,6 @@ impl<R: Read> Iterator for IndxFile<R> {
     fn next(&mut self) -> Option<Self::Item> {
         while !self.done {
             match self.next_record() {
-                Ok(Some(record)) if record.data.is_empty() => continue,
                 Ok(Some(record)) => return Some(Ok(record)),
                 Ok(None) => self.done = true,
                 Err(e @ Error::IoError { .. }) => {
