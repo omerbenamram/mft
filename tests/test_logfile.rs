@@ -47,3 +47,44 @@ fn it_reads_the_record_pages() {
     assert_eq!(pages[0].offset, 0x2000);
     assert_eq!(pages[2].offset, 0x4000);
 }
+
+#[test]
+fn it_reads_the_log_records() {
+    let log = sample();
+    let records: Vec<_> = log.records().collect();
+    assert_eq!(records.len(), 422);
+    // 15 checkpoints, the rest NTFS client records.
+    assert_eq!(records.iter().filter(|r| r.record_type == 2).count(), 15);
+    assert!(
+        records
+            .iter()
+            .all(|r| (r.record_type == 1) == r.ntfs.is_some())
+    );
+    // The checkpoint the restart area names is one of them.
+    let current = log.restart_page().restart_area.current_lsn;
+    assert!(
+        records
+            .iter()
+            .any(|r| r.lsn == current && r.record_type == 2)
+    );
+
+    // Each transaction's records chain back through records that were found.
+    let lsns: std::collections::HashSet<u64> = records.iter().map(|r| r.lsn).collect();
+    let previous: Vec<u64> = records
+        .iter()
+        .map(|r| r.client_previous_lsn)
+        .filter(|&lsn| lsn != 0)
+        .collect();
+    let found = previous.iter().filter(|lsn| lsns.contains(lsn)).count();
+    assert!(found + 2 >= previous.len(), "{found} of {}", previous.len());
+
+    // Formatting the volume created the files of `$Extend` in its index.
+    let names: Vec<&str> = records
+        .iter()
+        .filter_map(|r| r.ntfs.as_ref()?.index_entry.as_ref())
+        .map(|entry| entry.name.as_str())
+        .collect();
+    for name in ["$Extend", "$Quota", "$ObjId", "$Reparse"] {
+        assert!(names.contains(&name), "{names:?}");
+    }
+}

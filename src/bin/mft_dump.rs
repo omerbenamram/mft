@@ -8,6 +8,7 @@ use mft::MftEntry;
 use mft::attribute::MftAttributeType;
 use mft::boot::{BOOT_SECTOR_SIZE, BootSector};
 use mft::indx::{FlatIndxEntry, IndxEntry, IndxFile};
+use mft::logfile::{FlatLogRecord, LogFile};
 use mft::mft::MftParser;
 use mft::sds::{FlatSdsEntry, SdsEntries, SdsEntry};
 use mft::usn::{FlatUsnRecord, UsnJournal, UsnRecord};
@@ -62,11 +63,13 @@ enum InputType {
     Boot,
     /// The `$Secure:$SDS` stream of security descriptors.
     Sds,
+    /// The `$LogFile` transaction log.
+    LogFile,
 }
 
 impl InputType {
     /// Tells an `$MFT` (which starts with a `FILE` or `BAAD` record), an `$I30` (an `INDX`
-    /// record), a `$Boot` (`NTFS    ` at offset 3) and an `$SDS` (an entry at offset 0 whose hash
+    /// record), a `$LogFile` (an `RSTR` page), a `$Boot` (`NTFS    ` at offset 3) and an `$SDS` (an entry at offset 0 whose hash
     /// matches its descriptor) from a `$J` (whose first bytes that aren't zero are a USN record).
     /// Reads at most 64 MiB of a `$J`'s sparse start.
     fn detect(path: &Path) -> Result<Self> {
@@ -76,6 +79,7 @@ impl InputType {
         match start.get(..4) {
             Some(b"FILE" | b"BAAD") => return Ok(InputType::Mft),
             Some(b"INDX") => return Ok(InputType::I30),
+            Some(b"RSTR") => return Ok(InputType::LogFile),
             _ => {}
         }
         if start.get(3..11) == Some(b"NTFS    ") {
@@ -237,6 +241,7 @@ impl MftDump {
             Some("i30") => Some(InputType::I30),
             Some("boot") => Some(InputType::Boot),
             Some("sds") => Some(InputType::Sds),
+            Some("logfile") => Some(InputType::LogFile),
             _ => None,
         };
         let paths_mft = matches.get_one::<String>("mft").map(PathBuf::from);
@@ -340,6 +345,7 @@ impl MftDump {
             InputType::I30 => return self.run_i30(),
             InputType::Boot => return self.run_boot(),
             InputType::Sds => return self.run_sds(),
+            InputType::LogFile => return self.run_logfile(),
             InputType::Mft => {}
         }
         if self.paths_mft.is_some() {
@@ -594,6 +600,29 @@ impl MftDump {
         sink.flush()
     }
 
+    /// Dumps the log records of a `$LogFile`, in file order.
+    fn run_logfile(&mut self) -> Result<()> {
+        self.check_no_mft("$LogFile")?;
+        let log = LogFile::from_buffer(fs::read(&self.filepath)?)?;
+        for page in log
+            .record_pages()
+            .iter()
+            .filter_map(|page| page.as_ref().err())
+        {
+            eprintln!("{page}");
+        }
+        let mut sink = self.take_sink();
+        for record in log.records() {
+            match &mut sink {
+                Sink::Csv(writer) => writer.serialize(FlatLogRecord::from_record(&record))?,
+                Sink::Json(out) => {
+                    write_json_line(&mut self.json_buf, self.output_format, out, &record)?
+                }
+            }
+        }
+        sink.flush()
+    }
+
     /// Checks the flags of an input that has no paths to resolve.
     fn check_no_mft(&self, kind: &str) -> Result<()> {
         if self.paths_mft.is_some() {
@@ -799,11 +828,12 @@ fn main() -> Result<()> {
             Arg::new("input-type")
                 .long("input-type")
                 .action(ArgAction::Set)
-                .value_parser(clap::builder::PossibleValuesParser::new(["auto", "mft", "usn", "i30", "boot", "sds"]))
+                .value_parser(clap::builder::PossibleValuesParser::new(["auto", "mft", "usn", "i30", "boot", "sds", "logfile"]))
                 .default_value("auto")
                 .help(indoc!("What INPUT is: an `$MFT`, a `usn` change journal (`$Extend\\$UsnJrnl:$J`), or a directory's
                              `i30` index records (`$INDEX_ALLOCATION:$I30`, live entries and ones recovered from slack),
-                             a `boot` sector (`$Boot`), or the `sds` security descriptors (`$Secure:$SDS`).
+                             a `boot` sector (`$Boot`), the `sds` security descriptors (`$Secure:$SDS`), or the `logfile`
+                             transaction log (`$LogFile`).
                              `auto` tells them apart by their first bytes.")),
         )
         .arg(
