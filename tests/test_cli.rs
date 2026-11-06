@@ -279,3 +279,23 @@ fn it_rejects_mft_for_inputs_without_paths() {
     let output = cmd.output().unwrap();
     assert!(!output.status.success(), "{output:?}");
 }
+
+#[test]
+fn it_dumps_log_records() {
+    let sample = testdata_dir()
+        .join("logfile")
+        .join("narcos-sysreserved-head.LogFile");
+
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.args(["-o", "csv"]).arg(sample.as_os_str());
+    let output = cmd.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+
+    let csv = String::from_utf8(output.stdout).unwrap();
+    let mut lines = csv.lines();
+    let header = lines.next().unwrap();
+    // The records that add or remove a directory entry, with the names they log.
+    let named: Vec<&str> = lines.filter(|line| !line.ends_with(',')).collect();
+    insta::assert_snapshot!(format!("{header}\n{}", named.join("\n")));
+}
