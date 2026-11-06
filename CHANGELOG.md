@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `mft_dump -o csv` has a new last column, `AttributeErrors`: why an attribute the row reads ($STANDARD_INFORMATION, $FILE_NAME, $OBJECT_ID, $DATA) failed to parse, separated by `|`, so a row with empty columns says why instead of looking like a file without them. `FlatMftEntryWithName::attribute_errors` holds it. JSON already lists these in `errors`. In our 33 sample MFTs (769k rows), one row has one.
+- `mft_dump -o csv` has a new last column, `AttributeErrors`: why the attributes a row reads ($STANDARD_INFORMATION, $FILE_NAME, $OBJECT_ID, $DATA) couldn't be read, as `record <n>: <error>` separated by `|`, so a row with empty columns says why instead of looking like a file without them. A broken attribute header or record length also stops the walk of its record, so attributes after it are missing too. `FlatMftEntryWithName::attribute_errors` holds it; JSON's `errors` lists the errors of every attribute. In our 33 sample MFTs (769k rows, default options), one row has one.
 
 ### Changed
 - Formatting a full path with `\` separators (`windows_path`, and the JSON, CSV and bodyfile paths) swaps the separators instead of splitting the path into components on Linux and macOS: about 1% fewer instructions for `mft_dump -o csv` and `-o jsonl`. Output is byte-identical on all 33 sample MFTs.

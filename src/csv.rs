@@ -87,11 +87,24 @@ pub struct FlatMftEntryWithName {
     /// The names of the named `$DATA` streams, separated by `|`, which Windows doesn't allow in
     /// names. These include the streams of NTFS metadata files, such as `$Secure:$SDS`.
     pub alternate_data_streams: String,
-    /// Why attributes this row reads ($STANDARD_INFORMATION, $FILE_NAME, $OBJECT_ID, $DATA)
-    /// failed to parse, separated by `|`. The columns that come from such an attribute are
-    /// empty, and so are those from the attributes after it in its record if its header (or
-    /// the length of any attribute record) is broken. Empty if every attribute parsed.
+    /// Why the attributes this row reads ($STANDARD_INFORMATION, $FILE_NAME, $OBJECT_ID, $DATA)
+    /// couldn't be read, each as `record <n>: <error>` with the record (base or extension) it is
+    /// in, separated by `|`. The columns that come from such an attribute are empty. A broken
+    /// attribute header, or a broken length of any attribute record (also one the row doesn't
+    /// read), stops the walk of that record, so the attributes after it are missing too.
+    /// Errors in other attributes that parse past their header aren't listed (JSON's `errors`
+    /// has every attribute). Empty if every attribute parsed. Extension records that can't be
+    /// read at all are logged, not listed here.
     pub attribute_errors: String,
+}
+
+/// The attributes of a file that its rows are built from (see
+/// [`FlatMftEntryWithName::file_attributes`]).
+struct FileAttributes<'a> {
+    attributes: Vec<MftAttribute<'a>>,
+    best_name: Option<FileNameAttr<'a>>,
+    /// The `AttributeErrors` column.
+    errors: String,
 }
 
 impl FlatMftEntryWithName {
@@ -115,17 +128,14 @@ impl FlatMftEntryWithName {
         extensions: &[MftEntry],
         full_path: PathBuf,
     ) -> FlatMftEntryWithName {
-        let (attributes, file_name, errors) = Self::file_attributes(entry, extensions);
-        Self::from_attributes(entry, &attributes, file_name.as_ref(), full_path, errors)
+        Self::from_attributes(entry, &Self::file_attributes(entry, extensions), full_path)
     }
 
     /// The attributes of a file that its rows are built from, from its base record and its
     /// extension records, its best name ([`crate::entry::find_best_name_attribute_in`]), and
-    /// the errors of the attributes that failed to parse, separated by `|`.
-    fn file_attributes<'a>(
-        entry: &'a MftEntry,
-        extensions: &'a [MftEntry],
-    ) -> (Vec<MftAttribute<'a>>, Option<FileNameAttr<'a>>, String) {
+    /// the errors of the attributes that failed to parse, each with its record number,
+    /// separated by `|`.
+    fn file_attributes<'a>(entry: &'a MftEntry, extensions: &'a [MftEntry]) -> FileAttributes<'a> {
         let mut entry_attributes = Vec::new();
         let mut errors = Vec::new();
         // The name `find_best_name_attribute_in` picks, chosen in the same pass.
@@ -141,7 +151,11 @@ impl FlatMftEntryWithName {
                 let attribute = match attribute {
                     Ok(attribute) => attribute,
                     Err(e) => {
-                        errors.push(error_chain_message(&e));
+                        errors.push(format!(
+                            "record {}: {}",
+                            record.header.record_number,
+                            error_chain_message(&e)
+                        ));
                         continue;
                     }
                 };
@@ -151,16 +165,19 @@ impl FlatMftEntryWithName {
                 entry_attributes.push(attribute);
             }
         }
-        (entry_attributes, names.best(), errors.join("|"))
+        FileAttributes {
+            attributes: entry_attributes,
+            best_name: names.best(),
+            errors: errors.join("|"),
+        }
     }
 
     fn from_attributes(
         entry: &MftEntry,
-        entry_attributes: &[MftAttribute<'_>],
-        file_name: Option<&FileNameAttr<'_>>,
+        file: &FileAttributes<'_>,
         full_path: PathBuf,
-        attribute_errors: String,
     ) -> FlatMftEntryWithName {
+        let entry_attributes = &file.attributes;
         let standard_info_attribute = entry_attributes
             .iter()
             .find(|a| a.header.type_code == MftAttributeType::StandardInformation);
@@ -223,11 +240,11 @@ impl FlatMftEntryWithName {
             security_id: standard_info_v3.map(|i| i.security_id),
             object_id,
             alternate_data_streams,
-            attribute_errors,
+            attribute_errors: file.errors.clone(),
             file_size,
             full_path,
         };
-        row.set_file_name(file_name);
+        row.set_file_name(file.best_name.as_ref());
         row
     }
 
@@ -241,8 +258,9 @@ impl FlatMftEntryWithName {
         rows: CsvRows,
         mut link_path: impl FnMut(&FileNameAttr<'_>) -> PathBuf,
     ) -> Vec<FlatMftEntryWithName> {
-        let (attributes, best, errors) = Self::file_attributes(entry, extensions);
-        let row = Self::from_attributes(entry, &attributes, best.as_ref(), full_path, errors);
+        let file = Self::file_attributes(entry, extensions);
+        let row = Self::from_attributes(entry, &file, full_path);
+        let attributes = &file.attributes;
         let mut out = vec![row];
         // An extension record isn't a file of its own.
         if !entry.header.is_base_record() {
@@ -254,7 +272,7 @@ impl FlatMftEntryWithName {
             for name in attributes.iter().filter_map(|a| a.data.as_file_name()) {
                 // The `Dos` name is another spelling of a long one, not a link. A copy of the best
                 // name would only repeat the file's own row.
-                if name.namespace.is_long() && Some(name) != best.as_ref() {
+                if name.namespace.is_long() && Some(name) != file.best_name.as_ref() {
                     let mut link = out[0].clone();
                     link.set_file_name(Some(name));
                     link.full_path = link_path(name);
@@ -263,7 +281,7 @@ impl FlatMftEntryWithName {
             }
         }
         if rows.streams {
-            for header in named_streams(&attributes) {
+            for header in named_streams(attributes) {
                 let mut stream = out[0].clone();
                 let suffix = format!(":{}", header.name.to_utf8_string());
                 let mut path = stream.full_path.into_os_string();
