@@ -566,6 +566,18 @@ impl<T: Read + Seek> MftParser<T> {
         )
     }
 
+    /// The path of the file `entry_id` named `name` in the directory `parent` points at, such as
+    /// the file a USN record describes. A stale `parent` (its record now holds another file)
+    /// gives `[Orphaned]/<name>`.
+    pub fn get_full_path_in_directory(
+        &mut self,
+        entry_id: u64,
+        name: &str,
+        parent: MftReference,
+    ) -> PathBuf {
+        self.path_in_parent(entry_id, name.to_string(), parent)
+    }
+
     /// The path of the file `entry_id` named `name` in the directory `parent` points at.
     /// A stale `parent` (its record now holds another file) gives `[Orphaned]/<name>`.
     fn path_in_parent(&mut self, entry_id: u64, name: String, parent: MftReference) -> PathBuf {

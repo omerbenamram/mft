@@ -386,63 +386,68 @@ fn cmd_usn(fs: &FileSystem) -> Result<()> {
     for raw in journal.iter_record_bytes() {
         let raw = raw?;
 
-        let rec = ntfs::ntfs::usn::UsnRecord::parse(&raw.bytes, raw.offset)?;
-        match rec {
-            ntfs::ntfs::usn::UsnRecord::V2(rec) => {
-                writeln!(out, "USN record:")?;
-                writeln!(out, "\tOffset\t\t\t\t: 0x{:x}", raw.offset)?;
-                writeln!(
-                    out,
-                    "\tUpdate time\t\t\t: 0x{:016x}",
-                    rec.timestamp_filetime
-                )?;
-                writeln!(out, "\tUpdate sequence number\t\t: {}", rec.usn)?;
+        let rec = ntfs::ntfs::usn::UsnRecord::from_slice(&raw.bytes, raw.offset)?;
+        writeln!(out, "USN record:")?;
+        writeln!(out, "\tOffset\t\t\t\t: 0x{:x}", raw.offset)?;
+        if let Some(timestamp) = rec.timestamp() {
+            writeln!(out, "\tUpdate time\t\t\t: {timestamp}")?;
+        }
+        writeln!(out, "\tUpdate sequence number\t\t: {}", rec.usn)?;
 
-                writeln!(
-                    out,
-                    "\tUpdate reason flags\t\t: 0x{:08x}",
-                    rec.reason.bits()
-                )?;
-                for name in ntfs::ntfs::usn::reason_flag_names(rec.reason) {
-                    writeln!(out, "\t\t({name})")?;
-                }
-                writeln!(out)?;
+        writeln!(
+            out,
+            "\tUpdate reason flags\t\t: 0x{:08x}",
+            rec.reason.bits()
+        )?;
+        for name in ntfs::ntfs::usn::reason_flag_names(rec.reason) {
+            writeln!(out, "\t\t({name})")?;
+        }
+        writeln!(out)?;
 
-                writeln!(
-                    out,
-                    "\tUpdate source flags\t\t: 0x{:08x}",
-                    rec.source_info.bits()
-                )?;
-                for name in ntfs::ntfs::usn::source_flag_names(rec.source_info) {
-                    writeln!(out, "\t\t({name})")?;
-                }
-                writeln!(out)?;
+        writeln!(
+            out,
+            "\tUpdate source flags\t\t: 0x{:08x}",
+            rec.source_info.bits()
+        )?;
+        for name in ntfs::ntfs::usn::source_flag_names(rec.source_info) {
+            writeln!(out, "\t\t({name})")?;
+        }
+        writeln!(out)?;
 
-                writeln!(out, "\tName\t\t\t\t: {}", rec.name)?;
-
-                writeln!(
-                    out,
-                    "\tFile reference\t\t\t: {}",
-                    format_file_reference(rec.file_reference)
-                )?;
-                writeln!(
-                    out,
-                    "\tParent file reference\t\t: {}",
-                    format_file_reference(rec.parent_file_reference)
-                )?;
-
+        match &rec.details {
+            ntfs::ntfs::usn::UsnRecordDetails::Change {
+                name,
+                file_attributes,
+                ..
+            } => {
+                writeln!(out, "\tName\t\t\t\t: {name}")?;
+                write_file_references(&mut out, &rec)?;
                 writeln!(
                     out,
                     "\tFile attribute flags\t\t: 0x{:08x}",
-                    rec.file_attributes.bits()
+                    file_attributes.bits()
                 )?;
-                for name in ntfs::ntfs::usn::file_attribute_flag_names(rec.file_attributes) {
+                for name in ntfs::ntfs::usn::file_attribute_flag_names(file_attributes.clone()) {
                     writeln!(out, "\t\t({name})")?;
                 }
-
-                writeln!(out)?;
+            }
+            ntfs::ntfs::usn::UsnRecordDetails::Range {
+                remaining_extents,
+                extents,
+            } => {
+                write_file_references(&mut out, &rec)?;
+                writeln!(out, "\tRemaining extents\t\t: {remaining_extents}")?;
+                for extent in extents {
+                    writeln!(
+                        out,
+                        "\tExtent\t\t\t\t: {} ({} bytes)",
+                        extent.offset, extent.length
+                    )?;
+                }
             }
         }
+
+        writeln!(out)?;
     }
 
     Ok(())
@@ -512,13 +517,25 @@ fn estimate_mft_entry_count(volume: &Volume) -> Result<u64> {
     })
 }
 
-fn format_file_reference(file_ref: u64) -> String {
-    if file_ref == 0 {
+fn write_file_references(out: &mut impl io::Write, rec: &ntfs::ntfs::usn::UsnRecord) -> Result<()> {
+    writeln!(
+        out,
+        "\tFile reference\t\t\t: {}",
+        format_mft_reference(rec.file_reference)
+    )?;
+    writeln!(
+        out,
+        "\tParent file reference\t\t: {}",
+        format_mft_reference(rec.parent_reference)
+    )?;
+    Ok(())
+}
+
+fn format_mft_reference(reference: mft::MftReference) -> String {
+    if reference.entry == 0 && reference.sequence == 0 {
         return "0".to_string();
     }
-    let entry = file_ref & 0x0000_FFFF_FFFF_FFFF;
-    let seq = file_ref >> 48;
-    format!("{entry}-{seq}")
+    format!("{}-{}", reference.entry, reference.sequence)
 }
 
 fn write_bodyfile_for_entry(

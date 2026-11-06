@@ -1,0 +1,24 @@
+---
+source: tests/test_cli.rs
+expression: "serde_json::to_string_pretty(&records[0]).unwrap()"
+---
+{
+  "file_attributes": "FILE_ATTRIBUTE_ARCHIVE",
+  "file_reference": {
+    "entry": 2164,
+    "sequence": 39
+  },
+  "major_version": 2,
+  "minor_version": 0,
+  "name": "preconfigure-listener.bat.stdout.tmp",
+  "offset": 8192,
+  "parent_reference": {
+    "entry": 87222,
+    "sequence": 1
+  },
+  "reason": "USN_REASON_RENAME_NEW_NAME",
+  "security_id": 0,
+  "source_info": "(empty)",
+  "timestamp": "2019-01-28T22:48:39.9099741Z",
+  "usn": 67108864
+}

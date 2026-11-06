@@ -179,3 +179,41 @@ fn test_bodyfile_follows_extension_records() {
         ]
     );
 }
+
+#[test]
+fn it_dumps_a_usn_journal() {
+    let sample = testdata_dir().join("usn").join("narcos-head.J");
+
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.arg("-o").arg("jsonl").arg(sample.as_os_str());
+    let output = cmd.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+
+    let records: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 248);
+    for record in &records {
+        // The zeros in front of the sample stand in for the first 67108864 - 8192 bytes of `$J`.
+        assert_eq!(
+            record["usn"].as_i64().unwrap() - 67_108_864 + 8192,
+            record["offset"].as_i64().unwrap()
+        );
+    }
+    insta::assert_snapshot!(serde_json::to_string_pretty(&records[0]).unwrap());
+}
+
+#[test]
+fn it_dumps_a_usn_journal_as_csv() {
+    let sample = testdata_dir().join("usn").join("narcos-head.J");
+
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.args(["-o", "csv", "--input-type", "usn"]).arg(sample.as_os_str());
+    let output = cmd.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let csv = String::from_utf8(output.stdout).unwrap();
+    insta::assert_snapshot!(csv.lines().take(3).collect::<Vec<_>>().join("\n"));
+}

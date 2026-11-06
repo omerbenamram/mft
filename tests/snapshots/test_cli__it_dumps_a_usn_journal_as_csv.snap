@@ -1,0 +1,7 @@
+---
+source: tests/test_cli.rs
+expression: "csv.lines().take(3).collect::<Vec<_>>().join(\"\\n\")"
+---
+Offset,Usn,Timestamp,Name,FullPath,EntryId,Sequence,ParentEntryId,ParentSequence,Reason,SourceInfo,FileAttributes,SecurityId,MajorVersion,MinorVersion,Extents
+8192,67108864,2019-01-28T22:48:39.9099741Z,preconfigure-listener.bat.stdout.tmp,,2164,39,87222,1,USN_REASON_RENAME_NEW_NAME,(empty),FILE_ATTRIBUTE_ARCHIVE,0,2,0,
+8328,67109000,2019-01-28T22:48:39.9099741Z,preconfigure-listener.bat.stdout.tmp,,2164,39,87222,1,USN_REASON_RENAME_NEW_NAME | USN_REASON_CLOSE,(empty),FILE_ATTRIBUTE_ARCHIVE,0,2,0,

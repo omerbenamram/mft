@@ -6,7 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Parse the USN change journal (`$Extend\$UsnJrnl:$J`) in the new `mft::usn` module: `UsnJournal` reads an extracted `$J` and yields `UsnRecord`s (`USN_RECORD_V2`, `V3` and the range-tracking `V4`), skipping the zeros of the sparse start and page padding. A run of bytes that don't parse gives one `Error::InvalidUsnRecord` and reading carries on after it. All 305,198 records of the Narcos (Windows 10) `$J` parse, each with its USN equal to its offset in the stream.
+- `mft_dump` dumps a `$J` as JSON, JSONL or CSV. It tells a `$J` from an `$MFT` by its first bytes (`--input-type mft|usn` overrides that), and `--mft <$MFT>` adds each file's full path. `MftParser::get_full_path_in_directory` resolves such a path from a parent reference and a name.
+
 ### Changed
+- **Breaking:** `Error` has a new `InvalidUsnRecord` variant, which breaks exhaustive matches.
+- The workspace's `ntfs` crate parses USN records with `mft::usn`, so `ntfs-info usn` now also reads v3 and v4 records, keeps flag bits without a name instead of failing on them, and prints the update time as a date.
 - **Breaking:** mft no longer depends on `winstructs`, which took `chrono` along with it, so `chrono` is out of the dependency tree. `Guid` and `MftReference` are now mft's own types, at `mft::Guid` and `mft::MftReference` (also `mft::guid` and `mft::mft_reference`), with the same fields, constructors, `Display` and JSON output. Code that names `winstructs::guid::Guid` or `winstructs::ntfs::mft_reference::MftReference` should use the mft paths. `Guid` is now also `Copy`, `Eq`, `Ord` and `Hash`. `Error::FailedToReadMftReference` and `Error::FailedToReadGuid` carry a `std::io::Error` source instead of a `winstructs::err::Error`, and the never-used `Error::FailedToReadWindowsTime` is gone.
 
 ## [0.9.2] - 2026-11-03
