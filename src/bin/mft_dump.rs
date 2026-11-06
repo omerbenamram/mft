@@ -19,7 +19,7 @@ use sonic_rs as sonic_json;
 use std::backtrace::Backtrace;
 use std::fmt::{self, Write as FmtWrite};
 use std::fs::File;
-use std::io::{BufWriter, Read, Seek, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use mft::entry::ZERO_HEADER;
@@ -77,6 +77,18 @@ impl InputType {
         f.rewind()?;
         match UsnJournal::new(f).next() {
             Some(Ok(_)) => Ok(InputType::Usn),
+            // An `$I30` can start with records that were allocated but never used, all zeros.
+            Some(Err(mft::err::Error::InvalidUsnRecord { offset, .. })) if offset % 512 == 0 => {
+                let mut f = File::open(path)?;
+                f.seek(SeekFrom::Start(offset))?;
+                let mut signature = [0u8; 4];
+                let read = f.read(&mut signature)?;
+                if read == 4 && &signature == b"INDX" {
+                    Ok(InputType::I30)
+                } else {
+                    Ok(InputType::Mft)
+                }
+            }
             Some(Err(mft::err::Error::InvalidUsnRecord { .. })) | None => Ok(InputType::Mft),
             Some(Err(error)) => Err(error.into()),
         }
@@ -512,10 +524,10 @@ impl MftDump {
                 }
                 Err(error) => return Err(error.into()),
             };
-            let live = record.entries().unwrap_or_else(|error| {
+            let (live, error) = record.entries_until_error();
+            if let Some(error) = error {
                 eprintln!("{error}");
-                Vec::new()
-            });
+            }
             for entry in live.iter().chain(&record.slack_entries()) {
                 let full_path = parser.as_mut().map(|parser| {
                     parser.get_full_path_in_directory(
