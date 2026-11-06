@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `mft_dump -o csv` has a new last column, `AttributeErrors`: why an attribute the row reads ($STANDARD_INFORMATION, $FILE_NAME, $OBJECT_ID, $DATA) failed to parse, separated by `|`, so a row with empty columns says why instead of looking like a file without them. `FlatMftEntryWithName::attribute_errors` holds it. JSON already lists these in `errors`. In our 33 sample MFTs (769k rows), one row has one.
 
 ### Changed
+- Formatting a full path with `\` separators (`windows_path`, and the JSON, CSV and bodyfile paths) swaps the separators instead of splitting the path into components on Linux and macOS: about 1% fewer instructions for `mft_dump -o csv` and `-o jsonl`. Output is byte-identical on all 33 sample MFTs.
 - **Breaking:** mft no longer depends on `winstructs`, which took `chrono` along with it, so `chrono` is out of the dependency tree. `Guid` and `MftReference` are now mft's own types, at `mft::Guid` and `mft::MftReference` (also `mft::guid` and `mft::mft_reference`), with the same fields, constructors, `Display` and JSON output. Code that names `winstructs::guid::Guid` or `winstructs::ntfs::mft_reference::MftReference` should use the mft paths. `Guid` is now also `Copy`, `Eq`, `Ord` and `Hash`. `Error::FailedToReadMftReference` and `Error::FailedToReadGuid` carry a `std::io::Error` source instead of a `winstructs::err::Error`, and the never-used `Error::FailedToReadWindowsTime` is gone.
 
 ## [0.9.2] - 2026-11-03

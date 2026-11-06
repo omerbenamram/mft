@@ -192,6 +192,20 @@ struct WindowsPath<'a>(&'a Path);
 
 impl fmt::Display for WindowsPath<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The resolver pushes one name per component, and an NTFS name can't hold a `/`, so on a
+        // `/` host the separators are the only `/` in the path: swapping them is enough, and
+        // skips parsing the path into components.
+        if std::path::MAIN_SEPARATOR == '/'
+            && let Some(path) = self.0.to_str()
+        {
+            for (i, name) in path.split('/').enumerate() {
+                if i > 0 {
+                    f.write_str("\\")?;
+                }
+                f.write_str(name)?;
+            }
+            return Ok(());
+        }
         for (i, component) in self.0.components().enumerate() {
             if i > 0 {
                 f.write_str("\\")?;
