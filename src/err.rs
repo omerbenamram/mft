@@ -53,6 +53,8 @@ pub enum Error {
     InvalidUsnRecord { offset: u64, detail: String },
     #[error("Invalid index record at offset {offset}: {detail}")]
     InvalidIndexRecord { offset: u64, detail: String },
+    #[error("Invalid $LogFile page at offset {offset}: {detail}")]
+    InvalidLogFile { offset: u64, detail: String },
     #[error("Invalid NTFS boot sector: {detail}")]
     InvalidBootSector { detail: String },
     #[error("An unexpected error has occurred: {}", detail)]
