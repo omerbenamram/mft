@@ -20,6 +20,7 @@ use serde::Serialize;
 use crate::attribute::FileAttributeFlags;
 use crate::err::{Error, Result};
 use crate::impl_serialize_for_bitflags;
+use crate::utf16::Utf16LeStr;
 use crate::utils::{read_u16, read_u32, read_u64};
 use crate::{MftReference, serialize_timestamp, windows_filetime_to_timestamp};
 
@@ -255,12 +256,6 @@ impl UsnRecord {
                      {record_length} bytes"
                 )));
             };
-            let units: Vec<u16> = raw_name
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|c| u16::from_le_bytes(*c))
-                .collect();
 
             let timestamp = windows_filetime_to_timestamp(filetime)
                 .map_err(|_| invalid(format!("timestamp {filetime} out of range")))?;
@@ -268,7 +263,7 @@ impl UsnRecord {
                 timestamp,
                 security_id,
                 file_attributes: FileAttributeFlags::from_bits_retain(file_attributes),
-                name: String::from_utf16_lossy(&units),
+                name: Utf16LeStr::from_utf16le_bytes(raw_name).to_utf8_string(),
             };
             (reason, source_info, details)
         };
@@ -440,6 +435,15 @@ impl<R: Read> UsnJournal<R> {
         Ok(())
     }
 
+    /// Ends reading after a read error: without the rest of the input there is nothing more to
+    /// read.
+    fn stop(&mut self, e: io::Error) -> Error {
+        self.eof = true;
+        self.buf.clear();
+        self.pos = 0;
+        e.into()
+    }
+
     /// Moves `pos` past the zero words in `buf`, stopping at the first word that isn't zero or at
     /// the last whole word.
     fn skip_zeros(&mut self) {
@@ -461,11 +465,7 @@ impl<R: Read> Iterator for UsnJournal<R> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if let Err(e) = self.fill(8) {
-                // Without the rest of the input there is nothing more to read.
-                self.eof = true;
-                self.buf.clear();
-                self.pos = 0;
-                return Some(Err(e.into()));
+                return Some(Err(self.stop(e)));
             }
             if self.buf.len() - self.pos < 8 {
                 return None;
@@ -481,10 +481,7 @@ impl<R: Read> Iterator for UsnJournal<R> {
             let length = read_u32(&self.buf, self.pos).expect("8 bytes") as usize;
             let record = if length <= left_in_page {
                 if let Err(e) = self.fill(length) {
-                    self.eof = true;
-                    self.buf.clear();
-                    self.pos = 0;
-                    return Some(Err(e.into()));
+                    return Some(Err(self.stop(e)));
                 }
                 UsnRecord::from_slice(&self.buf[self.pos..], offset)
             } else {
