@@ -129,6 +129,7 @@ fn attribute_errors_column_names_the_attributes_that_failed() {
         "unexpected errors: {}",
         row.attribute_errors
     );
+    assert!(row.attribute_errors.starts_with("record 0: "));
     assert!(!row.attribute_errors.contains('|'));
     // The row's $FILE_NAME columns are empty, the $STANDARD_INFORMATION ones are still there.
     assert_eq!(row.file_name, None);
