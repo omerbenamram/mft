@@ -92,18 +92,10 @@ impl<'a> FileNameAttr<'a> {
         let parent =
             MftReference::from_reader(&mut stream).map_err(Error::failed_to_read_mft_reference)?;
         // Timestamps are stored as Windows FILETIME (100ns since 1601-01-01 UTC).
-        let created = crate::utils::windows_filetime_to_timestamp_saturating(
-            stream.read_u64::<LittleEndian>()?,
-        );
-        let modified = crate::utils::windows_filetime_to_timestamp_saturating(
-            stream.read_u64::<LittleEndian>()?,
-        );
-        let mft_modified = crate::utils::windows_filetime_to_timestamp_saturating(
-            stream.read_u64::<LittleEndian>()?,
-        );
-        let accessed = crate::utils::windows_filetime_to_timestamp_saturating(
-            stream.read_u64::<LittleEndian>()?,
-        );
+        let created = crate::utils::read_filetime(&mut stream)?;
+        let modified = crate::utils::read_filetime(&mut stream)?;
+        let mft_modified = crate::utils::read_filetime(&mut stream)?;
+        let accessed = crate::utils::read_filetime(&mut stream)?;
 
         // The allocated size comes first (0x28), then the real size (0x30).
         let physical_size = stream.read_u64::<LittleEndian>()?;
@@ -185,7 +177,7 @@ mod tests {
         for len in 0..=log_file.len() {
             assert_agree(&log_file[..len]);
         }
-        // Covers out-of-range timestamps, overlong names and unknown namespaces.
+        // Covers overlong names and unknown namespaces.
         for position in 0..log_file.len() {
             for byte in [0x00, 0x01, 0x04, 0x7F, 0x80, 0xFF] {
                 let mut value = log_file.clone();
