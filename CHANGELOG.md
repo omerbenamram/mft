@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- A file with a timestamp past the year 9999 keeps its name, path and other timestamps. Windows accepts file times up to the year 30828, but one such value in a `$FILE_NAME` or `$STANDARD_INFORMATION` made the whole attribute fail to parse: the file then had no name and no path in every output, and the files inside such a directory were listed as if they were in the root. These timestamps now read as `Timestamp::MAX` (`9999-12-30T22:00:00.9999999Z`), from the new `windows_filetime_to_timestamp_saturating`. `windows_filetime_to_timestamp` still returns an error.
 - A directory's `$INDEX_ROOT` entries no longer stop at the first one that references MFT entry 0. That entry is `$MFT`, which the root directory indexes, so on a volume whose root directory fits in its `$INDEX_ROOT` (4 KiB file records and few files in the root) every name sorting after `$MFT` was missing from `index_entries`: 10 of the 16 in our sample, among them the user's files. The entries now end at the one flagged as the last, as NTFS marks it.
 
 ## [0.10.0] - 2026-11-06
