@@ -269,6 +269,7 @@ impl MftDump {
             None => Box::new(0..number_of_entries as usize) as Box<dyn Iterator<Item = usize>>,
         };
 
+        let mut failed_streams = 0u64;
         for i in entries {
             let entry = parser.get_entry(i as u64);
 
@@ -334,22 +335,16 @@ impl MftDump {
                     );
                     let data_stream_path = data_streams_dir.join(file_name);
 
-                    if data_stream_path.exists() {
-                        return Err(anyhow!(
-                            "Tried to override an existing stream {} already exists!\
-                                 This is a bug, please report to github!",
-                            data_stream_path.display()
-                        ));
-                    }
-
-                    // One stream that can't be written doesn't end the dump.
-                    if let Err(e) =
-                        File::create(&data_stream_path).and_then(|mut f| f.write_all(stream.data()))
+                    // One stream that can't be written doesn't end the dump: the run goes on
+                    // and fails at its end. `create_new` never overwrites an earlier export.
+                    if let Err(e) = File::create_new(&data_stream_path)
+                        .and_then(|mut f| f.write_all(stream.data()))
                     {
                         eprintln!(
                             "Failed to write stream to {}: {e}",
                             data_stream_path.display()
                         );
+                        failed_streams += 1;
                     }
                 }
             }
@@ -371,6 +366,12 @@ impl MftDump {
                         .expect("CSV Writer is for OutputFormat::CSV"),
                 )?,
             }
+        }
+
+        if failed_streams > 0 {
+            return Err(anyhow!(
+                "{failed_streams} resident stream(s) could not be written, see the errors above"
+            ));
         }
 
         Ok(())
@@ -485,17 +486,19 @@ fn to_hex_string(bytes: &[u8]) -> String {
     s
 }
 
-/// Replaces what can't be part of a file name on some platform: path separators (of any
-/// platform, since the name may hold either) and control characters.
+/// Replaces what can't be part of a file name on some platform: path separators and the other
+/// characters Windows reserves (an NTFS volume written by another system can hold them), and
+/// control characters.
 pub fn sanitized(component: &str) -> String {
-    component
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' => '_',
+    let mut buf = String::with_capacity(component.len());
+    for c in component.chars() {
+        buf.push(match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
             c if c.is_control() => '_',
             c => c,
-        })
-        .collect()
+        });
+    }
+    buf
 }
 
 /// The longest file name most file systems take, in bytes.
@@ -657,9 +660,9 @@ mod tests {
     fn stream_file_names_fit_and_have_no_separators() {
         // 150 three-byte characters of path, and a stream name with separators.
         let path = "\u{65E5}".repeat(150);
-        let name = stream_file_name(&path, "0123456789AB", 3, "a/b\\c\u{0}d");
+        let name = stream_file_name(&path, "0123456789AB", 3, "a/b\\c\u{0}d:e?");
         assert!(name.len() <= MAX_FILE_NAME_LEN, "{} bytes", name.len());
-        assert!(name.ends_with("__0123456789AB_3_a_b_c_d.dontrun"));
+        assert!(name.ends_with("__0123456789AB_3_a_b_c_d_e_.dontrun"));
         assert!(!name.contains(['/', '\\']));
 
         // A stream name as long as NTFS allows still leaves room for some of the path.

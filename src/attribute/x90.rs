@@ -4,7 +4,7 @@ use crate::attribute::x50::sid;
 use crate::attribute::xc0::tag_name;
 use crate::err::{Error, Result};
 use crate::impl_serialize_for_bitflags;
-use crate::utils::{read_guid, read_u32, read_u64, windows_filetime_to_timestamp};
+use crate::utils::{read_guid, read_u32, read_u64, windows_filetime_to_timestamp_saturating};
 
 use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
 
@@ -159,17 +159,17 @@ impl<'a> IndexEntryHeader<'a> {
 
         let mft_reference =
             MftReference::from_reader(&mut stream).map_err(Error::failed_to_read_mft_reference)?;
+        // A reference with sequence number 0 points at no file: it is the node's end entry, or the
+        // padding of a node that lost it. Entry number 0 alone doesn't end the node: that is
+        // `$MFT`, which the root directory indexes.
+        if mft_reference.sequence == 0 {
+            return Ok(None);
+        }
         let index_record_length = stream.read_u16::<LittleEndian>()?;
         let attr_fname_length = stream.read_u16::<LittleEndian>()?;
         // The flags are two bytes, followed by two reserved bytes.
         let flags = IndexEntryFlags::from_bits_retain(stream.read_u32::<LittleEndian>()? & 0xFFFF);
-
-        // The node ends at the entry flagged as its last, which indexes no file. A zeroed
-        // reference without that flag is the padding of a node that lost its end entry. Entry 0
-        // alone doesn't end the node: that is `$MFT`, which the root directory indexes.
-        if flags.contains(IndexEntryFlags::INDEX_ENTRY_END)
-            || (mft_reference.entry == 0 && mft_reference.sequence == 0)
-        {
+        if flags.contains(IndexEntryFlags::INDEX_ENTRY_END) {
             return Ok(None);
         }
 
@@ -376,12 +376,12 @@ impl<'a> ViewIndexValue<'a> {
                 version: read_u32(data, 0)?,
                 quota_flags: read_u32(data, 4)?,
                 bytes_used: read_u64(data, 8)?,
-                change_time: windows_filetime_to_timestamp(read_u64(data, 16)?).ok()?,
+                change_time: windows_filetime_to_timestamp_saturating(read_u64(data, 16)?),
                 warning_limit: read_u64(data, 24)? as i64,
                 hard_limit: read_u64(data, 32)? as i64,
                 exceeded_time: match read_u64(data, 40)? {
                     0 => None,
-                    t => Some(windows_filetime_to_timestamp(t).ok()?),
+                    t => Some(windows_filetime_to_timestamp_saturating(t)),
                 },
                 sid: match &data[48..] {
                     [] => None,
@@ -624,6 +624,16 @@ mod tests {
                 (39, "1.txt".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn index_entries_end_at_short_zero_padding() {
+        // A node that lost its end entry and has less than an entry header of zeros left.
+        let mut node = file_name_entry(mft_reference_bytes(39, 1), "1.txt");
+        node.extend([0; 8]);
+
+        let entries = IndexEntries::from_slice(&node, node.len() as u32, 0, 0).unwrap();
+        assert_eq!(entries.index_entries.len(), 1);
     }
 
     #[test]
