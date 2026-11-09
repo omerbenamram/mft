@@ -159,17 +159,17 @@ impl<'a> IndexEntryHeader<'a> {
 
         let mft_reference =
             MftReference::from_reader(&mut stream).map_err(Error::failed_to_read_mft_reference)?;
+        // A reference with sequence number 0 points at no file: it is the node's end entry, or the
+        // padding of a node that lost it. Entry number 0 alone doesn't end the node: that is
+        // `$MFT`, which the root directory indexes.
+        if mft_reference.sequence == 0 {
+            return Ok(None);
+        }
         let index_record_length = stream.read_u16::<LittleEndian>()?;
         let attr_fname_length = stream.read_u16::<LittleEndian>()?;
         // The flags are two bytes, followed by two reserved bytes.
         let flags = IndexEntryFlags::from_bits_retain(stream.read_u32::<LittleEndian>()? & 0xFFFF);
-
-        // The node ends at the entry flagged as its last, which indexes no file. A zeroed
-        // reference without that flag is the padding of a node that lost its end entry. Entry 0
-        // alone doesn't end the node: that is `$MFT`, which the root directory indexes.
-        if flags.contains(IndexEntryFlags::INDEX_ENTRY_END)
-            || (mft_reference.entry == 0 && mft_reference.sequence == 0)
-        {
+        if flags.contains(IndexEntryFlags::INDEX_ENTRY_END) {
             return Ok(None);
         }
 
@@ -624,6 +624,16 @@ mod tests {
                 (39, "1.txt".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn index_entries_end_at_short_zero_padding() {
+        // A node that lost its end entry and has less than an entry header of zeros left.
+        let mut node = file_name_entry(mft_reference_bytes(39, 1), "1.txt");
+        node.extend([0; 8]);
+
+        let entries = IndexEntries::from_slice(&node, node.len() as u32, 0, 0).unwrap();
+        assert_eq!(entries.index_entries.len(), 1);
     }
 
     #[test]
