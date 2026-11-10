@@ -82,12 +82,12 @@ impl<'a> Utf16LeStr<'a> {
             return f(&[]);
         }
 
-        // The buffer is taken out of the thread-local while `f` runs, so that a conversion inside
-        // `f` finds a fresh one instead of a `RefCell` that is already borrowed.
-        let mut scratch = UTF16_SCRATCH.take();
-        let result = f(scratch.escape_utf16le_raw(self.utf16le, self.len_units()));
-        UTF16_SCRATCH.set(scratch);
-        result
+        // The buffer is still borrowed when `f` converts another string, which then uses one of
+        // its own instead.
+        UTF16_SCRATCH.with(|cell| match cell.try_borrow_mut() {
+            Ok(mut scratch) => f(scratch.escape_utf16le_raw(self.utf16le, self.len_units())),
+            Err(_) => f(Scratch::new().escape_utf16le_raw(self.utf16le, self.len_units())),
+        })
     }
 
     /// Allocate a UTF-8 `String` for this UTF-16LE data.
