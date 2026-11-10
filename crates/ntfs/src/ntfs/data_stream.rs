@@ -235,7 +235,8 @@ impl CompressedDataRunsStream {
                     let lcn = mapping
                         .run
                         .lcn_offset
-                        .saturating_add(overlap_start - run_vcn_start);
+                        .checked_add(overlap_start - run_vcn_start)
+                        .ok_or_else(lcn_out_of_range)?;
                     segments.push((lcn, overlap_len));
                 }
             }
@@ -252,7 +253,7 @@ impl CompressedDataRunsStream {
             for (lcn, len_clusters) in segments {
                 let bytes = len_clusters.saturating_mul(self.cluster_size);
                 let mut tmp = vec![0u8; bytes as usize];
-                let off = lcn.saturating_mul(self.cluster_size);
+                let off = cluster_byte_offset(lcn, self.cluster_size)?;
                 self.volume.read_exact_at(off, &mut tmp)?;
                 unit_out[dst_off..dst_off + tmp.len()].copy_from_slice(&tmp);
                 dst_off += tmp.len();
@@ -264,7 +265,7 @@ impl CompressedDataRunsStream {
             for (lcn, len_clusters) in segments {
                 let bytes = len_clusters.saturating_mul(self.cluster_size) as usize;
                 let mut tmp = vec![0u8; bytes];
-                let off = lcn.saturating_mul(self.cluster_size);
+                let off = cluster_byte_offset(lcn, self.cluster_size)?;
                 self.volume.read_exact_at(off, &mut tmp)?;
                 comp.extend_from_slice(&tmp);
             }
@@ -313,6 +314,20 @@ impl ReadAt for CompressedDataRunsStream {
 
         Ok(())
     }
+}
+
+fn lcn_out_of_range() -> Error {
+    Error::InvalidData {
+        message: "data run cluster offset out of range".to_string(),
+    }
+}
+
+/// Returns the byte offset of cluster `lcn` in the volume.
+///
+/// A corrupt mapping pair can move the LCN below zero; as an unsigned number that is a cluster far
+/// beyond any volume, and its byte offset does not fit in 64 bits.
+fn cluster_byte_offset(lcn: u64, cluster_size: u64) -> Result<u64> {
+    lcn.checked_mul(cluster_size).ok_or_else(lcn_out_of_range)
 }
 
 /// Reads bytes from a runlist into `buf`, starting at `offset` within the logical stream.
@@ -365,7 +380,9 @@ pub fn read_from_data_runs(
             match run.run_type {
                 RunType::Sparse => buf[out_pos..out_pos + take].fill(0),
                 RunType::Standard => {
-                    let vol_off = run.lcn_offset.saturating_mul(cluster_size) + within as u64;
+                    let vol_off = cluster_byte_offset(run.lcn_offset, cluster_size)?
+                        .checked_add(within as u64)
+                        .ok_or_else(lcn_out_of_range)?;
                     volume.read_exact_at(vol_off, &mut buf[out_pos..out_pos + take])?;
                 }
             }
@@ -514,6 +531,63 @@ mod tests {
             Error::InvalidData { message } => assert_eq!(message, "read beyond end of data runs"),
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    /// A mapping pair with a negative delta can put a run "before" cluster 0. The LCN is then a
+    /// huge unsigned number whose byte offset overflows: the read must fail, not wrap around to
+    /// some other place on the volume.
+    #[test]
+    fn read_from_data_runs_errors_on_cluster_offset_overflow() {
+        let cluster_size = 4u32;
+        let img = MemImage::new((0u8..64).collect());
+
+        for lcn_offset in [(-1i64) as u64, (-5i64) as u64, 1u64 << 62, u64::MAX / 4 + 1] {
+            let volume = test_volume(Arc::new(img.clone()), cluster_size);
+            let runs = vec![DataRun {
+                lcn_offset,
+                lcn_length: 2,
+                run_type: RunType::Standard,
+            }];
+
+            for offset in [1u64, 5, 0] {
+                let mut buf = vec![0xAAu8; 2];
+                let err = read_from_data_runs(&volume, &runs, offset, &mut buf).unwrap_err();
+                match err {
+                    Error::InvalidData { message } => {
+                        assert_eq!(message, "data run cluster offset out of range");
+                    }
+                    other => panic!("unexpected error for lcn {lcn_offset:#x}: {other:?}"),
+                }
+            }
+        }
+        assert_eq!(img.reads.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn compressed_data_runs_stream_errors_on_cluster_offset_overflow() {
+        let cluster_size = 4u32;
+        let img = MemImage::new((0u8..64).collect());
+
+        for lcn_offset in [(-1i64) as u64, (-5i64) as u64, 1u64 << 62] {
+            let volume = test_volume(Arc::new(img.clone()), cluster_size);
+            // A stored (uncompressed) unit of 4 clusters.
+            let runs = vec![DataRun {
+                lcn_offset,
+                lcn_length: 4,
+                run_type: RunType::Standard,
+            }];
+            let stream = CompressedDataRunsStream::new(volume, runs, 16, 4).unwrap();
+
+            let mut buf = vec![0u8; 16];
+            let err = stream.read_exact_at(0, &mut buf).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+            assert!(
+                err.to_string()
+                    .contains("data run cluster offset out of range"),
+                "unexpected error: {err}"
+            );
+        }
+        assert_eq!(img.reads.load(Ordering::Relaxed), 0);
     }
 
     #[test]

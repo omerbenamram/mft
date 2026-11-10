@@ -63,8 +63,13 @@ impl Volume {
     }
 
     pub fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
-        self.image
-            .read_exact_at(self.volume_offset.saturating_add(offset), buf)
+        let image_offset = self.volume_offset.checked_add(offset).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "volume offset out of range",
+            )
+        })?;
+        self.image.read_exact_at(image_offset, buf)
     }
 
     /// Reads raw bytes of the MFT entry with `entry_number`.
