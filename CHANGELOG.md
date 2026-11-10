@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `MftEntry::stored_record_number` returns the record number NTFS wrote inside the record (offset 0x2A, NTFS 3.1 and later). `header.record_number` is the position the record was read from, so comparing the two finds records that were moved, carved or never numbered.
+- `MftEntry::stored_record_number` returns the record number NTFS wrote inside the record (the 32-bit field at offset 0x2C, NTFS 3.1 and later). `header.record_number` is the position the record was read from, so comparing the two finds records that were moved, carved or never numbered.
 
 ### Fixed
 - A zeroed (never used) record's `header.record_number` is the number it was read as, instead of always 0.
