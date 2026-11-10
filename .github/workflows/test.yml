@@ -82,8 +82,7 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --exclude ntfs-explorer-gui --all-targets ${{ matrix.features }}
 
-  # The fuzz crate is a workspace of its own, so no other job compiles it: a change to the API
-  # of `MftEntry`, `decode_data_runs` or `MftParser` could break the targets unseen.
+  # The fuzz crate is a workspace of its own, so no other job compiles it.
   fuzz:
     name: Build fuzz targets
     runs-on: ubuntu-latest
