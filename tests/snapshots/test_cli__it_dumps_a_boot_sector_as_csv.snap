@@ -1,0 +1,6 @@
+---
+source: tests/test_cli.rs
+expression: "String::from_utf8(output.stdout).unwrap()"
+---
+OemId,BytesPerSector,SectorsPerCluster,ClusterSize,MediaDescriptor,SectorsPerTrack,NumberOfHeads,HiddenSectors,TotalSectors,VolumeSize,MftLcn,MftOffset,MftMirrorLcn,MftMirrorOffset,MftEntrySize,IndexEntrySize,VolumeSerialNumber,VolumeSerial,Checksum
+NTFS    ,512,8,4096,248,63,255,1259520,61652991,31566331392,786432,3221225472,2,8192,1024,4096,0xE49CB2F99CB2C4F8,9CB2-C4F8,0

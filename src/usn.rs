@@ -21,8 +21,8 @@ use crate::attribute::FileAttributeFlags;
 use crate::err::{Error, Result};
 use crate::impl_serialize_for_bitflags;
 use crate::utf16::Utf16LeStr;
-use crate::utils::{read_u16, read_u32, read_u64};
-use crate::{MftReference, serialize_timestamp, windows_filetime_to_timestamp};
+use crate::utils::{read_u16, read_u32, read_u64, windows_filetime_to_timestamp_saturating};
+use crate::{MftReference, serialize_timestamp};
 
 /// Windows writes USN records in pages of this size, and a record never crosses a page.
 pub const USN_PAGE_SIZE: usize = 0x1000;
@@ -257,10 +257,9 @@ impl UsnRecord {
                 )));
             };
 
-            let timestamp = windows_filetime_to_timestamp(filetime)
-                .map_err(|_| invalid(format!("timestamp {filetime} out of range")))?;
             let details = UsnRecordDetails::Change {
-                timestamp,
+                // A time past what `Timestamp` holds keeps the record, like the `$MFT` parsers.
+                timestamp: windows_filetime_to_timestamp_saturating(filetime),
                 security_id,
                 file_attributes: FileAttributeFlags::from_bits_retain(file_attributes),
                 name: Utf16LeStr::from_utf16le_bytes(raw_name).to_utf8_string(),
@@ -313,18 +312,18 @@ pub struct FlatUsnRecord {
 }
 
 impl FlatUsnRecord {
-    pub fn from_record(record: &UsnRecord, full_path: Option<PathBuf>) -> Self {
-        let (timestamp, name, file_attributes, security_id, extents) = match &record.details {
+    pub fn from_record(record: UsnRecord, full_path: Option<PathBuf>) -> Self {
+        let (timestamp, name, file_attributes, security_id, extents) = match record.details {
             UsnRecordDetails::Change {
                 timestamp,
                 security_id,
                 file_attributes,
                 name,
             } => (
-                Some(*timestamp),
-                Some(name.clone()),
-                Some(file_attributes.clone()),
-                Some(*security_id),
+                Some(timestamp),
+                Some(name),
+                Some(file_attributes),
+                Some(security_id),
                 None,
             ),
             UsnRecordDetails::Range { extents, .. } => {
@@ -418,25 +417,10 @@ impl<R: Read> UsnJournal<R> {
         self.buf_offset += self.pos as u64;
         self.pos = 0;
         while self.buf.len() < n && !self.eof {
-            let start = self.buf.len();
-            self.buf.resize(start + READ_SIZE, 0);
-            let read = loop {
-                match self.reader.read(&mut self.buf[start..]) {
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                    other => break other,
-                }
-            };
-            match read {
-                Ok(0) => {
-                    self.buf.truncate(start);
-                    self.eof = true;
-                }
-                Ok(read) => self.buf.truncate(start + read),
-                Err(e) => {
-                    self.buf.truncate(start);
-                    return Err(e);
-                }
-            }
+            let read = (&mut self.reader)
+                .take(READ_SIZE as u64)
+                .read_to_end(&mut self.buf)?;
+            self.eof = read == 0;
         }
         Ok(())
     }
@@ -448,6 +432,13 @@ impl<R: Read> UsnJournal<R> {
         self.buf.clear();
         self.pos = 0;
         e.into()
+    }
+
+    /// A cheap check of the header at `pos`, which holds at least 8 bytes: whether a record of a
+    /// known version and of `length` bytes could start there.
+    fn looks_like_a_record(&self, length: usize, left_in_page: usize) -> bool {
+        let major_version = read_u16(&self.buf, self.pos + 4).expect("8 bytes");
+        (2..=4).contains(&major_version) && (V2_HEADER_SIZE..=left_in_page).contains(&length)
     }
 
     /// Moves `pos` past the zero words in `buf`, stopping at the first word that isn't zero or at
@@ -485,10 +476,13 @@ impl<R: Read> Iterator for UsnJournal<R> {
             // A record ends before the next page, so it is never longer than what is left of it.
             let left_in_page = USN_PAGE_SIZE - (offset as usize % USN_PAGE_SIZE);
             let length = read_u32(&self.buf, self.pos).expect("8 bytes") as usize;
-            // Records are padded to 8 bytes, and so is the page, so the padding is in the page too.
-            let padded_length = length.next_multiple_of(8);
+            if self.in_garbage && !self.looks_like_a_record(length, left_in_page) {
+                // Still garbage: skip it without building an error that won't be returned.
+                self.pos += 8;
+                continue;
+            }
             let record = if length <= left_in_page {
-                if let Err(e) = self.fill(padded_length) {
+                if let Err(e) = self.fill(length) {
                     return Some(Err(self.stop(e)));
                 }
                 UsnRecord::from_slice(&self.buf[self.pos..], offset)
@@ -503,8 +497,8 @@ impl<R: Read> Iterator for UsnJournal<R> {
 
             match record {
                 Ok(record) => {
-                    // The input may end before the last record's padding does.
-                    self.pos = (self.pos + padded_length).min(self.buf.len());
+                    // The input can end right after the record, before its padding.
+                    self.pos = (self.pos + length.next_multiple_of(8)).min(self.buf.len());
                     self.in_garbage = false;
                     return Some(Ok(record));
                 }
@@ -695,8 +689,17 @@ mod tests {
     }
 
     #[test]
-    fn journal_reads_a_last_record_without_its_padding() {
-        // 62 bytes: the record ends 2 bytes before the next 8-byte boundary, and so does the input.
+    fn keeps_a_record_with_a_time_past_the_supported_range() {
+        let mut r = v2(0, "a");
+        r[32..40].copy_from_slice(&u64::MAX.to_le_bytes());
+        let record = UsnRecord::from_slice(&r, 0).unwrap();
+        assert_eq!(record.timestamp(), Some(Timestamp::MAX));
+        assert_eq!(record.name(), Some("a"));
+    }
+
+    #[test]
+    fn journal_ends_after_a_last_record_without_padding() {
+        // One record of 62 bytes, and the input ends there rather than at its 8-byte padding.
         let mut j = v2(0, "a");
         j.truncate(V2_HEADER_SIZE + 2);
         assert_eq!(j.len() % 8, 6);
@@ -716,6 +719,22 @@ mod tests {
             names,
             [(0, "first".to_string()), (at as u64, "a".to_string())]
         );
+    }
+
+    #[test]
+    fn journal_gives_one_error_for_a_run_of_garbage() {
+        // A page of garbage, including words that pass the cheap header check but don't parse,
+        // then a record.
+        let mut j = vec![0x41u8; USN_PAGE_SIZE];
+        j[64..72].copy_from_slice(&[64, 0, 0, 0, 2, 0, 0, 0]);
+        j.extend_from_slice(&v2(USN_PAGE_SIZE as u64, "a"));
+        let results: Vec<_> = UsnJournal::new(Cursor::new(j)).collect();
+        assert_eq!(results.len(), 2);
+        assert!(matches!(
+            results[0],
+            Err(Error::InvalidUsnRecord { offset: 0, .. })
+        ));
+        assert_eq!(results[1].as_ref().unwrap().offset, USN_PAGE_SIZE as u64);
     }
 
     #[test]

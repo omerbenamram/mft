@@ -1,7 +1,7 @@
 use crate::image::ReadAt;
-use crate::ntfs::Result;
-use crate::ntfs::data_stream::read_from_data_runs;
+use crate::ntfs::data_stream::{mapped_clusters, read_from_data_runs};
 use crate::ntfs::volume_header::VolumeHeader;
+use crate::ntfs::{Error, Result};
 use mft::attribute::MftAttributeType;
 use std::fmt;
 use std::sync::Arc;
@@ -32,12 +32,25 @@ impl fmt::Debug for Volume {
 impl Volume {
     pub fn open(image: Arc<dyn ReadAt>, volume_offset: u64) -> Result<Self> {
         let header = VolumeHeader::read_from_image(image.as_ref(), volume_offset)?;
+
         let mut volume = Self {
             image,
             volume_offset,
             header,
             mft_data_runs: Vec::new(),
         };
+
+        // The cluster and record sizes size the buffers of every later read. They come from the
+        // boot sector, so measure them against the image before trusting them.
+        let image_len = volume.image_len();
+        if u64::from(volume.header.cluster_size) > image_len
+            || u64::from(volume.header.mft_entry_size) > image_len
+            || u64::from(volume.header.index_entry_size) > image_len
+        {
+            return Err(Error::InvalidBootSector {
+                message: "cluster or record size is larger than the image",
+            });
+        }
 
         // Bootstrap: read MFT entry 0 using the boot-sector-provided MFT location, and use its
         // `$DATA` mapping pairs to read arbitrary entries.
@@ -62,9 +75,39 @@ impl Volume {
         self.volume_offset
     }
 
+    /// Returns the number of bytes the image holds from the start of this volume on.
+    ///
+    /// This is the real upper bound for anything stored on the volume, whatever the sizes in
+    /// the boot sector or in an attribute say.
+    pub fn image_len(&self) -> u64 {
+        self.image.len().saturating_sub(self.volume_offset)
+    }
+
+    /// Returns how many MFT records can really be read from this volume: what the `$MFT` runs
+    /// map, and no more than fits in the image. The size stored in `$MFT`'s record may claim
+    /// more.
+    pub fn mft_record_capacity(&self) -> u64 {
+        let record_size = u64::from(self.header.mft_entry_size).max(1);
+        let image_len = self.image_len();
+        let mft_bytes = if self.mft_data_runs.is_empty() {
+            // No mapping: records are read contiguously from the boot sector's `$MFT` offset.
+            image_len.saturating_sub(self.header.mft_offset_bytes())
+        } else {
+            mapped_clusters(&self.mft_data_runs)
+                .saturating_mul(u64::from(self.header.cluster_size))
+                .min(image_len)
+        };
+        mft_bytes / record_size
+    }
+
     pub fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
-        self.image
-            .read_exact_at(self.volume_offset.saturating_add(offset), buf)
+        let image_offset = self.volume_offset.checked_add(offset).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "volume offset out of range",
+            )
+        })?;
+        self.image.read_exact_at(image_offset, buf)
     }
 
     /// Reads raw bytes of the MFT entry with `entry_number`.
