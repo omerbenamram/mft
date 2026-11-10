@@ -41,6 +41,14 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --exclude ntfs-explorer-gui --all-targets --all-features -- -D warnings
 
+      # The fuzz crate is a workspace of its own, so the two steps above do not reach it. Clippy
+      # compiles the targets, which fails when a change to `mft` breaks them. It needs neither
+      # nightly nor cargo-fuzz.
+      - name: Check the fuzz targets
+        run: |
+          cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+          cargo clippy --manifest-path fuzz/Cargo.toml -- -D warnings
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -81,26 +89,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --exclude ntfs-explorer-gui --all-targets ${{ matrix.features }}
-
-  # The fuzz crate is a workspace of its own, so no other job compiles it.
-  fuzz:
-    name: Build fuzz targets
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: fuzz
-
-      - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
-
-      - name: Build every target
-        run: cargo fuzz build
 
   gui:
     name: NTFS explorer GUI
