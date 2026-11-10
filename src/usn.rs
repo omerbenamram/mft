@@ -485,8 +485,10 @@ impl<R: Read> Iterator for UsnJournal<R> {
             // A record ends before the next page, so it is never longer than what is left of it.
             let left_in_page = USN_PAGE_SIZE - (offset as usize % USN_PAGE_SIZE);
             let length = read_u32(&self.buf, self.pos).expect("8 bytes") as usize;
+            // Records are padded to 8 bytes, and so is the page, so the padding is in the page too.
+            let padded_length = length.next_multiple_of(8);
             let record = if length <= left_in_page {
-                if let Err(e) = self.fill(length) {
+                if let Err(e) = self.fill(padded_length) {
                     return Some(Err(self.stop(e)));
                 }
                 UsnRecord::from_slice(&self.buf[self.pos..], offset)
@@ -501,7 +503,8 @@ impl<R: Read> Iterator for UsnJournal<R> {
 
             match record {
                 Ok(record) => {
-                    self.pos += length.next_multiple_of(8);
+                    // The input may end before the last record's padding does.
+                    self.pos = (self.pos + padded_length).min(self.buf.len());
                     self.in_garbage = false;
                     return Some(Ok(record));
                 }
@@ -689,6 +692,30 @@ mod tests {
             results[2],
             Err(Error::InvalidUsnRecord { offset: 8176, .. })
         ));
+    }
+
+    #[test]
+    fn journal_reads_a_last_record_without_its_padding() {
+        // 62 bytes: the record ends 2 bytes before the next 8-byte boundary, and so does the input.
+        let mut j = v2(0, "a");
+        j.truncate(V2_HEADER_SIZE + 2);
+        assert_eq!(j.len() % 8, 6);
+        let results: Vec<_> = UsnJournal::new(Cursor::new(&j)).collect();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].as_ref().unwrap().name(), Some("a"));
+
+        // The same after a record that is padded.
+        let mut both = v2(0, "first");
+        let at = both.len();
+        both.extend_from_slice(&j);
+        let names: Vec<_> = UsnJournal::new(Cursor::new(&both))
+            .map(|r| r.unwrap())
+            .map(|r| (r.offset, r.name().unwrap().to_string()))
+            .collect();
+        assert_eq!(
+            names,
+            [(0, "first".to_string()), (at as u64, "a".to_string())]
+        );
     }
 
     #[test]
