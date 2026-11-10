@@ -6,6 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A directory's `$INDEX_ROOT` entries no longer stop at the first one that references MFT entry 0. That entry is `$MFT`, which the root directory indexes, so on a volume whose root directory fits in its `$INDEX_ROOT` (4 KiB file records and few files in the root) every name sorting after `$MFT` was missing from `index_entries`: 10 of the 16 in our sample, among them the user's files. The entries now end at the one flagged as the last, as NTFS marks it.
+
 ## [0.10.0] - 2026-11-06
 
 ### Changed
