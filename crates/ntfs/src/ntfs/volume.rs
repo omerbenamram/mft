@@ -1,5 +1,5 @@
 use crate::image::ReadAt;
-use crate::ntfs::data_stream::read_from_data_runs;
+use crate::ntfs::data_stream::{mapped_clusters, read_from_data_runs};
 use crate::ntfs::volume_header::VolumeHeader;
 use crate::ntfs::{Error, Result};
 use mft::attribute::MftAttributeType;
@@ -81,6 +81,23 @@ impl Volume {
     /// the boot sector or in an attribute say.
     pub fn image_len(&self) -> u64 {
         self.image.len().saturating_sub(self.volume_offset)
+    }
+
+    /// Returns how many MFT records can really be read from this volume: what the `$MFT` runs
+    /// map, and no more than fits in the image. The size stored in `$MFT`'s record may claim
+    /// more.
+    pub fn mft_record_capacity(&self) -> u64 {
+        let record_size = u64::from(self.header.mft_entry_size).max(1);
+        let image_len = self.image_len();
+        let mft_bytes = if self.mft_data_runs.is_empty() {
+            // No mapping: records are read contiguously from the boot sector's `$MFT` offset.
+            image_len.saturating_sub(self.header.mft_offset_bytes())
+        } else {
+            mapped_clusters(&self.mft_data_runs)
+                .saturating_mul(u64::from(self.header.cluster_size))
+                .min(image_len)
+        };
+        mft_bytes / record_size
     }
 
     pub fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {

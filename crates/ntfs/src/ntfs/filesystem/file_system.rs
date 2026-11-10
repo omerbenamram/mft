@@ -67,6 +67,11 @@ impl FileSystem {
     /// Reads the directory entries for the directory at `dir_entry_id`.
     ///
     /// This uses `$INDEX_ROOT` and, when present, `$INDEX_ALLOCATION` for `$I30`.
+    ///
+    /// When the index is missing or damaged and yields no names, the listing falls back to a
+    /// scan of the MFT for records that name this directory as their parent. An index that is
+    /// intact and empty is an empty directory and is returned as such; use
+    /// [`Self::read_dir_including_deleted`] to also see names that are no longer indexed.
     pub fn read_dir(&self, dir_entry_id: u64) -> Result<Vec<DirectoryEntry>> {
         let entry = self.volume.read_mft_entry(dir_entry_id)?;
         if !entry.is_dir() {
@@ -88,6 +93,16 @@ impl FileSystem {
         let mut out: Vec<DirectoryEntry> = Vec::new();
         let mut seen: HashSet<(u64, Vec<u16>)> = HashSet::new();
         let mut sub_nodes: VecDeque<u64> = VecDeque::new();
+
+        // Every intact index node, the root and each index record, ends with an entry flagged
+        // as the last one. A node without it, an index record that can't be read, or a branch
+        // that can't be followed means names may be missing.
+        let ends_properly = |node: &crate::ntfs::index::IndexNode| {
+            node.values
+                .iter()
+                .any(|v| v.flags.contains(IndexValueFlags::IS_LAST))
+        };
+        let mut index_damaged = !ends_properly(&index_root.node);
 
         for v in &index_root.node.values {
             if let Some(fname) = &v.file_name
@@ -112,6 +127,12 @@ impl FileSystem {
             }
         }
 
+        if !has_allocation && !sub_nodes.is_empty() {
+            // The root points at index records, but says there is no `$INDEX_ALLOCATION` to
+            // find them in.
+            index_damaged = true;
+        }
+
         if has_allocation {
             let data_runs = self.read_i30_index_allocation_runs(&entry)?;
             let mut visited_vcns: HashSet<u64> = HashSet::new();
@@ -127,11 +148,13 @@ impl FileSystem {
 
                 // Validate signature.
                 if record.len() < 4 || &record[0..4] != b"INDX" {
+                    index_damaged = true;
                     continue;
                 }
 
                 if let Err(_e) = apply_index_record_fixups(&mut record) {
                     // Best-effort: skip corrupted/non-conforming index records.
+                    index_damaged = true;
                     continue;
                 }
 
@@ -142,6 +165,10 @@ impl FileSystem {
                     self.volume.volume_offset() + offset,
                     node_start,
                 )?;
+
+                if !ends_properly(&node) {
+                    index_damaged = true;
+                }
 
                 for v in &node.values {
                     if let Some(fname) = &v.file_name
@@ -168,9 +195,10 @@ impl FileSystem {
             }
         }
 
-        if out.is_empty() {
+        if out.is_empty() && index_damaged {
             // Fallback: some volumes have missing/corrupt $I30 nodes even though FILE_NAME parent
-            // references are intact.
+            // references are intact. An intact index with no names is just an empty directory
+            // and doesn't need a scan of the whole MFT.
             return self.read_dir_parent_scan(dir_entry_id);
         }
 
@@ -921,10 +949,13 @@ impl FileSystem {
     /// This is slower than index traversal but works even when `$I30` structures are missing or
     /// zeroed.
     fn read_dir_parent_scan(&self, dir_entry_id: u64) -> Result<Vec<DirectoryEntry>> {
+        // The record count in `$MFT`'s own record is an on-disk field: never scan more records
+        // than the `$MFT` can really hold.
         let entry_count = self
             .estimate_mft_entry_count()
             .unwrap_or(10_000)
-            .min(200_000);
+            .min(self.volume.mft_record_capacity())
+            .min(MAX_PARENT_SCAN_RECORDS);
 
         let mut out = Vec::new();
         let mut seen: HashSet<(u64, Vec<u16>)> = HashSet::new();
@@ -1757,6 +1788,9 @@ impl DataExtent {
 
 /// Upper bound for a non-resident `$ATTRIBUTE_LIST`. NTFS itself limits the list to 256 KiB.
 const MAX_ATTRIBUTE_LIST_SIZE: u64 = 1024 * 1024;
+
+/// Upper bound for the number of MFT records a parent-reference scan looks at.
+const MAX_PARENT_SCAN_RECORDS: u64 = 200_000;
 
 /// Where one `$ATTRIBUTE_LIST` entry points, detached from the buffer it was parsed from.
 #[derive(Debug, Clone)]
