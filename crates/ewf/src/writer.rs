@@ -575,6 +575,7 @@ impl EwfWriter {
         // Flush a final partial chunk (padded with zeros on disk).
         if self.chunk_buf_len != 0 {
             self.chunk_buf[self.chunk_buf_len..].fill(0);
+            self.chunk_buf_len = self.chunk_size;
             self.flush_full_chunk()?;
         }
 
@@ -2445,6 +2446,106 @@ mod tests {
         let mut out = vec![0u8; data.len()];
         r.read_exact_at(0, &mut out)?;
         assert_eq!(out, data);
+        Ok(())
+    }
+
+    /// Media that does not end on a chunk boundary: the writer pads the last chunk, and the
+    /// image must still read back as exactly the media, with the media's MD5 stored.
+    ///
+    /// `finish` used to hand the padded chunk on with its unpadded length, which tripped a
+    /// debug assertion, so this has to run in a debug build to mean anything.
+    #[test]
+    fn test_writer_roundtrip_ewf1_media_not_a_chunk_multiple() -> Result<()> {
+        // 4 sectors per chunk; 37 sectors leave 1 sector in the last chunk.
+        let data = (0..37 * 512usize)
+            .map(|i| (i % 251) as u8 ^ (i / 512) as u8)
+            .collect::<Vec<u8>>();
+        let md5: [u8; 16] = Md5::digest(&data).into();
+
+        for format in [Ewf1Format::E01, Ewf1Format::S01] {
+            for compression_level in [Ewf1CompressionLevel::None, Ewf1CompressionLevel::Fast] {
+                // One segment, and segments so small that the image is split.
+                for segment_file_size in [10 * 1024 * 1024u64, 6 * 1024] {
+                    let dir = tempfile::tempdir()?;
+                    let path = dir.path().join(match format {
+                        Ewf1Format::E01 => "out.E01",
+                        Ewf1Format::S01 => "out.s01",
+                    });
+
+                    let mut opts = EwfWriterOptions::new(format, data.len() as u64);
+                    opts.sectors_per_chunk = 4;
+                    opts.bytes_per_sector = 512;
+                    opts.segment_file_size = segment_file_size;
+                    opts.compression_level = compression_level;
+
+                    let mut w = EwfWriter::create(&path, opts)?;
+                    // Feed in pieces that line up with neither sectors nor chunks.
+                    for piece in data.chunks(1000) {
+                        let mut rest = piece;
+                        while !rest.is_empty() {
+                            let n = w.write(rest)?;
+                            assert!(n > 0, "writer.write made no progress");
+                            rest = &rest[n..];
+                        }
+                    }
+                    w.finish()?;
+
+                    let what = format!(
+                        "{format:?} {compression_level:?} segment_file_size={segment_file_size}"
+                    );
+                    let r = crate::reader::EwfReader::open(&path)?;
+                    assert_eq!(r.len(), data.len() as u64, "{what}");
+                    assert_eq!(r.chunk_count(), 10, "{what}");
+                    let mut out = vec![0u8; data.len()];
+                    r.read_exact_at(0, &mut out)?;
+                    assert!(out == data, "{what}: data differs");
+                    assert_eq!(r.image_metadata()?.digests.md5, Some(md5), "{what}");
+                    r.verify(crate::reader::VerifyOptions::default())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_writer_roundtrip_ex01_media_not_a_chunk_multiple() -> Result<()> {
+        let data = (0..37 * 512usize)
+            .map(|i| (i % 251) as u8 ^ (i / 512) as u8)
+            .collect::<Vec<u8>>();
+        let md5: [u8; 16] = Md5::digest(&data).into();
+
+        for compression_method in [Ewf2CompressionMethod::None, Ewf2CompressionMethod::Zlib] {
+            for segment_file_size in [10 * 1024 * 1024u64, 6 * 1024] {
+                let dir = tempfile::tempdir()?;
+                let path = dir.path().join("out.Ex01");
+
+                let mut opts = Ewf2WriterOptions::new(data.len() as u64);
+                opts.sectors_per_chunk = 4;
+                opts.bytes_per_sector = 512;
+                opts.segment_file_size = segment_file_size;
+                opts.compression_method = compression_method;
+
+                let mut w = Ewf2Writer::create(&path, opts)?;
+                for piece in data.chunks(1000) {
+                    let mut rest = piece;
+                    while !rest.is_empty() {
+                        let n = w.write(rest)?;
+                        assert!(n > 0, "writer.write made no progress");
+                        rest = &rest[n..];
+                    }
+                }
+                w.finish()?;
+
+                let what = format!("{compression_method:?} segment_file_size={segment_file_size}");
+                let r = crate::reader::EwfReader::open(&path)?;
+                assert_eq!(r.len(), data.len() as u64, "{what}");
+                let mut out = vec![0u8; data.len()];
+                r.read_exact_at(0, &mut out)?;
+                assert!(out == data, "{what}: data differs");
+                assert_eq!(r.image_metadata()?.digests.md5, Some(md5), "{what}");
+                r.verify(crate::reader::VerifyOptions::default())?;
+            }
+        }
         Ok(())
     }
 
