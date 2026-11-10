@@ -478,3 +478,21 @@ fn it_detects_a_log_whose_first_restart_page_is_damaged() {
         );
     }
 }
+
+#[test]
+fn it_reads_a_usn_journal_with_a_stray_restart_signature_as_one() {
+    // A `$J` without its sparse start, with `RSTR` in a file name at 0x800, where a second
+    // restart page after one of 2 KiB would start. No restart page is there, so it is no
+    // `$LogFile`.
+    let mut j = fs::read(testdata_dir().join("usn").join("narcos-head.J")).unwrap();
+    j.drain(..0x2000);
+    j[0x800..0x804].copy_from_slice(b"RSTR");
+    let d = tempdir().unwrap();
+    let path = d.as_ref().join("$J");
+    fs::write(&path, &j).unwrap();
+
+    let detected = usn_jsonl(&[path.as_os_str()]);
+    let usn = usn_jsonl(&["--input-type".as_ref(), "usn".as_ref(), path.as_os_str()]);
+    assert!(!detected.is_empty());
+    assert_eq!(detected, usn);
+}

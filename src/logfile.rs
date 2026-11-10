@@ -385,17 +385,19 @@ impl LogFile {
         self.slots.get(slot).copied().flatten()
     }
 
-    /// How many of a file's first bytes [`LogFile::looks_like`] looks at: up to the signature of
-    /// a second restart page after a first one of 64 KiB, the largest there is.
-    pub const LOOKS_LIKE_PREFIX: usize = 0x10000 + 4;
+    /// How many of a file's first bytes [`LogFile::looks_like`] looks at: both restart pages,
+    /// when the first is 64 KiB, the largest a page can be.
+    pub const LOOKS_LIKE_PREFIX: usize = 2 * 0x10000;
 
-    /// Whether a file that starts with `start` has a restart page where [`LogFile::from_buffer`]
-    /// looks for one: at its start or, with that page damaged, a page on.
+    /// Whether [`LogFile::from_buffer`] opens a file that starts with `start`, the first
+    /// [`LogFile::LOOKS_LIKE_PREFIX`] bytes of it (or all, when it is shorter): whether either
+    /// restart page, where it looks for them, passes the checks it makes before its fixups.
     pub fn looks_like(start: &[u8]) -> bool {
-        has_restart_signature(start)
-            || start
-                .get(second_restart_page(start)..)
-                .is_some_and(has_restart_signature)
+        let second = second_restart_page(start);
+        let bound = (2 * second).min(start.len());
+        [0, second]
+            .into_iter()
+            .any(|offset| RestartPage::check(&start[..bound], offset).is_ok())
     }
 
     /// The restart page in use. Of the restart pages that parse, those whose update sequence
@@ -515,10 +517,23 @@ fn apply_fixups(page: &mut [u8], offset: u64) -> Result<Fixups> {
     })
 }
 
+/// The header of a restart page that [`RestartPage::check`] found sane.
+struct RestartHeader {
+    chkdsk_lsn: u64,
+    system_page_size: u32,
+    log_page_size: u32,
+    restart_offset: usize,
+    minor_version: i16,
+    major_version: i16,
+}
+
 impl RestartPage {
-    /// Parses the restart page at `offset` of `data`, applying its fixups in place. The `bool`
-    /// says whether the update sequence values matched in every sector the array covers.
-    fn from_page(data: &mut [u8], offset: usize) -> Result<(Self, bool)> {
+    /// Checks, without applying its fixups, that the restart page at `offset` of `data` is one
+    /// [`RestartPage::from_page`] opens: it has the signature, page sizes that can be, an update
+    /// sequence array inside the page, and a restart area that [`RestartArea::check`] finds
+    /// sane. That area must lie in the first sector, before the word its fixup replaces, so it
+    /// reads the same before the fixups as after.
+    fn check(data: &[u8], offset: usize) -> Result<RestartHeader> {
         let invalid = |detail: String| Error::InvalidLogFile {
             offset: offset as u64,
             detail,
@@ -532,12 +547,12 @@ impl RestartPage {
                 &header[..4]
             )));
         }
-        let chkdsk_lsn = LittleEndian::read_u64(&header[8..]);
+        let field16 = |at: usize| usize::from(LittleEndian::read_u16(&header[at..]));
+        let usa_offset = field16(4);
+        let usa_count = field16(6);
         let system_page_size = LittleEndian::read_u32(&header[0x10..]);
         let log_page_size = LittleEndian::read_u32(&header[0x14..]);
-        let restart_offset = usize::from(LittleEndian::read_u16(&header[0x18..]));
-        let minor_version = LittleEndian::read_i16(&header[0x1A..]);
-        let major_version = LittleEndian::read_i16(&header[0x1C..]);
+        let restart_offset = field16(0x18);
 
         let page_size = system_page_size as usize;
         if !is_valid_page_size(page_size) {
@@ -547,44 +562,61 @@ impl RestartPage {
             return Err(invalid(format!("log page size {log_page_size}")));
         }
         let page = data
-            .get_mut(offset..offset + page_size)
+            .get(offset..offset + page_size)
             .ok_or_else(|| invalid("restart page cut short".to_string()))?;
-        let fixups = apply_fixups(page, offset as u64)?;
-        let restart_area = RestartArea::from_slice(page, restart_offset, log_page_size as usize)
+        if usa_count < 2 || usa_offset + 2 * usa_count > page_size {
+            return Err(invalid(format!(
+                "update sequence array of {usa_count} at {usa_offset}"
+            )));
+        }
+        if restart_offset + RESTART_AREA_SIZE > UPDATE_SEQUENCE_STRIDE_BYTES - 2 {
+            return Err(invalid(format!(
+                "restart area at {restart_offset} reaches past the first sector"
+            )));
+        }
+        RestartArea::check(page, restart_offset, log_page_size as usize)
             .map_err(|detail| invalid(format!("restart area at {restart_offset}: {detail}")))?;
-        let page = RestartPage {
-            offset: offset as u64,
-            chkdsk_lsn,
+        Ok(RestartHeader {
+            chkdsk_lsn: LittleEndian::read_u64(&header[8..]),
             system_page_size,
             log_page_size,
-            minor_version,
-            major_version,
+            restart_offset,
+            minor_version: LittleEndian::read_i16(&header[0x1A..]),
+            major_version: LittleEndian::read_i16(&header[0x1C..]),
+        })
+    }
+
+    /// Parses the restart page at `offset` of `data`, applying its fixups in place. The `bool`
+    /// says whether the update sequence values matched in every sector the array covers.
+    fn from_page(data: &mut [u8], offset: usize) -> Result<(Self, bool)> {
+        let header = RestartPage::check(data, offset)?;
+        let page = &mut data[offset..offset + header.system_page_size as usize];
+        let fixups = apply_fixups(page, offset as u64)?;
+        let page = RestartPage {
+            offset: offset as u64,
+            chkdsk_lsn: header.chkdsk_lsn,
+            system_page_size: header.system_page_size,
+            log_page_size: header.log_page_size,
+            minor_version: header.minor_version,
+            major_version: header.major_version,
             valid_fixup: fixups.valid,
-            restart_area,
+            restart_area: RestartArea::from_slice(page, header.restart_offset),
         };
         Ok((page, fixups.sectors_match))
     }
 }
 
 impl RestartArea {
-    /// Parses the restart area at `offset` of a restart page, failing when it is cut short or
+    /// Checks the restart area at `offset` of a restart page, failing when it is cut short or
     /// its fields can't be those of a log with record pages of `log_page_size`.
-    fn from_slice(
-        page: &[u8],
-        offset: usize,
-        log_page_size: usize,
-    ) -> std::result::Result<Self, String> {
+    fn check(page: &[u8], offset: usize, log_page_size: usize) -> std::result::Result<(), String> {
         let area = page
             .get(offset..offset + RESTART_AREA_SIZE)
             .ok_or("cut short")?;
-        let field16 = |at: usize| LittleEndian::read_u16(&area[at..]);
-        let log_clients = field16(8);
-        let client_in_use_list = field16(0x0C);
         let seq_number_bits = LittleEndian::read_u32(&area[0x10..]);
-        let restart_area_length = field16(0x14);
-        let client_array_offset = field16(0x16);
+        let restart_area_length = LittleEndian::read_u16(&area[0x14..]);
         let file_size = LittleEndian::read_u64(&area[0x18..]);
-        let log_page_data_offset = field16(0x26);
+        let log_page_data_offset = LittleEndian::read_u16(&area[0x26..]);
 
         if !SEQ_NUMBER_BITS.contains(&seq_number_bits) {
             return Err(format!("{seq_number_bits} sequence number bits"));
@@ -601,27 +633,37 @@ impl RestartArea {
         if !(RECORD_PAGE_HEADER_SIZE..log_page_size).contains(&usize::from(log_page_data_offset)) {
             return Err(format!("log page data offset {log_page_data_offset}"));
         }
+        Ok(())
+    }
 
+    /// Reads the restart area at `offset` of a restart page, which [`RestartArea::check`]
+    /// found sane.
+    fn from_slice(page: &[u8], offset: usize) -> Self {
+        let area = &page[offset..offset + RESTART_AREA_SIZE];
+        let field16 = |at: usize| LittleEndian::read_u16(&area[at..]);
+        let log_clients = field16(8);
+        let client_in_use_list = field16(0x0C);
+        let client_array_offset = field16(0x16);
         let clients_start = offset + usize::from(client_array_offset);
         let (clients, client_chain_intact) =
             LogClient::read_chain(page, clients_start, log_clients, client_in_use_list);
-        Ok(RestartArea {
+        RestartArea {
             current_lsn: LittleEndian::read_u64(area),
             log_clients,
             client_free_list: field16(0x0A),
             client_in_use_list,
             flags: RestartAreaFlags::from_bits_retain(field16(0x0E)),
-            seq_number_bits,
-            restart_area_length,
+            seq_number_bits: LittleEndian::read_u32(&area[0x10..]),
+            restart_area_length: field16(0x14),
             client_array_offset,
-            file_size,
+            file_size: LittleEndian::read_u64(&area[0x18..]),
             last_lsn_data_length: LittleEndian::read_u32(&area[0x20..]),
             log_record_header_length: field16(0x24),
-            log_page_data_offset,
+            log_page_data_offset: field16(0x26),
             restart_log_open_count: LittleEndian::read_u32(&area[0x28..]),
             clients,
             client_chain_intact,
-        })
+        }
     }
 }
 
@@ -1655,12 +1697,7 @@ mod tests {
 
     #[test]
     fn what_looks_like_a_log_is_what_can_be_opened() {
-        let intact = || {
-            let mut data = restart_page();
-            data.extend(restart_page());
-            data.resize(0x4000, 0);
-            data
-        };
+        let intact = || empty_log(0x4000);
         let agree = |data: Vec<u8>, is_log: bool| {
             let start = &data[..data.len().min(LogFile::LOOKS_LIKE_PREFIX)];
             assert_eq!(LogFile::looks_like(start), is_log);
@@ -1685,5 +1722,50 @@ mod tests {
         data[..0x2000].fill(0);
         data[0x2000..0x2004].copy_from_slice(b"RCRD");
         agree(data, false);
+
+        // Both have the signature, but no sane restart area.
+        let mut data = intact();
+        for page in [0, 0x1000] {
+            data[page + 0x30..page + 0x60].fill(0);
+        }
+        agree(data, false);
+
+        // A restart area that reaches the word the first sector's fixup replaces.
+        let mut data = intact();
+        for page in [0, 0x1000] {
+            data.copy_within(page + 0x30..page + 0x110, page + 0x1D0);
+            data[page + 0x18..page + 0x1A].copy_from_slice(&0x1D0u16.to_le_bytes());
+            data[page + 0x1FE..page + 0x200].copy_from_slice(&1u16.to_le_bytes());
+        }
+        agree(data, false);
+    }
+
+    #[test]
+    fn a_stray_restart_signature_a_page_on_is_no_log() {
+        let agree_not_a_log = |data: Vec<u8>| {
+            assert!(!LogFile::looks_like(&data));
+            assert!(LogFile::from_buffer(data).is_err());
+        };
+        // A $J with a record that happens to start with `RSTR` at 0x1000: a USN record of 0x60
+        // bytes, version 2, at the start of each 4 KiB page.
+        let mut usn = vec![0u8; 0x4000];
+        for page in usn.chunks_mut(0x1000) {
+            page[..4].copy_from_slice(&0x60u32.to_le_bytes());
+            page[4..6].copy_from_slice(&2u16.to_le_bytes());
+        }
+        usn[0x1000..0x1004].copy_from_slice(b"RSTR");
+        agree_not_a_log(usn);
+
+        // An $MFT without its first record's header, with `RSTR` at 0x1000 and what a restart
+        // page has in its header around it.
+        let mut mft = vec![0u8; 0x4000];
+        for record in mft.chunks_mut(0x400).skip(1) {
+            record[..4].copy_from_slice(b"FILE");
+            record[4..6].copy_from_slice(&0x30u16.to_le_bytes());
+            record[6..8].copy_from_slice(&3u16.to_le_bytes());
+        }
+        mft[0x1000..0x1004].copy_from_slice(b"RSTR");
+        mft[0x1010..0x1018].copy_from_slice(&[0, 0x10, 0, 0, 0, 0x10, 0, 0]);
+        agree_not_a_log(mft);
     }
 }

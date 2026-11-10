@@ -127,9 +127,14 @@ pub fn descriptor_hash(value: &[u8]) -> u32 {
     })
 }
 
+/// How many of a stream's first bytes [`looks_like_sds`] looks at.
+pub const SDS_DETECT_PREFIX: usize = 0x10000;
+
 /// Whether `start`, the first bytes of a stream, looks like an `$SDS`: whether it has an entry
-/// with a valid hash at a 16-byte boundary of the first block whose header gives its own offset.
+/// with a valid hash at a 16-byte boundary of its first [`SDS_DETECT_PREFIX`] bytes whose header
+/// gives its own offset.
 pub fn looks_like_sds(start: &[u8]) -> bool {
+    let start = &start[..start.len().min(SDS_DETECT_PREFIX)];
     BlockEntries::new(start, 0, false).any(|entry| entry.valid_hash)
 }
 
@@ -518,6 +523,11 @@ mod tests {
         sds[..48].fill(0xFF);
         put_entry(&mut sds, 0x80, 0x101);
         assert!(looks_like_sds(&sds));
+
+        // Only the first 64 KiB are looked at.
+        let mut sds = vec![0u8; 0x20000];
+        put_entry(&mut sds, 0x10000, 0x101);
+        assert!(!looks_like_sds(&sds));
     }
 
     #[test]

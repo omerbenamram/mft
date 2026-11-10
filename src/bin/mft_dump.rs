@@ -10,7 +10,7 @@ use mft::boot::{BOOT_SECTOR_SIZE, BootSector, FlatBootSector};
 use mft::indx::{FlatIndxEntry, IndxEntry, IndxFile};
 use mft::logfile::{FlatLogRecord, LogFile};
 use mft::mft::MftParser;
-use mft::sds::{FlatSdsEntry, SdsEntries, SdsEntry, looks_like_sds};
+use mft::sds::{FlatSdsEntry, SDS_DETECT_PREFIX, SdsEntries, SdsEntry, looks_like_sds};
 use mft::usn::{FlatUsnRecord, UsnJournal, UsnRecord};
 
 use dialoguer::Confirm;
@@ -82,14 +82,11 @@ enum Detected {
     Sds,
 }
 
-/// How many of an input's first bytes are searched for an `$SDS` entry.
-const SDS_DETECT_PREFIX: usize = 1 << 16;
-
 impl Detected {
     /// Tells an `$MFT` (which starts with a `FILE` or `BAAD` record), an `$I30` (an `INDX`
-    /// record), a `$LogFile` (an `RSTR` or `CHKD` restart page, or with that page damaged, the
-    /// second restart page), a `$Boot` (`NTFS    ` at offset
-    /// 3) and an `$SDS` (an entry in the first 64 KiB whose hash matches its descriptor) from a
+    /// record), a `$LogFile` (one [`LogFile::from_buffer`] opens: a restart page that is sane
+    /// at its start or, with that page damaged, where the second one is), a `$Boot` (`NTFS    `
+    /// at offset 3) and an `$SDS` (an entry in the first 64 KiB whose hash matches its descriptor) from a
     /// `$J` (whose first bytes that aren't zero are a USN record). The sparse start of a `$J` can
     /// run to gigabytes of zeros, so all of it is skipped. Anything else is read as an `$MFT`, as
     /// before `$J` support, such as an `$MFT` whose first record was wiped.
@@ -102,19 +99,16 @@ impl Detected {
         match start.get(..4) {
             Some(b"FILE" | b"BAAD") => return Ok(Detected::Mft),
             Some(b"INDX") => return Ok(Detected::I30),
-            // `chkdsk` marks the restart pages it has worked on `CHKD`.
-            Some(b"RSTR" | b"CHKD") => return Ok(Detected::LogFile),
             _ => {}
+        }
+        if LogFile::looks_like(&start) {
+            return Ok(Detected::LogFile);
         }
         if start.get(3..11) == Some(b"NTFS    ") {
             return Ok(Detected::Boot);
         }
-        if looks_like_sds(&start[..start.len().min(SDS_DETECT_PREFIX)]) {
+        if looks_like_sds(&start) {
             return Ok(Detected::Sds);
-        }
-        // A `$LogFile` whose first restart page is damaged still has the second one.
-        if LogFile::looks_like(&start) {
-            return Ok(Detected::LogFile);
         }
         f.rewind()?;
         let mut journal = UsnJournal::new(f);
