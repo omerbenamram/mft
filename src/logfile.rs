@@ -151,6 +151,9 @@ pub struct LogFile {
     record_pages_start: usize,
     /// The record pages that were written, in file order.
     record_pages: Vec<Result<RecordPage>>,
+    /// For each page-sized slot from `record_pages_start` on, the index of the first slot at or
+    /// after it that doesn't start with `RCRD`. One entry more than there are slots.
+    next_other_page: Vec<usize>,
 }
 
 impl LogFile {
@@ -212,6 +215,16 @@ impl LogFile {
                 RecordPage::from_page(page, offset)
             })
             .collect();
+        let slots = (data.len() - restart_end).div_ceil(page_size);
+        let mut next_other_page = vec![slots; slots + 1];
+        for slot in (0..slots).rev() {
+            let start = restart_end + slot * page_size;
+            next_other_page[slot] = if data.get(start..start + 4) == Some(b"RCRD") {
+                next_other_page[slot + 1]
+            } else {
+                slot
+            };
+        }
         Ok(LogFile {
             data,
             restart_pages,
@@ -219,6 +232,7 @@ impl LogFile {
             page_size,
             record_pages_start: restart_end,
             record_pages,
+            next_other_page,
         })
     }
 
@@ -537,6 +551,21 @@ pub fn operation_name(operation: u16) -> Option<&'static str> {
 }
 
 impl NtfsLogRecord {
+    /// How many of the first bytes of a client data of `length` bytes [`Self::from_slice`] reads,
+    /// going by its first `NTFS_RECORD_HEADER_SIZE` bytes: the header, the LCNs, and the redo and
+    /// undo data that are inside the client data.
+    fn length_read(header: &[u8], length: usize) -> usize {
+        let field = |at| usize::from(read_u16(header, at).unwrap_or_default());
+        let part_end = |offset, part_length| {
+            let end = field(offset) + field(part_length);
+            if end <= length { end } else { 0 }
+        };
+        (NTFS_RECORD_HEADER_SIZE + 8 * field(0x0E))
+            .max(part_end(4, 6))
+            .max(part_end(8, 0x0A))
+            .min(length)
+    }
+
     /// Parses the client data of an NTFS client record.
     pub fn from_slice(data: &[u8]) -> Option<Self> {
         let field = |at| read_u16(data, at);
@@ -635,11 +664,22 @@ impl LogFile {
         {
             return None;
         }
-        let client_data = self.client_data(
-            offset + LOG_RECORD_HEADER_SIZE,
-            client_data_length as usize,
-            data_offset,
-        )?;
+        let data_start = offset + LOG_RECORD_HEADER_SIZE;
+        let length = client_data_length as usize;
+        if !self.client_data_fits(data_start, length, data_offset) {
+            return None;
+        }
+        // Only an NTFS client record's data is parsed, and only its header says how much of it:
+        // copying all of it for every record takes quadratic time on a log whose every record
+        // claims the rest of the file.
+        let ntfs = if record_type == 1 {
+            let header =
+                self.client_data(data_start, length.min(NTFS_RECORD_HEADER_SIZE), data_offset)?;
+            let length_read = NtfsLogRecord::length_read(&header, length);
+            NtfsLogRecord::from_slice(&self.client_data(data_start, length_read, data_offset)?)
+        } else {
+            None
+        };
         Some(LogRecord {
             offset: offset as u64,
             lsn,
@@ -651,12 +691,43 @@ impl LogFile {
             record_type,
             transaction_id: read_u32(header, 0x24)?,
             flags: LogRecordFlags::from_bits_retain(read_u16(header, 0x28)?),
-            ntfs: if record_type == 1 {
-                NtfsLogRecord::from_slice(&client_data)
-            } else {
-                None
-            },
+            ntfs,
         })
+    }
+
+    /// Whether `length` bytes of client data from `offset` on are all in the file, in record
+    /// pages: whether [`Self::client_data`] gives them. Takes the same time whatever the length.
+    fn client_data_fits(&self, offset: usize, length: usize, data_offset: usize) -> bool {
+        if length == 0 {
+            return true;
+        }
+        let slot = (offset - self.record_pages_start) / self.page_size;
+        let page_start = self.record_pages_start + slot * self.page_size;
+        // A record whose header ends a page starts its data in the next one.
+        if offset == page_start && self.next_other_page[slot] == slot {
+            return false;
+        }
+        let offset = offset.max(page_start + data_offset);
+        let in_first_page = (page_start + self.page_size - offset).min(length);
+        if offset + in_first_page > self.data.len() {
+            return false;
+        }
+        let left = length - in_first_page;
+        if left == 0 {
+            return true;
+        }
+        let in_each_page = self.page_size - data_offset;
+        if in_each_page == 0 {
+            return false;
+        }
+        // Every page the data continues into must be a record page, and the last one must hold
+        // what is left for it.
+        let more_pages = left.div_ceil(in_each_page);
+        let last_slot = slot + more_pages;
+        let in_last_page = left - (more_pages - 1) * in_each_page;
+        let last_page_start = self.record_pages_start + last_slot * self.page_size;
+        self.next_other_page[slot + 1] > last_slot
+            && last_page_start + data_offset + in_last_page <= self.data.len()
     }
 
     /// `length` bytes of client data from `offset` on, continuing past the end of a page at the
@@ -834,6 +905,112 @@ mod tests {
         let log = LogFile::from_buffer(data).unwrap();
         assert_eq!(log.restart_pages().len(), 2);
         assert_eq!(log.restart_page().restart_area.current_lsn, 10);
+    }
+
+    /// Makes `page` (4 KiB) a record page: the signature and the update sequence array, with the
+    /// last two bytes of each sector moved into it.
+    fn seal_record_page(page: &mut [u8]) {
+        page[..4].copy_from_slice(b"RCRD");
+        page[4..6].copy_from_slice(&0x28u16.to_le_bytes());
+        page[6..8].copy_from_slice(&9u16.to_le_bytes());
+        page[0x28..0x2A].copy_from_slice(&1u16.to_le_bytes());
+        for sector in 0..8 {
+            let end = (sector + 1) * 512;
+            page.copy_within(end - 2..end, 0x2A + 2 * sector);
+            page[end - 2..end].copy_from_slice(&1u16.to_le_bytes());
+        }
+    }
+
+    /// Writes a client record header at `offset` whose LSN gives that offset.
+    fn put_record_header(data: &mut [u8], offset: usize, client_data_length: u32) {
+        let header = &mut data[offset..offset + LOG_RECORD_HEADER_SIZE];
+        header[..8].copy_from_slice(&(offset as u64 / 8).to_le_bytes());
+        header[0x18..0x1C].copy_from_slice(&client_data_length.to_le_bytes());
+        header[0x20..0x24].copy_from_slice(&1u32.to_le_bytes());
+    }
+
+    /// A log of `size` bytes: two restart pages, then record pages with nothing in them.
+    fn empty_log(size: usize) -> Vec<u8> {
+        let mut data = restart_page(0x1000, 0);
+        data.extend(restart_page(0x1000, 0));
+        data.resize(size, 0);
+        data
+    }
+
+    #[test]
+    fn records_that_each_claim_the_rest_of_the_file_take_linear_time() {
+        // A record header every 0x30 bytes of every page, each with as much client data as is
+        // left of the file. Copying each record's data made this take a minute for 8 MiB.
+        let size = 8 << 20;
+        let mut data = empty_log(size);
+        for page_start in (0x2000..size).step_by(0x1000) {
+            for offset in (page_start + 0x40..=page_start + 0x1000 - 0x30).step_by(0x30) {
+                let rest = (size - offset - LOG_RECORD_HEADER_SIZE) as u32;
+                put_record_header(&mut data, offset, rest);
+            }
+            seal_record_page(&mut data[page_start..page_start + 0x1000]);
+        }
+        let log = LogFile::from_buffer(data).unwrap();
+        let started = std::time::Instant::now();
+        let records: Vec<_> = log.records().collect();
+        let elapsed = started.elapsed();
+        // The page headers on the way leave room for the claimed data only from the last page.
+        assert_eq!(records.len(), 84);
+        assert!(records.iter().all(|r| r.offset >= size as u64 - 0x1000));
+        assert!(elapsed.as_secs() < 10, "took {elapsed:?}");
+    }
+
+    #[test]
+    fn long_records_parse_as_before() {
+        // A record with a redo part four pages on, in a log whose page 6 was never written.
+        let size = 0xA000;
+        let mut data = empty_log(size);
+        let record = 0x2040;
+        let in_each_page = 0x1000 - 0x40;
+        let redo_offset = 0x28 + 3 * in_each_page as u16;
+        let client = record + LOG_RECORD_HEADER_SIZE;
+        data[client..client + 2].copy_from_slice(&2u16.to_le_bytes());
+        data[client + 4..client + 6].copy_from_slice(&redo_offset.to_le_bytes());
+        data[client + 6..client + 8].copy_from_slice(&8u16.to_le_bytes());
+        // The first page holds 0x30 bytes less than the others, for the record's header.
+        let redo = 0x5040 + 0x30 + 0x28;
+        data[redo..redo + 8].copy_from_slice(b"redodata");
+        for page_start in (0x2000..size).step_by(0x1000) {
+            if page_start != 0x8000 {
+                seal_record_page(&mut data[page_start..page_start + 0x1000]);
+            }
+        }
+
+        let with_length = |length: u32| {
+            let mut data = data.clone();
+            // Sealing moved the last two bytes of the sector, not the header.
+            put_record_header(&mut data, record, length);
+            LogFile::from_buffer(data).unwrap()
+        };
+        let whole = u32::from(redo_offset) + 8;
+        let log = with_length(whole);
+        let records: Vec<_> = log.records().collect();
+        assert_eq!(records.len(), 1);
+        let ntfs = records[0].ntfs.as_ref().unwrap();
+        assert_eq!(
+            ntfs.redo_operation_name,
+            Some("InitializeFileRecordSegment")
+        );
+        assert_eq!(ntfs.redo_data, b"redodata");
+
+        // Whether a record's data fits is worked out, not walked: both must agree, up to and
+        // past the page that was never written and the end of the file.
+        let log = with_length(0);
+        let walk = |offset: usize, length: usize| log.client_data(offset, length, 0x40).is_some();
+        for offset in [client, 0x3000, 0x3F00, 0x7000, 0x7FF8, 0x9000, 0x9FF8] {
+            for length in (0..0x8000).step_by(8).chain([1, 0xFBF, 0xFC1, 0x10_0000]) {
+                assert_eq!(
+                    log.client_data_fits(offset, length, 0x40),
+                    walk(offset, length),
+                    "{length:#x} bytes at {offset:#x}"
+                );
+            }
+        }
     }
 
     #[test]
