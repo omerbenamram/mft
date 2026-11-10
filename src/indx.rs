@@ -197,7 +197,13 @@ impl IndxRecord {
             let flags = IndexEntryFlags::from_bits_retain(u32::from(
                 read_u16(&self.data, at + 12).expect("in the node"),
             ));
-            if self.is_end_entry(at) {
+            // An end entry has no key, but NTFS leaves its key length undefined: the end flag
+            // ends the entries unless the entry says it has a key and is long enough to hold
+            // a `$FILE_NAME` one. A named entry with a stray end flag is read as an entry.
+            let key_length = read_u16(&self.data, at + 10).expect("in the node");
+            if flags.contains(IndexEntryFlags::INDEX_ENTRY_END)
+                && (key_length == 0 || length < ENTRY_HEADER_SIZE + FILE_NAME_HEADER_SIZE)
+            {
                 // A bogus length here mustn't push the slack past the node's entries.
                 let slack_start = (at + length.max(ENTRY_HEADER_SIZE)).min(self.entries_end);
                 return LiveWalk {
@@ -243,14 +249,6 @@ impl IndxRecord {
             error: None,
             slack_start: at.min(self.entries_end),
         }
-    }
-
-    /// Whether the entry at `at` of the node is its end entry: the end flag alone can be damage,
-    /// so the entry must also have no key. An entry with the flag and a key is read as any other
-    /// entry.
-    fn is_end_entry(&self, at: usize) -> bool {
-        let field = |offset| read_u16(&self.data, at + offset).expect("in the node");
-        u32::from(field(12)) & IndexEntryFlags::INDEX_ENTRY_END.bits() != 0 && field(10) == 0
     }
 
     fn slack_entry_at<'a>(&'a self, node: &'a [u8], at: usize) -> Option<(IndxEntry<'a>, usize)> {
@@ -705,13 +703,18 @@ mod tests {
     /// Records whose live entries are `a.txt`, `b.txt`, `c.txt` and `d.txt`, after `damage` to
     /// the second. The third names `$MFT`, as in a root directory.
     fn with_second_entry_damaged(damage: impl Fn(&mut Vec<u8>)) -> IndxRecord {
-        let mut live: Vec<_> = (0x40..)
-            .zip(["a.txt", "b.txt", "c.txt", "d.txt"])
-            .map(|(entry_id, name)| entry(0x0001_0000_0000_0000 | entry_id, name, 0))
-            .collect();
+        let mut live = live_entries(&["a.txt", "b.txt", "c.txt", "d.txt"]);
         damage(&mut live[1]);
         live[2][..8].copy_from_slice(&0x0001_0000_0000_0000u64.to_le_bytes());
         IndxRecord::from_buffer(record(&live, &[]), 0).unwrap()
+    }
+
+    /// Entries for `names` in use, the first for MFT entry 0x40, the next for 0x41, and so on.
+    fn live_entries(names: &[&str]) -> Vec<Vec<u8>> {
+        (0x40..)
+            .zip(names)
+            .map(|(entry_id, name)| entry(0x0001_0000_0000_0000 | entry_id, name, 0))
+            .collect()
     }
 
     fn names(entries: &[IndxEntry]) -> Vec<String> {
@@ -771,7 +774,6 @@ mod tests {
         let damaged = with_second_entry_damaged(|e| {
             e[12] |= end;
             e[ENTRY_HEADER_SIZE + 0x40] = 200;
-            e[8..10].fill(0);
         });
         let (entries, error) = damaged.entries_until_error();
         assert_eq!(names(&entries), ["a.txt"]);
@@ -780,13 +782,31 @@ mod tests {
     }
 
     #[test]
+    fn an_end_entry_with_a_stale_key_length_ends_the_entries() {
+        // NTFS leaves an end entry's key length undefined. One too short for a key still ends
+        // the entries, with or without a child node's VCN.
+        for (length, flags) in [(0x10u16, 0x2u16), (0x18, 0x3)] {
+            let mut end = vec![0u8; usize::from(length)];
+            end[8..10].copy_from_slice(&length.to_le_bytes());
+            end[10..12].copy_from_slice(&0x5Au16.to_le_bytes());
+            end[12..14].copy_from_slice(&flags.to_le_bytes());
+            let mut r = record(&live_entries(&["a.txt"]), &[]);
+            // `record` writes its own end entry after the live ones; replace it.
+            let at = 0x40 + 0x60;
+            r[at..at + end.len()].copy_from_slice(&end);
+            let end_of_entries = (at + end.len() - 0x18) as u32;
+            r[0x1C..0x20].copy_from_slice(&end_of_entries.to_le_bytes());
+            let record = IndxRecord::from_buffer(r, 0).unwrap();
+            assert_eq!(names(&record.entries().unwrap()), ["a.txt"], "{flags:#x}");
+            assert!(record.slack_entries().is_empty());
+        }
+    }
+
+    #[test]
     fn the_scan_after_a_damaged_entry_keeps_only_plausible_entries() {
         // The third entry has the times of 1601, which the slack scan takes for garbage, so
         // only the entry after it is found.
-        let mut live: Vec<_> = (0x40..)
-            .zip(["a.txt", "b.txt", "c.txt", "d.txt"])
-            .map(|(entry_id, name)| entry(0x0001_0000_0000_0000 | entry_id, name, 0))
-            .collect();
+        let mut live = live_entries(&["a.txt", "b.txt", "c.txt", "d.txt"]);
         live[1][ENTRY_HEADER_SIZE + 0x40] = 200;
         live[2][ENTRY_HEADER_SIZE + 8..ENTRY_HEADER_SIZE + 40].fill(0);
         let record = IndxRecord::from_buffer(record(&live, &[]), 0).unwrap();
@@ -796,10 +816,7 @@ mod tests {
 
     #[test]
     fn a_length_that_is_not_a_multiple_of_8_is_rounded_up() {
-        let mut live: Vec<_> = (0x40..)
-            .zip(["a.txt", "b.txt", "c.txt"])
-            .map(|(entry_id, name)| entry(0x0001_0000_0000_0000 | entry_id, name, 0))
-            .collect();
+        let mut live = live_entries(&["a.txt", "b.txt", "c.txt"]);
         // 0x60 became 0x5C, which still holds the name. The next entry is where it was.
         assert_eq!(live[1][8], 0x60);
         live[1][8] = 0x5C;
