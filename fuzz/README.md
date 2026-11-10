@@ -16,4 +16,6 @@ cargo +nightly fuzz run entry -- -max_len=4096
 
 Seeding the corpus with real records finds deeper bugs faster, for example by splitting `samples/MFT` into 1024-byte files under `fuzz/corpus/entry/`.
 
+CI does not run the targets. Its `lint` job checks that they compile: `cargo clippy --manifest-path fuzz/Cargo.toml -- -D warnings`.
+
 Crashes are written to `fuzz/artifacts/<target>/`. Reproduce one with `cargo +nightly fuzz run <target> <artifact>`.
