@@ -4,7 +4,7 @@ use crate::attribute::x50::sid;
 use crate::attribute::xc0::tag_name;
 use crate::err::{Error, Result};
 use crate::impl_serialize_for_bitflags;
-use crate::utils::{read_guid, read_u32, read_u64, windows_filetime_to_timestamp};
+use crate::utils::{read_guid, read_u32, read_u64, windows_filetime_to_timestamp_saturating};
 
 use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
 
@@ -159,49 +159,54 @@ impl<'a> IndexEntryHeader<'a> {
 
         let mft_reference =
             MftReference::from_reader(&mut stream).map_err(Error::failed_to_read_mft_reference)?;
-        if mft_reference.entry > 0 && mft_reference.sequence > 0 {
-            let index_record_length = stream.read_u16::<LittleEndian>()?;
-            if index_record_length == 0 {
-                return Err(Error::Any {
-                    detail: "index entry record_length is 0".to_string(),
-                });
-            }
-            if index_record_length < INDEX_ENTRY_HEADER_LEN {
-                return Err(Error::Any {
-                    detail: format!(
-                        "index entry record_length {index_record_length} is smaller than minimum {INDEX_ENTRY_HEADER_LEN}"
-                    ),
-                });
-            }
-            let end_pos = start_pos
-                .checked_add(usize::from(index_record_length))
-                .ok_or_else(|| Error::Any {
-                    detail: "index entry offset overflow".to_string(),
-                })?;
-            let attr_fname_length = stream.read_u16::<LittleEndian>()?;
-            // The flags are two bytes, followed by two reserved bytes.
-            let flags =
-                IndexEntryFlags::from_bits_retain(stream.read_u32::<LittleEndian>()? & 0xFFFF);
-
-            let fname_start = stream.position() as usize;
-            if fname_start > end_pos || end_pos > value.len() {
-                return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
-            }
-            let fname_info = FileNameAttr::from_slice(&value[fname_start..end_pos])?;
-
-            Ok(Some((
-                IndexEntryHeader {
-                    mft_reference,
-                    index_record_length,
-                    attr_fname_length,
-                    flags,
-                    fname_info,
-                },
-                end_pos,
-            )))
-        } else {
-            Ok(None)
+        // A reference with sequence number 0 points at no file: it is the node's end entry, or the
+        // padding of a node that lost it. Entry number 0 alone doesn't end the node: that is
+        // `$MFT`, which the root directory indexes.
+        if mft_reference.sequence == 0 {
+            return Ok(None);
         }
+        let index_record_length = stream.read_u16::<LittleEndian>()?;
+        let attr_fname_length = stream.read_u16::<LittleEndian>()?;
+        // The flags are two bytes, followed by two reserved bytes.
+        let flags = IndexEntryFlags::from_bits_retain(stream.read_u32::<LittleEndian>()? & 0xFFFF);
+        if flags.contains(IndexEntryFlags::INDEX_ENTRY_END) {
+            return Ok(None);
+        }
+
+        if index_record_length == 0 {
+            return Err(Error::Any {
+                detail: "index entry record_length is 0".to_string(),
+            });
+        }
+        if index_record_length < INDEX_ENTRY_HEADER_LEN {
+            return Err(Error::Any {
+                detail: format!(
+                    "index entry record_length {index_record_length} is smaller than minimum {INDEX_ENTRY_HEADER_LEN}"
+                ),
+            });
+        }
+        let end_pos = start_pos
+            .checked_add(usize::from(index_record_length))
+            .ok_or_else(|| Error::Any {
+                detail: "index entry offset overflow".to_string(),
+            })?;
+
+        let fname_start = stream.position() as usize;
+        if fname_start > end_pos || end_pos > value.len() {
+            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+        }
+        let fname_info = FileNameAttr::from_slice(&value[fname_start..end_pos])?;
+
+        Ok(Some((
+            IndexEntryHeader {
+                mft_reference,
+                index_record_length,
+                attr_fname_length,
+                flags,
+                fname_info,
+            },
+            end_pos,
+        )))
     }
 }
 
@@ -371,12 +376,12 @@ impl<'a> ViewIndexValue<'a> {
                 version: read_u32(data, 0)?,
                 quota_flags: read_u32(data, 4)?,
                 bytes_used: read_u64(data, 8)?,
-                change_time: windows_filetime_to_timestamp(read_u64(data, 16)?).ok()?,
+                change_time: windows_filetime_to_timestamp_saturating(read_u64(data, 16)?),
                 warning_limit: read_u64(data, 24)? as i64,
                 hard_limit: read_u64(data, 32)? as i64,
                 exceeded_time: match read_u64(data, 40)? {
                     0 => None,
-                    t => Some(windows_filetime_to_timestamp(t).ok()?),
+                    t => Some(windows_filetime_to_timestamp_saturating(t)),
                 },
                 sid: match &data[48..] {
                     [] => None,
@@ -440,7 +445,7 @@ impl<'a> IndexEntries<'a> {
 mod tests {
     use super::*;
     use crate::attribute::x30::FileNamespace;
-    use crate::entry::tests::mft_reference_bytes;
+    use crate::entry::tests::{filename_value_bytes, mft_reference_bytes};
 
     /// A view index entry with `key` and `data`, padded to 8 bytes like NTFS writes them.
     fn view_entry(key: &[u8], data: &[u8], flags: u16) -> Vec<u8> {
@@ -577,6 +582,58 @@ mod tests {
         value[20..24].copy_from_slice(&32u32.to_le_bytes());
         let root = IndexRootAttr::from_slice(&value).unwrap();
         assert!(root.index_entries.view_entries.is_empty());
+    }
+
+    /// An `$I30` index entry for the file `reference`, named `name`.
+    fn file_name_entry(reference: [u8; 8], name: &str) -> Vec<u8> {
+        let fname = filename_value_bytes(name, FileNamespace::Win32);
+        let length = (16 + fname.len()).next_multiple_of(8);
+        let mut buf = reference.to_vec();
+        buf.extend_from_slice(&(length as u16).to_le_bytes());
+        buf.extend_from_slice(&(fname.len() as u16).to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&fname);
+        buf.resize(length, 0);
+        buf
+    }
+
+    #[test]
+    fn index_entries_continue_past_a_reference_to_entry_zero() {
+        // The root directory of a volume with 4 KiB records, whose index fits in its
+        // `$INDEX_ROOT`: `$MFT` is entry 0, and the entries after it used to be dropped.
+        let mut node = file_name_entry(mft_reference_bytes(2, 2), "$LogFile");
+        node.extend(file_name_entry(mft_reference_bytes(0, 1), "$MFT"));
+        node.extend(file_name_entry(mft_reference_bytes(39, 1), "1.txt"));
+        // The end entry indexes no file, and is where the node stops.
+        let mut end = file_name_entry(mft_reference_bytes(0, 0), "");
+        end[12] = IndexEntryFlags::INDEX_ENTRY_END.bits() as u8;
+        node.extend(end);
+        node.extend(file_name_entry(mft_reference_bytes(40, 1), "slack.txt"));
+
+        let entries = IndexEntries::from_slice(&node, node.len() as u32, 0, 0).unwrap();
+        let names: Vec<_> = entries
+            .index_entries
+            .iter()
+            .map(|e| (e.mft_reference.entry, e.fname_info.name.to_utf8_string()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                (2, "$LogFile".to_string()),
+                (0, "$MFT".to_string()),
+                (39, "1.txt".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn index_entries_end_at_short_zero_padding() {
+        // A node that lost its end entry and has less than an entry header of zeros left.
+        let mut node = file_name_entry(mft_reference_bytes(39, 1), "1.txt");
+        node.extend([0; 8]);
+
+        let entries = IndexEntries::from_slice(&node, node.len() as u32, 0, 0).unwrap();
+        assert_eq!(entries.index_entries.len(), 1);
     }
 
     #[test]
