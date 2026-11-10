@@ -154,7 +154,10 @@ impl EntryHeader {
         }
 
         if signature == *ZERO_HEADER {
-            return Ok(Self::zero());
+            return Ok(EntryHeader {
+                record_number: entry_id,
+                ..Self::zero()
+            });
         }
 
         let usa_offset = reader.read_u16::<LittleEndian>()?;
@@ -199,6 +202,8 @@ impl EntryHeader {
         self.signature == *FILE_HEADER
     }
 
+    /// The header of a zeroed record: one that was never used. Its `record_number` is 0;
+    /// [`EntryHeader::from_reader`] sets the number it was asked for.
     pub fn zero() -> Self {
         EntryHeader {
             signature: *ZERO_HEADER,
