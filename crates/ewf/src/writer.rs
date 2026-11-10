@@ -31,7 +31,7 @@ use crate::ewf2::section::{
     EWF2_SECTION_DESCRIPTOR_SIZE, Ewf2SectionDataFlags, Ewf2SectionType,
     make_ewf2_section_descriptor,
 };
-use crate::reader::decode_chunk_v1;
+use crate::reader::{decode_chunk_v1, expected_chunk_len};
 use crate::util::{adler32_rfc1950, read_exact_at, read_file_range};
 use crate::{Error, Result};
 use flate2::{Compression, write::ZlibEncoder};
@@ -1291,6 +1291,7 @@ fn hash_prefix_from_parsed_segments(
     let mut sha1 = Sha1::new();
 
     let mut remaining = bytes_to_hash;
+    let mut chunk_index = 0u64;
     for seg in segments {
         for group in &seg.chunk_groups {
             for (i, _) in group.chunk_entries.iter().enumerate() {
@@ -1299,8 +1300,9 @@ fn hash_prefix_from_parsed_segments(
                 }
                 let (start, end, is_compressed) = chunk_range_v1(group, i)?;
                 let slice = read_file_range(&seg.file, seg.file_len, start, end)?;
-                let expected_len =
-                    usize::try_from(remaining).map_or(chunk_size, |r| r.min(chunk_size));
+                // The prefix ends inside its last chunk, like media that is not a chunk multiple.
+                let expected_len = expected_chunk_len(bytes_to_hash, chunk_size, chunk_index);
+                chunk_index += 1;
                 let out = decode_chunk_v1(&slice, is_compressed, chunk_size, expected_len)?;
 
                 let take = (remaining as usize).min(out.len());
