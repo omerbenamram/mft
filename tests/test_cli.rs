@@ -271,6 +271,32 @@ fn it_dumps_security_descriptors() {
 }
 
 #[test]
+fn it_detects_security_descriptors_whose_first_entry_is_damaged() {
+    // The sample is the start of the first block: fill the block up and add its copy.
+    let mut sds = fs::read(testdata_dir().join("secure").join("narcos-head.SDS")).unwrap();
+    sds.resize(0x40000, 0);
+    sds.extend_from_within(..);
+    sds[..64].fill(0);
+    let d = tempdir().unwrap();
+    let path = d.as_ref().join("$SDS");
+    fs::write(&path, &sds).unwrap();
+
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.args(["-o", "csv"]).arg(path.as_os_str());
+    let output = cmd.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let csv = String::from_utf8(output.stdout).unwrap();
+    let rows: Vec<&str> = csv.lines().collect();
+    assert!(rows.len() > 16, "{csv}");
+    // The first entry is read from the copy, the others where they are.
+    assert!(rows[1].starts_with("0,256,0x32fec6cb,true,true,"), "{csv}");
+    assert!(
+        rows[2].starts_with("128,257,0x3414c8f7,true,false,"),
+        "{csv}"
+    );
+}
+
+#[test]
 fn it_rejects_mft_for_inputs_without_paths() {
     let sample = testdata_dir().join("boot").join("narcos.Boot");
 
@@ -318,22 +344,18 @@ fn it_detects_a_log_whose_first_restart_page_is_damaged() {
     let d = tempdir().unwrap();
     let path = d.as_ref().join("$LogFile");
     let log = fs::read(&sample).unwrap();
-    // Zeros, and bytes that are no page at all. The second restart page is a copy of the first.
-    for fill in [0u8, 0xA5] {
+    // Zeros, bytes that are no page at all, and such bytes with what reads as a page size where
+    // a restart page has its own. The second restart page is a copy of the first.
+    for (fill, page_size) in [(0u8, None), (0xA5, None), (0xA5, Some(512u32))] {
         let mut damaged = log.clone();
         damaged[..0x1000].fill(fill);
+        if let Some(page_size) = page_size {
+            damaged[0x10..0x14].copy_from_slice(&page_size.to_le_bytes());
+        }
         fs::write(&path, &damaged).unwrap();
-        assert!(dump(&path) == intact, "filled with {fill:#x}");
+        assert!(
+            dump(&path) == intact,
+            "filled with {fill:#x}, page size {page_size:?}"
+        );
     }
-
-    // With both restart pages gone, the record pages still say what the file is.
-    let mut damaged = log.clone();
-    damaged[..0x2000].fill(0);
-    fs::write(&path, &damaged).unwrap();
-    let mut cmd = cargo_bin_cmd!("mft_dump");
-    cmd.args(["-o", "csv"]).arg(path.as_os_str());
-    let output = cmd.output().unwrap();
-    assert!(!output.status.success(), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("$LogFile"), "{stderr}");
 }

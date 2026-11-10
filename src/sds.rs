@@ -66,6 +66,11 @@ impl<'a> SdsEntry<'a> {
         } else {
             own
         };
+        Self::parse_at(sds, offset, own, from_mirror)
+    }
+
+    /// Parses the entry at `offset` of `sds` whose header must give `own` as its offset.
+    fn parse_at(sds: &'a [u8], offset: usize, own: usize, from_mirror: bool) -> Option<Self> {
         let hash = read_u32(sds, offset)?;
         let security_id = read_u32(sds, offset + 4)?;
         let own_offset = read_u64(sds, offset + 8)?;
@@ -88,6 +93,17 @@ impl<'a> SdsEntry<'a> {
             from_mirror,
         })
     }
+}
+
+/// Whether a file is an `$SDS` stream, going by `start`, its first bytes, and `mirror_start`,
+/// the bytes from [`SDS_BLOCK_SIZE`] on: an entry at offset 0 whose hash matches its descriptor,
+/// there or, when it is damaged there, in the copy of the first block. 64 KiB of each is more
+/// than any entry takes.
+pub fn looks_like(start: &[u8], mirror_start: &[u8]) -> bool {
+    [(start, false), (mirror_start, true)]
+        .into_iter()
+        .filter_map(|(buf, from_mirror)| SdsEntry::parse_at(buf, 0, 0, from_mirror))
+        .any(|entry| entry.valid_hash)
 }
 
 /// The hash NTFS keeps of a descriptor: each 32-bit word is added to the hash rotated left by 3.
