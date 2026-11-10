@@ -204,3 +204,124 @@ fn test_compressed_stream_hashes_and_exports_sparse_units_as_zeros() {
     fs.export_file_default_stream_to_path(ENTRY, &out).unwrap();
     assert!(std::fs::read(&out).unwrap() == expected, "export differs");
 }
+
+/// A sparse stream of 512 TiB on a 128 KiB image. Its size is consistent with its mapping pairs,
+/// so it opens and reads as zeros, but loading all of it into memory is refused instead of asking
+/// the allocator for 2^49 bytes (which aborted the process).
+#[test]
+fn test_stream_larger_than_image_is_not_loaded_into_memory() {
+    const SPARSE_CLUSTERS: u64 = 1 << 40;
+    const SIZE: u64 = SPARSE_CLUSTERS * CLUSTER_SIZE as u64;
+
+    let mut vol = SynthVolume::new(256, 32);
+    vol.set_record(
+        ENTRY,
+        Record::file().attr(
+            NonResident::data(
+                1,
+                SIZE,
+                &[Run::Sparse {
+                    len: SPARSE_CLUSTERS,
+                }],
+            )
+            .build(),
+        ),
+    );
+    let image_len = 256 * CLUSTER_SIZE as u64;
+    let fs = vol.into_fs();
+
+    let err = fs.read_file_default_stream(ENTRY).unwrap_err();
+    assert!(
+        matches!(err, ntfs::ntfs::Error::Unsupported { .. }),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.to_string().contains(&format!(
+            "of {SIZE} bytes into memory: it is larger than the image ({image_len} bytes)"
+        )),
+        "unexpected error: {err}"
+    );
+
+    // Random access still works.
+    let stream = fs.open_file_default_stream_read_at(ENTRY).unwrap();
+    assert_eq!(stream.len(), SIZE);
+    let mut buf = [0xAAu8; 64];
+    stream.read_exact_at(SIZE - 64, &mut buf).unwrap();
+    assert_eq!(buf, [0u8; 64]);
+}
+
+/// A compression unit field of 40 means units of 2^40 clusters. Each read would decode a whole
+/// unit into memory; the stream is refused instead.
+#[test]
+fn test_oversized_compression_unit_is_refused() {
+    let mut vol = SynthVolume::new(256, 32);
+    let lcn = vol.first_free_lcn();
+    let content = text(4 * CLUSTER_SIZE, "cu40");
+    vol.write_clusters(lcn, &content);
+    vol.set_record(
+        ENTRY,
+        Record::file().attr(
+            NonResident {
+                flags: FLAG_COMPRESSED,
+                compression_unit: 40,
+                ..NonResident::data(
+                    1,
+                    content.len() as u64,
+                    &[Run::Data {
+                        lcn: lcn as i64,
+                        len: 4,
+                    }],
+                )
+            }
+            .build(),
+        ),
+    );
+    let fs = vol.into_fs();
+
+    let expect_unit_error = |what: &str, err: ntfs::ntfs::Error| {
+        assert!(
+            matches!(err, ntfs::ntfs::Error::Unsupported { .. })
+                && err.to_string().contains("compression unit of"),
+            "{what}: unexpected error: {err}"
+        );
+    };
+    expect_unit_error("read", fs.read_file_default_stream(ENTRY).unwrap_err());
+    expect_unit_error("md5", fs.md5_file_stream(ENTRY, "").unwrap_err());
+    expect_unit_error(
+        "open",
+        fs.open_file_default_stream_read_at(ENTRY)
+            .map(|_| ())
+            .unwrap_err(),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    expect_unit_error(
+        "export",
+        fs.export_file_default_stream_to_path(ENTRY, &dir.path().join("out.bin"))
+            .unwrap_err(),
+    );
+}
+
+/// The boot sector can claim MFT records of up to 1 GiB. Every record read allocates one record,
+/// so a record size beyond the image is refused when the volume is opened.
+#[test]
+fn test_record_size_larger_than_image_is_refused() {
+    use common::synth::MemImage;
+    use ntfs::ntfs::{Error, Volume};
+    use std::sync::Arc;
+
+    // 0x40: MFT record size, 0x44: index record size.
+    for field_offset in [0x40usize, 0x44] {
+        let mut image = SynthVolume::new(256, 32).into_image();
+        image[field_offset] = 0xe2; // -30: records of 2^30 bytes
+        let err = Volume::open(Arc::new(MemImage(image)), 0).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::InvalidBootSector {
+                    message: "cluster or record size is larger than the image"
+                }
+            ),
+            "field {field_offset:#x}: unexpected error: {err}"
+        );
+    }
+}

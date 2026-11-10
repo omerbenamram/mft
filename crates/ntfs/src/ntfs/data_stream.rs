@@ -27,6 +27,16 @@ use mft::attribute::data_run::{DataRun, RunType};
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
 
+/// Largest compression unit the compressed stream reader accepts, in bytes.
+///
+/// NTFS compresses in units of 16 clusters and only on volumes with clusters of at most 4 KiB,
+/// so real units are 64 KiB or less. The limit leaves room for 16-cluster units on volumes with
+/// clusters of up to 1 MiB.
+pub const MAX_COMPRESSION_UNIT_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Memory budget for the decoded units a compressed stream keeps cached.
+const UNIT_CACHE_BYTES: u64 = 32 * 1024 * 1024;
+
 #[derive(Debug, Clone)]
 struct RunMapping {
     /// Starting VCN for this run (in clusters).
@@ -168,6 +178,21 @@ impl CompressedDataRunsStream {
                     message: "unit size overflow".to_string(),
                 })?;
 
+        // Every read decodes whole units into memory, so the unit size (an on-disk field) has
+        // to be sane. NTFS itself only uses units of 16 clusters.
+        if unit_bytes > MAX_COMPRESSION_UNIT_BYTES {
+            return Err(Error::Unsupported {
+                what: format!(
+                    "compression unit of {unit_clusters} clusters ({unit_bytes} bytes); the limit is {MAX_COMPRESSION_UNIT_BYTES} bytes"
+                ),
+            });
+        }
+
+        // Keep the cache of decoded units within a fixed amount of memory.
+        let cached_units = usize::try_from(UNIT_CACHE_BYTES / unit_bytes)
+            .unwrap_or(1)
+            .clamp(1, 32);
+
         Ok(Self {
             volume,
             run_mappings: build_run_mappings(&data_runs),
@@ -175,7 +200,9 @@ impl CompressedDataRunsStream {
             cluster_size,
             unit_clusters,
             unit_bytes,
-            cache: Mutex::new(LruCache::new(NonZeroUsize::new(32).expect("32 > 0"))),
+            cache: Mutex::new(LruCache::new(
+                NonZeroUsize::new(cached_units).expect("clamped to at least 1"),
+            )),
         })
     }
 
