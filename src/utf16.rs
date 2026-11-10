@@ -1,5 +1,5 @@
 use serde::Serialize;
-use serde::ser::Serializer;
+use serde::ser::{Error as _, Serializer};
 use std::cell::RefCell;
 use std::fmt;
 use utf16_simd::Scratch;
@@ -68,20 +68,24 @@ impl<'a> Utf16LeStr<'a> {
 
     /// Execute `f` with a temporary UTF-8 view of this string.
     ///
-    /// This does not allocate per call (it reuses a thread-local scratch buffer). `f` may itself
-    /// convert other strings: a nested call works on a buffer of its own.
+    /// This reuses a thread-local scratch buffer instead of allocating per call. `f` may itself
+    /// convert other strings: a nested call works on a buffer of its own, which it allocates.
     pub fn with_utf8<R>(&self, f: impl FnOnce(&str) -> R) -> R {
+        self.with_utf8_bytes(|utf8| {
+            f(std::str::from_utf8(utf8).expect("utf16-simd outputs valid UTF-8"))
+        })
+    }
+
+    /// Execute `f` with this string converted to UTF-8, in the thread-local scratch buffer.
+    fn with_utf8_bytes<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
         if self.is_empty() {
-            return f("");
+            return f(&[]);
         }
 
         // The buffer is taken out of the thread-local while `f` runs, so that a conversion inside
         // `f` finds a fresh one instead of a `RefCell` that is already borrowed.
         let mut scratch = UTF16_SCRATCH.take();
-        let result = {
-            let out = scratch.escape_utf16le_raw(self.utf16le, self.len_units());
-            f(std::str::from_utf8(out).expect("utf16-simd outputs valid UTF-8"))
-        };
+        let result = f(scratch.escape_utf16le_raw(self.utf16le, self.len_units()));
         UTF16_SCRATCH.set(scratch);
         result
     }
@@ -151,7 +155,10 @@ impl Serialize for Utf16LeStr<'_> {
         S: Serializer,
     {
         // A serializer may convert another string while it writes this one.
-        self.with_utf8(|s| serializer.serialize_str(s))
+        self.with_utf8_bytes(|utf8| {
+            let s = std::str::from_utf8(utf8).map_err(S::Error::custom)?;
+            serializer.serialize_str(s)
+        })
     }
 }
 
