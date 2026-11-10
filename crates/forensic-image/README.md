@@ -5,7 +5,7 @@ sources (raw files, AFF, EWF, etc.).
 
 ## Example
 
-```rust
+```rust,no_run
 use forensic_image::ReadAt;
 use std::sync::Arc;
 

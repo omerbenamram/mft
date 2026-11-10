@@ -33,7 +33,7 @@ pub const DEFAULT_INDX_RECORD_SIZE: usize = 4096;
 /// Where the index node header starts in a record.
 const NODE_HEADER_OFFSET: usize = 0x18;
 /// The size of an index entry's header, before its `$FILE_NAME`.
-const ENTRY_HEADER_SIZE: usize = 0x10;
+pub(crate) const ENTRY_HEADER_SIZE: usize = 0x10;
 /// The size of a `$FILE_NAME` with an empty name.
 const FILE_NAME_HEADER_SIZE: usize = 0x42;
 
@@ -159,6 +159,37 @@ impl IndxRecord {
     /// Like [`IndxRecord::entries`], but on a damaged entry gives the entries before it along
     /// with the error, rather than only the error.
     pub fn entries_until_error(&self) -> (Vec<IndxEntry<'_>>, Option<Error>) {
+        let walk = self.walk_live();
+        (walk.entries, walk.error)
+    }
+
+    /// The entries found in the node's slack space: the bytes after its end entry, up to the end
+    /// of its allocation. When an entry before the end entry is damaged, the scan starts at that
+    /// entry instead, so the intact entries after it are still found. Each 8-byte boundary is
+    /// tried as the start of an entry, and then as the start of a bare `$FILE_NAME`, for an entry
+    /// whose header was overwritten. Only names that look whole are kept: a known namespace, a
+    /// name without control characters, and timestamps from 1980 to 2100.
+    pub fn slack_entries(&self) -> Vec<IndxEntry<'_>> {
+        let node = &self.data[..self.allocated_end];
+        let mut entries = Vec::new();
+        let mut at = self.walk_live().slack_start.next_multiple_of(8);
+        while at + FILE_NAME_HEADER_SIZE <= node.len() {
+            if let Some((entry, length)) = self.slack_entry_at(node, at) {
+                entries.push(entry);
+                at += length.next_multiple_of(8);
+            } else {
+                at += 8;
+            }
+        }
+        entries
+    }
+
+    /// Walks the node's current entries up to its end entry, or up to the first damaged one.
+    fn walk_live(&self) -> LiveWalk<'_> {
+        let invalid = |detail: String| Error::InvalidIndexRecord {
+            offset: self.offset,
+            detail,
+        };
         let mut entries = Vec::new();
         let mut at = self.entries_start;
         while at + ENTRY_HEADER_SIZE <= self.entries_end {
@@ -167,27 +198,33 @@ impl IndxRecord {
                 read_u16(&self.data, at + 12).expect("in the node"),
             ));
             if flags.contains(IndexEntryFlags::INDEX_ENTRY_END) {
-                break;
+                // A bogus length here mustn't push the slack past the node's entries.
+                let slack_start = (at + length.max(ENTRY_HEADER_SIZE)).min(self.entries_end);
+                return LiveWalk {
+                    entries,
+                    error: None,
+                    slack_start,
+                };
             }
-            if length < ENTRY_HEADER_SIZE + FILE_NAME_HEADER_SIZE || at + length > self.entries_end
+            let parsed = if length < ENTRY_HEADER_SIZE + FILE_NAME_HEADER_SIZE
+                || at + length > self.entries_end
             {
-                let error = Error::InvalidIndexRecord {
-                    offset: self.offset,
-                    detail: format!("entry at {at} has length {length}"),
-                };
-                return (entries, Some(error));
-            }
-            let file_name =
-                match FileNameAttr::from_slice(&self.data[at + ENTRY_HEADER_SIZE..at + length]) {
-                    Ok(file_name) => file_name,
-                    Err(e) => {
-                        let error = Error::InvalidIndexRecord {
-                            offset: self.offset,
-                            detail: format!("entry at {at}: {e}"),
-                        };
-                        return (entries, Some(error));
-                    }
-                };
+                Err(invalid(format!("entry at {at} has length {length}")))
+            } else {
+                FileNameAttr::from_slice(&self.data[at + ENTRY_HEADER_SIZE..at + length])
+                    .map_err(|e| invalid(format!("entry at {at}: {e}")))
+            };
+            let file_name = match parsed {
+                Ok(file_name) => file_name,
+                // The rest of the node is scanned like slack, from the damaged entry on.
+                Err(error) => {
+                    return LiveWalk {
+                        entries,
+                        error: Some(error),
+                        slack_start: at,
+                    };
+                }
+            };
             entries.push(IndxEntry {
                 offset: self.offset + at as u64,
                 from_slack: false,
@@ -199,83 +236,20 @@ impl IndxRecord {
             });
             at += length;
         }
-        (entries, None)
-    }
-
-    /// The entries found in the node's slack space: the bytes after its end entry, up to the end
-    /// of its allocation. Each 8-byte boundary is tried as the start of an entry, and then as the
-    /// start of a bare `$FILE_NAME`, for an entry whose header was overwritten. Only names that
-    /// look whole are kept: a known namespace, a name without control characters, and timestamps
-    /// from 1980 to 2100.
-    pub fn slack_entries(&self) -> Vec<IndxEntry<'_>> {
-        let slack_start = match self.end_entry_end() {
-            Some(end) => end.next_multiple_of(8),
-            None => self.entries_end.next_multiple_of(8),
-        };
-        let slack = &self.data[..self.allocated_end];
-        let mut entries = Vec::new();
-        let mut at = slack_start;
-        while at + FILE_NAME_HEADER_SIZE <= slack.len() {
-            if let Some((entry, length)) = self.slack_entry_at(slack, at) {
-                entries.push(entry);
-                at += length.next_multiple_of(8);
-            } else {
-                at += 8;
-            }
+        // No end entry: whatever is left of the node is scanned like slack.
+        LiveWalk {
+            entries,
+            error: None,
+            slack_start: at,
         }
-        entries
     }
 
-    /// Where the node's end entry ends: the start of its slack space.
-    fn end_entry_end(&self) -> Option<usize> {
-        let mut at = self.entries_start;
-        while at + ENTRY_HEADER_SIZE <= self.entries_end {
-            let length = usize::from(read_u16(&self.data, at + 8)?);
-            let flags = read_u16(&self.data, at + 12)?;
-            if u32::from(flags) & IndexEntryFlags::INDEX_ENTRY_END.bits() != 0 {
-                return Some(at + length.max(ENTRY_HEADER_SIZE));
-            }
-            if length == 0 {
-                return None;
-            }
-            at += length;
-        }
-        None
-    }
-
-    fn slack_entry_at<'a>(&'a self, slack: &'a [u8], at: usize) -> Option<(IndxEntry<'a>, usize)> {
-        // A whole entry: its header, then its `$FILE_NAME`.
-        if let Some(file_name) = slack
-            .get(at + ENTRY_HEADER_SIZE..)
-            .and_then(plausible_file_name)
-        {
-            let length = usize::from(read_u16(slack, at + 8)?);
-            let file_name_length = usize::from(read_u16(slack, at + 10)?);
-            let flags = read_u16(slack, at + 12)?;
-            let needed = FILE_NAME_HEADER_SIZE + 2 * usize::from(file_name.name_length);
-            let reference = MftReference::from(read_u64(slack, at)?);
-            if file_name_length == needed
-                && length >= ENTRY_HEADER_SIZE + needed
-                && length % 8 == 0
-                && flags & !0x3 == 0
-                && reference.entry != 0
-                && reference.entry < 1 << 32
-                && reference.sequence != 0
-            {
-                return Some((
-                    IndxEntry {
-                        offset: self.offset + at as u64,
-                        from_slack: true,
-                        mft_reference: Some(reference),
-                        flags: Some(IndexEntryFlags::from_bits_retain(u32::from(flags))),
-                        file_name,
-                    },
-                    length.min(slack.len() - at),
-                ));
-            }
+    fn slack_entry_at<'a>(&'a self, node: &'a [u8], at: usize) -> Option<(IndxEntry<'a>, usize)> {
+        if let Some(found) = self.slack_entry_with_header_at(node, at) {
+            return Some(found);
         }
         // A `$FILE_NAME` whose entry header was overwritten.
-        let file_name = plausible_file_name(&slack[at..])?;
+        let file_name = plausible_file_name(&node[at..])?;
         let length = FILE_NAME_HEADER_SIZE + 2 * usize::from(file_name.name_length);
         Some((
             IndxEntry {
@@ -288,32 +262,88 @@ impl IndxRecord {
             length,
         ))
     }
+
+    /// A whole entry at `at`: its header, then its `$FILE_NAME`.
+    fn slack_entry_with_header_at<'a>(
+        &'a self,
+        node: &'a [u8],
+        at: usize,
+    ) -> Option<(IndxEntry<'a>, usize)> {
+        let length = usize::from(read_u16(node, at + 8)?);
+        let file_name_length = usize::from(read_u16(node, at + 10)?);
+        let flags = read_u16(node, at + 12)?;
+        let reference = MftReference::from(read_u64(node, at)?);
+        if length % 8 != 0
+            || flags & !0x3 != 0
+            || reference.entry == 0
+            || reference.entry >= 1 << 32
+            || reference.sequence == 0
+        {
+            return None;
+        }
+        let file_name = plausible_file_name(node.get(at + ENTRY_HEADER_SIZE..)?)?;
+        let needed = FILE_NAME_HEADER_SIZE + 2 * usize::from(file_name.name_length);
+        if file_name_length != needed || length < ENTRY_HEADER_SIZE + needed {
+            return None;
+        }
+        let flags = IndexEntryFlags::from_bits_retain(u32::from(flags));
+        // A stale length can be longer than the entry; going by it could skip entries after it.
+        // An entry is at most its name rounded up to 8 bytes, plus a child node's VCN.
+        let child_vcn = if flags.contains(IndexEntryFlags::INDEX_ENTRY_NODE) {
+            8
+        } else {
+            0
+        };
+        let longest = (ENTRY_HEADER_SIZE + needed).next_multiple_of(8) + child_vcn;
+        Some((
+            IndxEntry {
+                offset: self.offset + at as u64,
+                from_slack: true,
+                mft_reference: Some(reference),
+                flags: Some(flags),
+                file_name,
+            },
+            length.min(longest).min(node.len() - at),
+        ))
+    }
 }
+
+/// The node's current entries, as [`IndxRecord::walk_live`] found them.
+struct LiveWalk<'a> {
+    entries: Vec<IndxEntry<'a>>,
+    /// The damaged entry that stopped the walk early.
+    error: Option<Error>,
+    /// Where the node's slack starts: after its end entry, or at the damaged entry.
+    slack_start: usize,
+}
+
+/// The `FILETIME` of 1980-01-01 and 2100-01-01: a `$FILE_NAME` timestamp outside them is garbage.
+const EARLIEST_FILETIME: u64 = 119_600_064_000_000_000;
+const LATEST_FILETIME: u64 = 157_469_184_000_000_000;
+/// Sizes past 2^56 bytes (64 PiB) are larger than any NTFS volume.
+const LARGEST_SIZE: u64 = 1 << 56;
 
 /// Parses a `$FILE_NAME` at the start of `buf` if it looks like a real one.
 fn plausible_file_name(buf: &[u8]) -> Option<FileNameAttr<'_>> {
-    // The parent's sequence number, the namespace, and a name length that isn't zero.
+    // A name length that isn't zero, and a known namespace.
     if buf.len() < FILE_NAME_HEADER_SIZE || buf[0x40] == 0 || buf[0x41] > 3 {
         return None;
     }
-    if read_u16(buf, 6)? == 0 {
-        return None;
-    }
-    let file_name = FileNameAttr::from_slice(buf).ok()?;
-    let earliest = Timestamp::new(315_532_800, 0).expect("1980"); // 1980-01-01
-    let latest = Timestamp::new(4_102_444_800, 0).expect("2100"); // 2100-01-01
-    let times = [
-        file_name.created,
-        file_name.modified,
-        file_name.mft_modified,
-        file_name.accessed,
-    ];
-    if times.iter().any(|t| *t < earliest || *t > latest)
-        || file_name.parent.entry == 0
-        || file_name.physical_size < file_name.logical_size && file_name.physical_size != 0
+    // The parent's record number and sequence number aren't zero. The logical size can be
+    // larger than the allocated one, for a compressed or sparse file.
+    let parent = MftReference::from(read_u64(buf, 0)?);
+    let times_ok = (0..4).all(|i| {
+        read_u64(buf, 8 + 8 * i).is_some_and(|t| (EARLIEST_FILETIME..=LATEST_FILETIME).contains(&t))
+    });
+    if parent.entry == 0
+        || parent.sequence == 0
+        || !times_ok
+        || read_u64(buf, 0x28)? >= LARGEST_SIZE
+        || read_u64(buf, 0x30)? >= LARGEST_SIZE
     {
         return None;
     }
+    let file_name = FileNameAttr::from_slice(buf).ok()?;
     let name_ok = file_name
         .name
         .with_utf8(|name| !name.chars().any(|c| c.is_control() || c == '\u{FFFD}'));
@@ -324,7 +354,8 @@ fn plausible_file_name(buf: &[u8]) -> Option<FileNameAttr<'_>> {
 /// `$I30`, in order. Records that are all zeros (allocated but never used) are skipped.
 ///
 /// The record size comes from the first record's update sequence array: one fixup per 512-byte
-/// sector, which is 4096 bytes on most volumes.
+/// sector, which is 4096 bytes on most volumes. When that array's size is damaged (not a power of
+/// two from 512 to 65536 bytes), records are read as 4096 bytes.
 ///
 /// # Example
 ///
@@ -380,14 +411,7 @@ impl<R: Read> IndxFile<R> {
                     self.offset += data.len() as u64;
                     continue;
                 }
-                None => *self.record_size.insert(
-                    match (data.starts_with(b"INDX"), read_u16(&data, 6)) {
-                        (true, Some(usa_count)) if usa_count >= 2 => {
-                            (usize::from(usa_count) - 1) * 512
-                        }
-                        _ => DEFAULT_INDX_RECORD_SIZE,
-                    },
-                ),
+                None => *self.record_size.insert(record_size_from_header(&data)),
             };
             if data.len() == 512 {
                 self.read_up_to(&mut data, record_size.saturating_sub(512))?;
@@ -398,6 +422,23 @@ impl<R: Read> IndxFile<R> {
                 return IndxRecord::from_buffer(data, offset).map(Some);
             }
         }
+    }
+}
+
+/// The record size the update sequence array of the record in `header` gives: one fixup per
+/// 512-byte sector, plus the update sequence number. A size that isn't a power of two from 512
+/// to 65536 bytes is damage, so [`DEFAULT_INDX_RECORD_SIZE`] is used instead.
+fn record_size_from_header(header: &[u8]) -> usize {
+    match (header.starts_with(b"INDX"), read_u16(header, 6)) {
+        (true, Some(usa_count)) => {
+            let size = usize::from(usa_count).saturating_sub(1) * 512;
+            if size.is_power_of_two() && (512..=65536).contains(&size) {
+                size
+            } else {
+                DEFAULT_INDX_RECORD_SIZE
+            }
+        }
+        _ => DEFAULT_INDX_RECORD_SIZE,
     }
 }
 
@@ -466,7 +507,7 @@ impl FlatIndxEntry {
             record_lsn: record.lsn,
             record_valid_fixup: record.valid_fixup,
             from_slack: entry.from_slack,
-            flags: entry.flags.clone(),
+            flags: entry.flags,
             entry_id: entry.mft_reference.map(|r| r.entry),
             sequence: entry.mft_reference.map(|r| r.sequence),
             parent_entry_id: f.parent.entry,
@@ -577,6 +618,95 @@ mod tests {
             ]
         );
         assert!(slack.iter().all(|e| e.from_slack));
+    }
+
+    fn slack_names(record: &IndxRecord) -> Vec<(String, Option<MftReference>)> {
+        record
+            .slack_entries()
+            .iter()
+            .map(|e| (e.file_name.name.to_utf8_string(), e.mft_reference))
+            .collect()
+    }
+
+    #[test]
+    fn keeps_slack_names_of_compressed_files() {
+        // A compressed or sparse file's allocated size is smaller than its real size.
+        let mut slack = entry(0x0002_0000_0000_0041, "packed.bin", 0);
+        slack[ENTRY_HEADER_SIZE + 0x28..ENTRY_HEADER_SIZE + 0x30]
+            .copy_from_slice(&4096u64.to_le_bytes());
+        slack[ENTRY_HEADER_SIZE + 0x30..ENTRY_HEADER_SIZE + 0x38]
+            .copy_from_slice(&65536u64.to_le_bytes());
+        let record = IndxRecord::from_buffer(record(&[], &slack), 0).unwrap();
+        assert_eq!(
+            slack_names(&record),
+            [("packed.bin".to_string(), Some(MftReference::new(0x41, 2)))]
+        );
+    }
+
+    #[test]
+    fn caps_stale_slack_entry_lengths() {
+        // The first slack entry's length runs over the second one.
+        let mut slack = entry(0x0002_0000_0000_0041, "a.txt", 0);
+        slack[8..10].copy_from_slice(&0x200u16.to_le_bytes());
+        slack.extend(entry(0x0003_0000_0000_0042, "b.txt", 0));
+        let record = IndxRecord::from_buffer(record(&[], &slack), 0).unwrap();
+        assert_eq!(
+            slack_names(&record),
+            [
+                ("a.txt".to_string(), Some(MftReference::new(0x41, 2))),
+                ("b.txt".to_string(), Some(MftReference::new(0x42, 3))),
+            ]
+        );
+    }
+
+    #[test]
+    fn scans_from_a_damaged_live_entry() {
+        let mut damaged = entry(0x0001_0000_0000_0040, "a.txt", 0);
+        damaged[8..10].copy_from_slice(&8u16.to_le_bytes());
+        let live = [damaged, entry(0x0001_0000_0000_0041, "b.txt", 0)];
+        let record = IndxRecord::from_buffer(record(&live, &[]), 0).unwrap();
+        let (entries, error) = record.entries_until_error();
+        assert!(entries.is_empty());
+        assert!(error.is_some());
+        // `a.txt` lost its header's length, but its `$FILE_NAME` and `b.txt` are still there.
+        assert_eq!(
+            slack_names(&record),
+            [
+                ("a.txt".to_string(), None),
+                ("b.txt".to_string(), Some(MftReference::new(0x41, 1))),
+            ]
+        );
+    }
+
+    #[test]
+    fn ignores_a_bogus_end_entry_length() {
+        let live = [entry(0x0001_0000_0000_0040, "a.txt", 0)];
+        let slack = entry(0x0002_0000_0000_0041, "deleted.txt", 0);
+        let mut r = record(&live, &slack);
+        let end = 0x40 + live[0].len();
+        r[end + 8..end + 10].copy_from_slice(&0xFFF0u16.to_le_bytes());
+        let record = IndxRecord::from_buffer(r, 0).unwrap();
+        assert_eq!(record.entries().unwrap().len(), 1);
+        assert_eq!(
+            slack_names(&record),
+            [("deleted.txt".to_string(), Some(MftReference::new(0x41, 2)))]
+        );
+    }
+
+    #[test]
+    fn record_size_falls_back_on_a_damaged_header() {
+        let size = |usa_count: u16| {
+            let mut header = b"INDX".to_vec();
+            header.extend(0x28u16.to_le_bytes());
+            header.extend(usa_count.to_le_bytes());
+            record_size_from_header(&header)
+        };
+        assert_eq!(size(9), 4096);
+        assert_eq!(size(3), 1024);
+        assert_eq!(size(129), 65536);
+        for bogus in [0, 1, 4, 257, u16::MAX] {
+            assert_eq!(size(bogus), DEFAULT_INDX_RECORD_SIZE, "{bogus}");
+        }
     }
 
     #[test]

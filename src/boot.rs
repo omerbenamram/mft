@@ -6,10 +6,9 @@
 //!
 //! <https://flatcap.github.io/linux-ntfs/ntfs/files/boot.html>
 
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use crate::err::{Error, Result};
-use crate::utils::{read_u16, read_u32, read_u64};
 
 /// The size of the boot sector.
 pub const BOOT_SECTOR_SIZE: usize = 512;
@@ -44,6 +43,9 @@ pub struct BootSector {
     pub mft_entry_size: u32,
     /// The size of an index record (`INDX`) in bytes.
     pub index_entry_size: u32,
+    /// Serialized as a hex string (`0xE49CB2C49CB2C4F8`), since JSON numbers above 2^53 lose
+    /// precision in many readers.
+    #[serde(serialize_with = "serialize_serial_number")]
     pub volume_serial_number: u64,
     /// The low 32 bits of the serial number as `vol` and `dir` show them (`1234-ABCD`), the value
     /// shortcuts and prefetch files record for the volume.
@@ -51,9 +53,21 @@ pub struct BootSector {
     pub checksum: u32,
 }
 
+fn serialize_serial_number<S: Serializer>(
+    serial: &u64,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.collect_str(&format_args!("0x{serial:016X}"))
+}
+
+/// The largest cluster NTFS supports.
+const MAX_CLUSTER_SIZE: u64 = 2 << 20;
+
 impl BootSector {
     /// Parses the first 512 bytes of `buf`, which must have the `NTFS    ` OEM ID and the
-    /// `0x55AA` signature.
+    /// `0x55AA` signature, a power-of-two sector size from 256 to 4096 bytes, a power-of-two
+    /// count of sectors per cluster for clusters of at most 2 MiB, and offsets and sizes that fit
+    /// in 64 bits.
     ///
     /// # Example
     ///
@@ -83,8 +97,8 @@ impl BootSector {
         let invalid = |detail: &str| Error::InvalidBootSector {
             detail: detail.to_string(),
         };
-        let sector = buf
-            .get(..BOOT_SECTOR_SIZE)
+        let sector: &[u8; BOOT_SECTOR_SIZE] = buf
+            .first_chunk()
             .ok_or_else(|| invalid("shorter than 512 bytes"))?;
         if &sector[3..11] != b"NTFS    " {
             return Err(invalid("no `NTFS    ` OEM ID at offset 3"));
@@ -93,22 +107,29 @@ impl BootSector {
             return Err(invalid("no 0x55AA signature at offset 510"));
         }
 
-        // Every read is in bounds of the 512 bytes.
-        let u16_at = |offset| read_u16(sector, offset).unwrap_or_default();
-        let u32_at = |offset| read_u32(sector, offset).unwrap_or_default();
-        let u64_at = |offset| read_u64(sector, offset).unwrap_or_default();
+        let u16_at = |offset| u16::from_le_bytes(le_bytes(sector, offset));
+        let u32_at = |offset| u32::from_le_bytes(le_bytes(sector, offset));
+        let u64_at = |offset| u64::from_le_bytes(le_bytes(sector, offset));
 
         let bytes_per_sector = u16_at(0x0B);
+        if !bytes_per_sector.is_power_of_two() || !(256..=4096).contains(&bytes_per_sector) {
+            return Err(invalid(&format!(
+                "bytes per sector {bytes_per_sector} is not a power of two from 256 to 4096"
+            )));
+        }
+        // Up to 0x80, the count itself. Above, the negative log2 of the count.
         let sectors_per_cluster = match sector[0x0D] {
             raw @ 0..=0x80 => u32::from(raw),
-            raw => 1u32
-                .checked_shl(256 - u32::from(raw))
-                .ok_or_else(|| invalid("sectors per cluster out of range"))?,
+            raw => 1u32.checked_shl(256 - u32::from(raw)).unwrap_or(0),
         };
-        if bytes_per_sector == 0 || sectors_per_cluster == 0 {
-            return Err(invalid("bytes per sector or sectors per cluster is zero"));
-        }
         let cluster_size = u64::from(bytes_per_sector) * u64::from(sectors_per_cluster);
+        if !sectors_per_cluster.is_power_of_two() || cluster_size > MAX_CLUSTER_SIZE {
+            return Err(invalid(&format!(
+                "sectors per cluster byte 0x{:02X} is not a power of two for a cluster of at \
+                 most 2 MiB",
+                sector[0x0D]
+            )));
+        }
 
         let record_size = |offset: usize, name: &str| -> Result<u32> {
             // Positive: a count of clusters. Negative: the log2 of a size in bytes.
@@ -126,6 +147,11 @@ impl BootSector {
         let mft_mirror_lcn = u64_at(0x38);
         let volume_serial_number = u64_at(0x48);
         let low = volume_serial_number as u32;
+        let bytes = |count: u64, unit: u64, name: &str| {
+            count
+                .checked_mul(unit)
+                .ok_or_else(|| invalid(&format!("{name} overflows")))
+        };
 
         Ok(BootSector {
             oem_id: String::from_utf8_lossy(&sector[3..11]).into_owned(),
@@ -137,11 +163,11 @@ impl BootSector {
             number_of_heads: u16_at(0x1A),
             hidden_sectors: u32_at(0x1C),
             total_sectors,
-            volume_size: total_sectors.saturating_mul(u64::from(bytes_per_sector)),
+            volume_size: bytes(total_sectors, u64::from(bytes_per_sector), "volume size")?,
             mft_lcn,
-            mft_offset: mft_lcn.saturating_mul(cluster_size),
+            mft_offset: bytes(mft_lcn, cluster_size, "$MFT offset")?,
             mft_mirror_lcn,
-            mft_mirror_offset: mft_mirror_lcn.saturating_mul(cluster_size),
+            mft_mirror_offset: bytes(mft_mirror_lcn, cluster_size, "$MFTMirr offset")?,
             mft_entry_size: record_size(0x40, "file record size")?,
             index_entry_size: record_size(0x44, "index record size")?,
             volume_serial_number,
@@ -149,6 +175,65 @@ impl BootSector {
             checksum: u32_at(0x50),
         })
     }
+}
+
+/// A [`BootSector`] as one CSV row, with the column names of the other CSVs.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "PascalCase")]
+pub struct FlatBootSector {
+    pub oem_id: String,
+    pub bytes_per_sector: u16,
+    pub sectors_per_cluster: u32,
+    pub cluster_size: u64,
+    pub media_descriptor: u8,
+    pub sectors_per_track: u16,
+    pub number_of_heads: u16,
+    pub hidden_sectors: u32,
+    pub total_sectors: u64,
+    pub volume_size: u64,
+    pub mft_lcn: u64,
+    pub mft_offset: u64,
+    pub mft_mirror_lcn: u64,
+    pub mft_mirror_offset: u64,
+    pub mft_entry_size: u32,
+    pub index_entry_size: u32,
+    /// As in JSON, a hex string.
+    #[serde(serialize_with = "serialize_serial_number")]
+    pub volume_serial_number: u64,
+    pub volume_serial: String,
+    pub checksum: u32,
+}
+
+impl From<&BootSector> for FlatBootSector {
+    fn from(boot: &BootSector) -> Self {
+        let boot = boot.clone();
+        FlatBootSector {
+            oem_id: boot.oem_id,
+            bytes_per_sector: boot.bytes_per_sector,
+            sectors_per_cluster: boot.sectors_per_cluster,
+            cluster_size: boot.cluster_size,
+            media_descriptor: boot.media_descriptor,
+            sectors_per_track: boot.sectors_per_track,
+            number_of_heads: boot.number_of_heads,
+            hidden_sectors: boot.hidden_sectors,
+            total_sectors: boot.total_sectors,
+            volume_size: boot.volume_size,
+            mft_lcn: boot.mft_lcn,
+            mft_offset: boot.mft_offset,
+            mft_mirror_lcn: boot.mft_mirror_lcn,
+            mft_mirror_offset: boot.mft_mirror_offset,
+            mft_entry_size: boot.mft_entry_size,
+            index_entry_size: boot.index_entry_size,
+            volume_serial_number: boot.volume_serial_number,
+            volume_serial: boot.volume_serial,
+            checksum: boot.checksum,
+        }
+    }
+}
+
+/// The `N` bytes at `offset` of the sector.
+fn le_bytes<const N: usize>(sector: &[u8; BOOT_SECTOR_SIZE], offset: usize) -> [u8; N] {
+    std::array::from_fn(|i| sector[offset + i])
 }
 
 #[cfg(test)]
@@ -193,10 +278,49 @@ mod tests {
         zero[0x0D] = 0;
         assert!(BootSector::from_slice(&zero).is_err());
 
+        for bytes_per_sector in [0u16, 128, 513, 8192] {
+            let mut odd = sector();
+            odd[0x0B..0x0D].copy_from_slice(&bytes_per_sector.to_le_bytes());
+            assert!(BootSector::from_slice(&odd).is_err(), "{bytes_per_sector}");
+        }
+        // 3 sectors, 2^32 sectors, and 2^13 sectors of 512 bytes (4 MiB clusters).
+        for raw in [3u8, 0xE0, 0xF3] {
+            let mut odd = sector();
+            odd[0x0D] = raw;
+            assert!(BootSector::from_slice(&odd).is_err(), "{raw:#x}");
+        }
+
         let mut huge = sector();
         huge[0x40] = 0x80;
         assert!(BootSector::from_slice(&huge).is_err());
 
         assert!(BootSector::from_slice(&sector()[..511]).is_err());
+    }
+
+    #[test]
+    fn rejects_offsets_that_overflow() {
+        let mut far = sector();
+        far[0x30..0x38].copy_from_slice(&(u64::MAX / 1024).to_le_bytes());
+        let err = BootSector::from_slice(&far).unwrap_err();
+        assert!(err.to_string().contains("$MFT offset overflows"), "{err}");
+
+        let mut big = sector();
+        big[0x28..0x30].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(BootSector::from_slice(&big).is_err());
+    }
+
+    #[test]
+    fn serial_number_is_a_hex_string() {
+        let mut sector = sector();
+        sector[0x48..0x50].copy_from_slice(&0xE49C_B2C4_9CB2_C4F8u64.to_le_bytes());
+        let boot = BootSector::from_slice(&sector).unwrap();
+        let json = serde_json::to_value(&boot).unwrap();
+        assert_eq!(json["volume_serial_number"], "0xE49CB2C49CB2C4F8");
+
+        let mut csv = csv::Writer::from_writer(vec![]);
+        csv.serialize(FlatBootSector::from(&boot)).unwrap();
+        let csv = String::from_utf8(csv.into_inner().unwrap()).unwrap();
+        assert!(csv.starts_with("OemId,BytesPerSector,"), "{csv}");
+        assert!(csv.contains(",0xE49CB2C49CB2C4F8,9CB2-C4F8,"), "{csv}");
     }
 }
