@@ -12,7 +12,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{self, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::{MAIN_SEPARATOR_STR, Path, PathBuf};
 
 /// How an entry contributes to the paths of its children.
 enum PathStep {
@@ -86,6 +86,28 @@ fn stale_parent_path(reference: MftReference) -> PathBuf {
         reference.entry, reference.sequence
     );
     PathBuf::from("[Orphaned]")
+}
+
+/// Adds `name` to `path` as one more level.
+///
+/// `PathBuf::push` replaces the path so far with a name the host reads as absolute: one that
+/// starts with `/` on Unix, or with `\` or a drive such as `C:` on Windows. Windows doesn't
+/// create such names, but other NTFS drivers accept `:` and `\` in them, and a crafted MFT can
+/// hold anything.
+fn push_name(path: &mut PathBuf, name: &str) {
+    let path = path.as_mut_os_string();
+    if !path.is_empty() {
+        path.push(MAIN_SEPARATOR_STR);
+    }
+    path.push(name);
+}
+
+/// `[Orphaned]/<name>`.
+fn orphaned_path(name: &str) -> PathBuf {
+    let mut path = PathBuf::with_capacity("[Orphaned]".len() + 1 + name.len());
+    path.push("[Orphaned]");
+    push_name(&mut path, name);
+    path
 }
 
 /// A copy of `path` with room for `extra` more bytes, so pushing them doesn't copy it again.
@@ -430,7 +452,7 @@ impl<T: Read + Seek> MftParser<T> {
         } = &first_step
             && let Some(mut path) = self.cached_directory_path(*parent, 1 + name.len())
         {
-            path.push(name);
+            push_name(&mut path, name);
             self.cache_path(entry_id, generation, path.clone());
             return path;
         }
@@ -499,7 +521,9 @@ impl<T: Read + Seek> MftParser<T> {
         };
 
         for link in chain.into_iter().rev() {
-            prefix.extend(link.name);
+            if let Some(name) = &link.name {
+                push_name(&mut prefix, name);
+            }
             self.cache_path(link.id, link.generation, prefix.clone());
         }
         prefix
@@ -580,15 +604,15 @@ impl<T: Read + Seek> MftParser<T> {
             5 => PathBuf::from(name),
             0 => {
                 trace!("Found orphaned entry ID {entry_id}");
-                PathBuf::from("[Orphaned]").join(name)
+                orphaned_path(&name)
             }
             id if id == entry_id => {
                 trace!("Found self-referential file path, for entry ID {entry_id}");
-                PathBuf::from("[Orphaned]").join(name)
+                orphaned_path(&name)
             }
             _ => {
                 let mut path = self.get_directory_path(parent, 1 + name.len());
-                path.push(name);
+                push_name(&mut path, &name);
                 path
             }
         }
@@ -854,6 +878,27 @@ mod tests {
                 Some(id)
             );
         }
+    }
+
+    #[test]
+    fn test_get_full_path_keeps_the_parents_of_a_name_that_looks_absolute() {
+        // Names that `PathBuf::push` takes for an absolute path, on Unix and on Windows.
+        let mft = mft_of([
+            synthetic_entry(true, Some(("A", 5))),
+            synthetic_entry(true, Some(("/etc", 6))),
+            synthetic_entry(false, Some(("passwd", 7))),
+            synthetic_entry(false, Some(("C:x", 6))),
+            synthetic_entry(false, Some(("/orphan", 0))),
+        ]);
+        let mut parser = MftParser::from_buffer(mft).unwrap();
+
+        let path =
+            |parser: &mut MftParser<_>, id| crate::utils::windows_path(&full_path(parser, id));
+        // The file first, so that its directories are resolved as a chain.
+        assert_eq!(path(&mut parser, 8), r"A\etc\passwd");
+        assert_eq!(path(&mut parser, 7), r"A\etc");
+        assert_eq!(path(&mut parser, 9), r"A\C:x");
+        assert_eq!(path(&mut parser, 10), r"[Orphaned]\orphan");
     }
 
     #[test]
