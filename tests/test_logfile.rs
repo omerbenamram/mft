@@ -3,11 +3,15 @@ mod fixtures;
 use fixtures::*;
 use mft::logfile::{LogFile, RestartAreaFlags};
 
-fn sample() -> LogFile {
+fn sample_bytes() -> Vec<u8> {
     let path = testdata_dir()
         .join("logfile")
         .join("narcos-sysreserved-head.LogFile");
-    LogFile::from_buffer(std::fs::read(path).unwrap()).unwrap()
+    std::fs::read(path).unwrap()
+}
+
+fn sample() -> LogFile {
+    LogFile::from_buffer(sample_bytes()).unwrap()
 }
 
 #[test]
@@ -102,10 +106,7 @@ fn swap_fixups(data: &mut [u8], page: usize) {
 
 #[test]
 fn it_reads_records_that_are_only_in_a_tail_copy() {
-    let path = testdata_dir()
-        .join("logfile")
-        .join("narcos-sysreserved-head.LogFile");
-    let clean = std::fs::read(path).unwrap();
+    let clean = sample_bytes();
     let lsns = |log: &LogFile| log.records().map(|r| r.lsn).collect::<Vec<_>>();
     let mut clean_lsns = lsns(&LogFile::from_buffer(clean.clone()).unwrap());
     clean_lsns.sort_unstable();

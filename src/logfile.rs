@@ -11,6 +11,8 @@
 //! <https://flatcap.github.io/linux-ntfs/ntfs/files/logfile.html>,
 //! <https://github.com/libyal/libfsntfs/blob/main/documentation/New%20Technologies%20File%20System%20(NTFS).asciidoc#metadata_file_logfile>
 
+use std::ops::Range;
+
 use bitflags::bitflags;
 use serde::Serialize;
 
@@ -177,6 +179,8 @@ struct TailCopy {
     offset: usize,
     /// Where the page it is a copy of is in the file.
     home: usize,
+    /// The LSN of the last record that ends in the copy.
+    lsn: u64,
 }
 
 impl LogFile {
@@ -249,19 +253,7 @@ impl LogFile {
             next_other_page: Vec::new(),
         };
         log.tail_copies = log.find_tail_copies();
-
-        let slots = (log.data.len() - restart_end).div_ceil(page_size);
-        let mut next_other_page = vec![slots; slots + 1];
-        for slot in (0..slots).rev() {
-            let start = restart_end + slot * page_size;
-            let source = log.page_source(start);
-            next_other_page[slot] = if log.data.get(source..source + 4) == Some(b"RCRD") {
-                next_other_page[slot + 1]
-            } else {
-                slot
-            };
-        }
-        log.next_other_page = next_other_page;
+        log.next_other_page = log.find_other_pages();
         Ok(log)
     }
 
@@ -302,79 +294,109 @@ impl LogFile {
     /// A tail copy says where it belongs: version 2.0 of the log at `TAIL_COPY_FILE_OFFSET` of
     /// any of the first 32 record pages, version 1.x in place of the last LSN of the first two.
     /// What it says is taken only when the last record that ends in the page is at that place.
-    /// It is newer when that record's LSN is higher than the one of the page it belongs at, or
-    /// when that page isn't a record page with valid fixups.
+    /// It is newer when that record's LSN is higher than the LSNs in the header of the page it
+    /// belongs at. When that page isn't a record page with valid fixups, the copy stands in for
+    /// it whatever its age.
     fn find_tail_copies(&self) -> Vec<TailCopy> {
-        let pages: std::collections::HashMap<u64, &RecordPage> = self
-            .record_pages
-            .iter()
-            .flatten()
-            .filter(|page| page.valid_fixup)
-            .map(|page| (page.offset, page))
-            .collect();
-        let page_size = self.page_size as u64;
-        let start = self.record_pages_start as u64;
-        let tail_copies_end = start + (TAIL_COPY_PAGES as u64) * page_size;
+        let (start, page_size) = (self.record_pages_start, self.page_size);
         // The LSN of the last record that ends in a page, for pages that say so.
-        let newest = |page: &RecordPage| {
+        let last_end = |page: &RecordPage| {
             page.flags
                 .contains(RecordPageFlags::LOG_RECORD_END)
                 .then_some(page.last_end_lsn)
         };
-
-        let mut tail_copies: Vec<(u64, TailCopy)> = Vec::new();
-        for (slot, offset) in (start..tail_copies_end).step_by(self.page_size).enumerate() {
-            let Some(page) = pages.get(&offset) else {
+        let mut tail_copies: Vec<TailCopy> = Vec::new();
+        for slot in 0..TAIL_COPY_PAGES {
+            let offset = start + slot * page_size;
+            let Some(page) = self.valid_record_page(offset) else {
                 continue;
             };
-            let Some(lsn) = newest(page) else {
+            let Some(lsn) = last_end(page) else {
                 continue;
             };
-            let file_offset = read_u32(&self.data, offset as usize + TAIL_COPY_FILE_OFFSET)
-                .map(u64::from)
-                .filter(|&file_offset| file_offset != 0)
-                .or((slot < 2).then_some(page.last_lsn));
-            let Some(home) = file_offset.filter(|&home| {
-                home >= start
+            let belongs_at = |home: u64| {
+                let home = usize::try_from(home).ok()?;
+                let end = home.checked_add(page_size)?;
+                (home >= start
                     && home != offset
                     && (home - start).is_multiple_of(page_size)
-                    && home + page_size <= self.data.len() as u64
+                    && end <= self.data.len()
                     && self
                         .lsn_offset(lsn)
-                        .is_some_and(|at| (home..home + page_size).contains(&at))
-            }) else {
+                        .is_some_and(|at| (home as u64..end as u64).contains(&at)))
+                .then_some(home)
+            };
+            // Both places are tried: with pages of 8 KiB or more the update sequence array
+            // covers the version 2.0 one, which is then not zero in a version 1.x copy.
+            let version_2 = read_u32(&self.data, offset + TAIL_COPY_FILE_OFFSET).map(u64::from);
+            let version_1 = (slot < 2).then_some(page.last_lsn);
+            let Some(home) = version_2
+                .and_then(belongs_at)
+                .or_else(|| version_1.and_then(belongs_at))
+            else {
                 continue;
             };
-            let newer = match pages.get(&home) {
-                Some(home_page) => newest(home_page).is_none_or(|home_lsn| lsn > home_lsn),
-                None => true,
-            };
+            // A page in the middle of a long record has no record that ends in it, but still
+            // the LSN of that record.
+            let newer = self.valid_record_page(home).is_none_or(|home_page| {
+                lsn > last_end(home_page).unwrap_or(0).max(home_page.last_lsn)
+            });
             if !newer {
                 continue;
             }
-            let copy = TailCopy {
-                offset: offset as usize,
-                home: home as usize,
-            };
+            let copy = TailCopy { offset, home, lsn };
             // Of two copies of one page, the newer one has all the other has.
-            match tail_copies.iter_mut().find(|(_, c)| c.home == copy.home) {
-                Some(other) if other.0 < lsn => *other = (lsn, copy),
+            match tail_copies.iter_mut().find(|other| other.home == home) {
+                Some(other) if other.lsn < lsn => *other = copy,
                 Some(_) => {}
-                None => tail_copies.push((lsn, copy)),
+                None => tail_copies.push(copy),
             }
         }
-        let mut tail_copies: Vec<TailCopy> = tail_copies.into_iter().map(|(_, c)| c).collect();
-        tail_copies.sort_by_key(|copy| copy.offset);
         tail_copies
     }
 
-    /// Where to read the page that belongs at `page_start`: at its newer tail copy, if it has
-    /// one.
-    fn page_source(&self, page_start: usize) -> usize {
-        self.tail_copies
+    /// The record page at `offset`, if it is one and its fixups were valid.
+    fn valid_record_page(&self, offset: usize) -> Option<&RecordPage> {
+        let at = self
+            .record_pages
+            .binary_search_by_key(&(offset as u64), |page| match page {
+                Ok(page) => page.offset,
+                Err(Error::InvalidLogFile { offset, .. }) => *offset,
+                // Every error of a record page is an `InvalidLogFile`.
+                Err(_) => u64::MAX,
+            })
+            .ok()?;
+        self.record_pages[at]
+            .as_ref()
+            .ok()
+            .filter(|page| page.valid_fixup)
+    }
+
+    /// Where to read the record page that belongs at `page_start`: at its newer tail copy, if
+    /// it has one, or else where it is. `None` when what is there isn't a record page.
+    fn record_page_source(&self, page_start: usize) -> Option<usize> {
+        let source = self
+            .tail_copies
             .iter()
             .find(|copy| copy.home == page_start)
-            .map_or(page_start, |copy| copy.offset)
+            .map_or(page_start, |copy| copy.offset);
+        (self.data.get(source..source + 4) == Some(b"RCRD")).then_some(source)
+    }
+
+    /// For each page-sized slot from `record_pages_start` on, the index of the first slot at or
+    /// after it that holds no record page, with one entry more than there are slots.
+    fn find_other_pages(&self) -> Vec<usize> {
+        let start = self.record_pages_start;
+        let slots = (self.data.len() - start).div_ceil(self.page_size);
+        let mut next_other_page = vec![slots; slots + 1];
+        for slot in (0..slots).rev() {
+            let page_start = start + slot * self.page_size;
+            next_other_page[slot] = match self.record_page_source(page_start) {
+                Some(_) => next_other_page[slot + 1],
+                None => slot,
+            };
+        }
+        next_other_page
     }
 
     /// The record pages that were written, in file order: a page that is all zeros or all
@@ -537,6 +559,13 @@ impl RecordPage {
     }
 }
 
+/// What of a log record's header says whether a record is there.
+struct RecordHeader {
+    lsn: u64,
+    record_type: u32,
+    client_data_length: u32,
+}
+
 /// The size of a log record's header (`LFS_RECORD_HEADER`), before its client data.
 pub const LOG_RECORD_HEADER_SIZE: usize = 0x30;
 /// The size of the NTFS client data header (`NTFS_LOG_RECORD_HEADER`), before its LCNs.
@@ -660,36 +689,42 @@ pub fn operation_name(operation: u16) -> Option<&'static str> {
 }
 
 impl NtfsLogRecord {
-    /// How many of the first bytes of a client data of `length` bytes [`Self::from_slice`] reads,
-    /// going by its first `NTFS_RECORD_HEADER_SIZE` bytes: the header, the LCNs, and the redo and
-    /// undo data that are inside the client data.
-    fn length_read(header: &[u8], length: usize) -> usize {
-        let field = |at| usize::from(read_u16(header, at).unwrap_or_default());
-        let part_end = |offset, part_length| {
-            let end = field(offset) + field(part_length);
-            if end <= length { end } else { 0 }
-        };
-        (NTFS_RECORD_HEADER_SIZE + 8 * field(0x0E))
-            .max(part_end(4, 6))
-            .max(part_end(8, 0x0A))
-            .min(length)
-    }
-
     /// Parses the client data of an NTFS client record.
     pub fn from_slice(data: &[u8]) -> Option<Self> {
+        Self::parse(data.len(), |range| Some(data[range].to_vec()))
+    }
+
+    /// Parses client data of `length` bytes, of which `read` gives the bytes of a range. It is
+    /// asked only for ranges inside the data: the header, the LCNs, and the redo and undo data,
+    /// so that a record with much more data than it uses costs no more than one with little.
+    fn parse(length: usize, read: impl Fn(Range<usize>) -> Option<Vec<u8>>) -> Option<Self> {
+        if length < NTFS_RECORD_HEADER_SIZE {
+            return None;
+        }
+        let header = read(0..NTFS_RECORD_HEADER_SIZE)?;
+        let data = header.as_slice();
         let field = |at| read_u16(data, at);
         let (redo_operation, undo_operation) = (field(0)?, field(2)?);
-        let part = |offset: u16, length: u16| {
+        // A part that isn't all inside the client data is left empty.
+        let part = |offset: u16, part_length: u16| {
             let start = usize::from(offset);
-            data.get(start..start + usize::from(length))
-                .unwrap_or_default()
-                .to_vec()
+            let range = start..start + usize::from(part_length);
+            if range.is_empty() || range.end > length {
+                return Some(Vec::new());
+            }
+            read(range)
         };
-        let redo_data = part(field(4)?, field(6)?);
-        let undo_data = part(field(8)?, field(0x0A)?);
+        let redo_data = part(field(4)?, field(6)?)?;
+        let undo_data = part(field(8)?, field(0x0A)?)?;
+        // As many of the LCNs as are whole inside the client data.
         let lcns_to_follow = usize::from(field(0x0E)?);
-        let lcns = (0..lcns_to_follow)
-            .map_while(|i| read_u64(data, NTFS_RECORD_HEADER_SIZE + 8 * i))
+        let lcns_fit = (length - NTFS_RECORD_HEADER_SIZE) / 8;
+        let lcns_end = NTFS_RECORD_HEADER_SIZE + 8 * lcns_to_follow.min(lcns_fit);
+        let lcns = read(NTFS_RECORD_HEADER_SIZE..lcns_end)?
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|lcn| u64::from_le_bytes(*lcn))
             .collect();
 
         // Adding an entry logs it to redo, removing one logs it to undo.
@@ -757,59 +792,72 @@ impl LogFile {
             .flatten()
             .flat_map(move |page| {
                 let start = page.offset as usize;
+                // Whether the page is a newer tail copy is the same for all that is in it.
+                let copy = self.tail_copies.iter().find(|copy| copy.offset == start);
                 // LSNs count 8-byte units, so a record starts on an 8-byte boundary.
                 ((start + data_offset).next_multiple_of(8)
                     ..start + page_size - LOG_RECORD_HEADER_SIZE + 1)
                     .step_by(8)
+                    .map(move |offset| (offset, copy))
             })
-            .filter_map(move |offset| {
-                self.record_at(offset, offset, data_offset)
-                    .or_else(|| self.tail_copy_record_at(offset, data_offset))
+            .filter_map(move |(offset, copy)| {
+                self.record_at(offset, offset, data_offset).or_else(|| {
+                    // A record the copy has and the page it belongs at doesn't.
+                    let home = copy?.home + (offset - copy?.offset);
+                    let lsn = self.record_header_at(offset, home, data_offset)?.lsn;
+                    let at_home = self.record_header_at(home, home, data_offset);
+                    if at_home.is_some_and(|at_home| at_home.lsn == lsn) {
+                        return None;
+                    }
+                    self.record_at(offset, home, data_offset)
+                })
             })
     }
 
-    /// The record whose header starts at `offset` of a newer tail copy, unless the page the copy
-    /// belongs at has the record too.
-    fn tail_copy_record_at(&self, offset: usize, data_offset: usize) -> Option<LogRecord> {
-        let copy = self
-            .tail_copies
-            .iter()
-            .find(|copy| (copy.offset..copy.offset + self.page_size).contains(&offset))?;
-        let home = copy.home + (offset - copy.offset);
-        let record = self.record_at(offset, home, data_offset)?;
-        let at_home = self.record_at(home, home, data_offset);
-        (at_home.map(|r| r.lsn) != Some(record.lsn)).then_some(record)
-    }
-
-    /// The record whose header starts at `offset`, if there is one. `home` is where the header
-    /// belongs, which is another offset for a record in a tail copy.
-    fn record_at(&self, offset: usize, home: usize, data_offset: usize) -> Option<LogRecord> {
+    /// The fields of the record header at `offset` that say whether a record is there, if one
+    /// is: one whose LSN gives `home`, where the header belongs (another offset than `offset`
+    /// for a record in a tail copy), and whose client data is all in record pages.
+    fn record_header_at(
+        &self,
+        offset: usize,
+        home: usize,
+        data_offset: usize,
+    ) -> Option<RecordHeader> {
         let header = self.data.get(offset..offset + LOG_RECORD_HEADER_SIZE)?;
         let lsn = read_u64(header, 0)?;
         let record_type = read_u32(header, 0x20)?;
         let client_data_length = read_u32(header, 0x18)?;
-        if lsn == 0
-            || self.lsn_offset(lsn) != Some(home as u64)
-            || !(1..=2).contains(&record_type)
-            || client_data_length as usize > self.data.len() - home - LOG_RECORD_HEADER_SIZE
-        {
-            return None;
-        }
+        let data_start = home + LOG_RECORD_HEADER_SIZE;
+        (lsn != 0
+            && self.lsn_offset(lsn) == Some(home as u64)
+            && (1..=2).contains(&record_type)
+            && client_data_length as usize <= self.data.len() - data_start
+            && self.client_data_fits(data_start, client_data_length as usize, data_offset))
+        .then_some(RecordHeader {
+            lsn,
+            record_type,
+            client_data_length,
+        })
+    }
+
+    /// The record whose header starts at `offset` and belongs at `home`, if there is one.
+    fn record_at(&self, offset: usize, home: usize, data_offset: usize) -> Option<LogRecord> {
+        let RecordHeader {
+            lsn,
+            record_type,
+            client_data_length,
+        } = self.record_header_at(offset, home, data_offset)?;
+        let header = self.data.get(offset..offset + LOG_RECORD_HEADER_SIZE)?;
         let data_start = home + LOG_RECORD_HEADER_SIZE;
         // The data in the header's page is read where the header is.
         let source = offset + LOG_RECORD_HEADER_SIZE;
-        let length = client_data_length as usize;
-        if !self.client_data_fits(data_start, length, data_offset) {
-            return None;
-        }
-        // Only an NTFS client record's data is parsed, and only its header says how much of it:
-        // copying all of it for every record takes quadratic time on a log whose every record
-        // claims the rest of the file.
+        // Only an NTFS client record's data is parsed, and only the parts its header points at
+        // are copied: copying all of it for every record takes quadratic time on a log whose
+        // every record claims the rest of the file.
         let ntfs = if record_type == 1 {
-            let client_data = |length| self.client_data(source, data_start, length, data_offset);
-            let header = client_data(length.min(NTFS_RECORD_HEADER_SIZE))?;
-            let length_read = NtfsLogRecord::length_read(&header, length);
-            NtfsLogRecord::from_slice(&client_data(length_read)?)
+            NtfsLogRecord::parse(client_data_length as usize, |range| {
+                self.client_data(source, data_start, range, data_offset)
+            })
         } else {
             None
         };
@@ -863,38 +911,41 @@ impl LogFile {
             && last_page_start + data_offset + in_last_page <= self.data.len()
     }
 
-    /// `length` bytes of client data that belong at `offset` on, continuing past the end of a
-    /// page at the data of the next one. `source` is where the data is when it starts inside a
-    /// page: `offset`, or the same place in the page's tail copy. Each page the data continues
-    /// into is read at its newer tail copy, if it has one.
+    /// The bytes `range` of the client data that belongs at `offset` on, which continues past
+    /// the end of a page at the data of the next one. `source` is where the data is when it
+    /// starts inside a page: `offset`, or the same place in the page's tail copy. Each page the
+    /// data continues into is read at its newer tail copy, if it has one.
     fn client_data(
         &self,
         mut source: usize,
         mut offset: usize,
-        length: usize,
+        range: Range<usize>,
         data_offset: usize,
     ) -> Option<Vec<u8>> {
-        let mut client_data = Vec::with_capacity(length);
-        while client_data.len() < length {
+        let mut client_data = Vec::with_capacity(range.len());
+        // How much of the client data is before `offset`.
+        let mut passed = 0;
+        while passed < range.end {
             // A record whose header ends a page continues after the next page's header.
             // Record pages follow the restart pages, which needn't be a record page long.
             let page_start = offset - (offset - self.record_pages_start) % self.page_size;
             // A page the record continues into must be a record page: a page that was never
             // written, or that holds something else, isn't the rest of this record.
             if offset == page_start {
-                source = self.page_source(page_start);
-                if self.data.get(source..source + 4) != Some(b"RCRD") {
-                    return None;
-                }
+                source = self.record_page_source(page_start)?;
             }
             let skipped = (page_start + data_offset).saturating_sub(offset);
             offset += skipped;
             source += skipped;
             let page_end = page_start + self.page_size;
-            let n = (page_end - offset).min(length - client_data.len());
-            client_data.extend_from_slice(self.data.get(source..source + n)?);
+            let n = (page_end - offset).min(range.end - passed);
+            let before = range.start.saturating_sub(passed).min(n);
+            client_data.extend_from_slice(self.data.get(source + before..source + n)?);
+            passed += n;
             offset = page_end;
         }
+        #[cfg(test)]
+        tests::BYTES_COPIED.with(|copied| copied.set(copied.get() + client_data.len()));
         Some(client_data)
     }
 }
@@ -970,6 +1021,12 @@ impl FlatLogRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// How many bytes of client data `LogFile::client_data` has copied on this thread.
+        pub(super) static BYTES_COPIED: Cell<usize> = const { Cell::new(0) };
+    }
 
     /// A restart page of `size` bytes with an `NTFS` client and the given current LSN.
     fn restart_page(size: usize, current_lsn: u64) -> Vec<u8> {
@@ -1102,13 +1159,57 @@ mod tests {
             seal_record_page(&mut data[page_start..page_start + 0x1000]);
         }
         let log = LogFile::from_buffer(data).unwrap();
-        let started = std::time::Instant::now();
+        BYTES_COPIED.set(0);
         let records: Vec<_> = log.records().collect();
-        let elapsed = started.elapsed();
         // The page headers on the way leave room for the claimed data only from the last page.
         assert_eq!(records.len(), 84);
         assert!(records.iter().all(|r| r.offset >= size as u64 - 0x1000));
-        assert!(elapsed.as_secs() < 10, "took {elapsed:?}");
+        // No more is copied than the NTFS header of each of them.
+        assert!(BYTES_COPIED.get() <= 84 * NTFS_RECORD_HEADER_SIZE);
+    }
+
+    #[test]
+    fn only_the_data_a_record_gives_is_copied() {
+        // A record header every 0x30 bytes again, each with 128 KiB of client data. The client
+        // data of a record starts at the header after it, whose LSN and previous LSN are made
+        // to read as an NTFS header with 0xFFFF bytes of redo and of undo data at 0xFFFF.
+        let size = 1 << 20;
+        let mut data = empty_log(size);
+        for page_start in (0x2000..size).step_by(0x1000) {
+            for offset in (page_start + 0x40..=page_start + 0x1000 - 0x30).step_by(0x30) {
+                put_record_header(&mut data, offset, 0x20000);
+                // The high half of the LSN is its sequence number, which can be anything.
+                data[offset + 4..offset + 12].fill(0xFF);
+            }
+            seal_record_page(&mut data[page_start..page_start + 0x1000]);
+        }
+        let log = LogFile::from_buffer(data).unwrap();
+        BYTES_COPIED.set(0);
+        let records: Vec<_> = log.records().collect();
+        let returned: usize = records
+            .iter()
+            .filter_map(|r| r.ntfs.as_ref())
+            .map(|n| NTFS_RECORD_HEADER_SIZE + n.redo_data.len() + n.undo_data.len())
+            .sum();
+        assert!(records.len() > 10_000);
+        assert!(returned > records.len() * 0x1FFFE);
+        // Each byte is copied once, into the record that gives it.
+        assert_eq!(BYTES_COPIED.get(), returned);
+    }
+
+    /// Whether client data fits is worked out, not read: both must agree.
+    fn assert_fits_agrees_with_reading(
+        log: &LogFile,
+        offset: usize,
+        lengths: impl Iterator<Item = usize>,
+    ) {
+        for length in lengths {
+            assert_eq!(
+                log.client_data_fits(offset, length, 0x40),
+                log.client_data(offset, offset, 0..length, 0x40).is_some(),
+                "{length:#x} bytes at {offset:#x}"
+            );
+        }
     }
 
     #[test]
@@ -1152,16 +1253,9 @@ mod tests {
         // Whether a record's data fits is worked out, not walked: both must agree, up to and
         // past the page that was never written and the end of the file.
         let log = with_length(0);
-        let walk =
-            |offset: usize, length: usize| log.client_data(offset, offset, length, 0x40).is_some();
+        let lengths = (0..0x8000).step_by(8).chain([1, 0xFBF, 0xFC1, 0x10_0000]);
         for offset in [client, 0x3000, 0x3F00, 0x7000, 0x7FF8, 0x9000, 0x9FF8] {
-            for length in (0..0x8000).step_by(8).chain([1, 0xFBF, 0xFC1, 0x10_0000]) {
-                assert_eq!(
-                    log.client_data_fits(offset, length, 0x40),
-                    walk(offset, length),
-                    "{length:#x} bytes at {offset:#x}"
-                );
-            }
+            assert_fits_agrees_with_reading(&log, offset, lengths.clone());
         }
     }
 
@@ -1233,13 +1327,50 @@ mod tests {
 
         // Whether data fits is worked out with the copy in the page's place too.
         for offset in [0x22FE0, 0x23000, 0x23800, 0x24000] {
-            for length in (0..0x3000).step_by(0x100) {
-                assert_eq!(
-                    log.client_data_fits(offset, length, 0x40),
-                    log.client_data(offset, offset, length, 0x40).is_some(),
-                    "{length:#x} bytes at {offset:#x}"
-                );
-            }
+            assert_fits_agrees_with_reading(&log, offset, (0..0x3000).step_by(0x100));
+        }
+    }
+
+    #[test]
+    fn a_tail_copy_does_not_replace_the_middle_of_a_newer_long_record() {
+        // The page is now in the middle of a record that started after the copy was written:
+        // no record ends in it, and its header has that record's LSN.
+        let mut data = log_with_a_tail_copy();
+        let home = 0x23000;
+        data[home + 0x10] = 0;
+        data[home + 8..home + 0x10].copy_from_slice(&0x10_0000u64.to_le_bytes());
+        let log = sealed(data);
+        let offsets: Vec<_> = log.records().map(|r| r.offset).collect();
+        assert_eq!(offsets, [0x22FB0, 0x23050]);
+
+        // With an older LSN there, the copy is the newer one.
+        let mut data = log_with_a_tail_copy();
+        data[home + 0x10] = 0;
+        data[home + 8..home + 0x10].copy_from_slice(&(0x23050u64 / 8).to_le_bytes());
+        let log = sealed(data);
+        let offsets: Vec<_> = log.records().map(|r| r.offset).collect();
+        assert_eq!(offsets, [0x7080, 0x22FB0, 0x23050]);
+    }
+
+    #[test]
+    fn a_version_1_tail_copy_is_found_whatever_is_at_the_version_2_place() {
+        // The copy is in the first record page and names its page where the last LSN is. With
+        // large pages the update sequence array is where version 2.0 names it.
+        let mut data = log_with_a_tail_copy();
+        let (copy, home) = (0x2000, 0x23000usize);
+        data.copy_within(0x7000..0x8000, copy);
+        data[0x7000..0x8000].fill(0);
+        data[copy + 8..copy + 0x10].copy_from_slice(&(home as u64).to_le_bytes());
+        for at_version_2_place in [0u32, 0xDEAD_BEEF, 0x24000] {
+            let mut data = data.clone();
+            data[copy + 0x3C..copy + 0x40].copy_from_slice(&at_version_2_place.to_le_bytes());
+            let log = sealed(data);
+            let offsets: Vec<_> = log.records().map(|r| r.offset).collect();
+            assert_eq!(
+                offsets,
+                [0x2080, 0x22FB0, 0x23050],
+                "{at_version_2_place:#x}"
+            );
         }
     }
 
