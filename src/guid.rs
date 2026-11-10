@@ -69,6 +69,18 @@ impl Display for Guid {
     }
 }
 
+/// The string form in lowercase, e.g. `54849625-5478-4994-a5ba-3e3b0328c30d`, as SDDL writes it.
+impl fmt::LowerHex for Guid {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let d = &self.data4;
+        write!(
+            f,
+            "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            self.data1, self.data2, self.data3, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]
+        )
+    }
+}
+
 /// Serialized as its string form, e.g. `"54849625-5478-4994-A5BA-3E3B0328C30D"`.
 impl ser::Serialize for Guid {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>

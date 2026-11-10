@@ -6,10 +6,10 @@ use serde::Serialize;
 
 use mft::MftEntry;
 use mft::attribute::MftAttributeType;
-use mft::boot::{BOOT_SECTOR_SIZE, BootSector};
+use mft::boot::{BOOT_SECTOR_SIZE, BootSector, FlatBootSector};
 use mft::indx::{FlatIndxEntry, IndxEntry, IndxFile};
 use mft::mft::MftParser;
-use mft::sds::{FlatSdsEntry, SdsEntries, SdsEntry};
+use mft::sds::{FlatSdsEntry, SdsEntries, SdsEntry, looks_like_sds};
 use mft::usn::{FlatUsnRecord, UsnJournal, UsnRecord};
 
 use dialoguer::Confirm;
@@ -66,8 +66,8 @@ enum InputType {
 
 impl InputType {
     /// Tells an `$MFT` (which starts with a `FILE` or `BAAD` record), an `$I30` (an `INDX`
-    /// record), a `$Boot` (`NTFS    ` at offset 3) and an `$SDS` (an entry at offset 0 whose hash
-    /// matches its descriptor) from a `$J` (whose first bytes that aren't zero are a USN record).
+    /// record), a `$Boot` (`NTFS    ` at offset 3) and an `$SDS` (an entry in the first 64 KiB
+    /// whose hash matches its descriptor) from a `$J` (whose first bytes that aren't zero are a USN record).
     /// The sparse start of a `$J` can run to gigabytes of zeros, so all of it is skipped. Anything
     /// else is read as an `$MFT`, as before `$J` support, such as an `$MFT` whose first record
     /// was wiped.
@@ -83,7 +83,7 @@ impl InputType {
         if start.get(3..11) == Some(b"NTFS    ") {
             return Ok(InputType::Boot);
         }
-        if SdsEntry::from_slice(&start, 0).is_some_and(|entry| entry.valid_hash) {
+        if looks_like_sds(&start) {
             return Ok(InputType::Sds);
         }
         f.rewind()?;
@@ -598,7 +598,7 @@ impl MftDump {
         let boot = BootSector::from_slice(&sector)?;
         let mut sink = self.take_sink();
         match &mut sink {
-            Sink::Csv(writer) => writer.serialize(&boot)?,
+            Sink::Csv(writer) => writer.serialize(FlatBootSector::from(&boot))?,
             Sink::Json(out) => write_json_line(&mut self.json_buf, self.output_format, out, &boot)?,
         }
         sink.flush()
@@ -614,7 +614,7 @@ impl MftDump {
                 Sink::Csv(writer) => writer.serialize(FlatSdsEntry::from_entry(&entry))?,
                 Sink::Json(out) => {
                     let json_entry = JsonSdsEntry {
-                        sddl: entry.descriptor.as_ref().map(|d| d.to_sddl()),
+                        sddl: entry.sddl(),
                         entry: &entry,
                     };
                     write_json_line(&mut self.json_buf, self.output_format, out, &json_entry)?
@@ -629,12 +629,21 @@ impl MftDump {
         if self.paths_mft.is_some() {
             return Err(anyhow!("`--mft` doesn't apply to a `{kind}` input"));
         }
-        self.open_for_other_input(kind).map(drop)
+        self.check_other_input_flags(kind)
     }
 
     /// Checks that only the flags that apply to a `kind` input are set, and opens the `--mft`
     /// that resolves its paths.
     fn open_for_other_input(&self, kind: &str) -> Result<Option<MftParser<io::BufReader<File>>>> {
+        self.check_other_input_flags(kind)?;
+        Ok(match &self.paths_mft {
+            Some(path) => Some(MftParser::from_path(path)?),
+            None => None,
+        })
+    }
+
+    /// Checks that none of the flags that only apply to an `$MFT` input are set.
+    fn check_other_input_flags(&self, kind: &str) -> Result<()> {
         if self.output_format == OutputFormat::Bodyfile {
             return Err(anyhow!("`-o bodyfile` doesn't apply to a `{kind}` input"));
         }
@@ -644,10 +653,7 @@ impl MftDump {
                  only apply to an `$MFT` input"
             ));
         }
-        Ok(match &self.paths_mft {
-            Some(path) => Some(MftParser::from_path(path)?),
-            None => None,
-        })
+        Ok(())
     }
 
     /// Takes the output, as a CSV writer for `-o csv`.
