@@ -1,6 +1,6 @@
 mod file_system;
 
-pub use file_system::{DirectoryEntry, FileSystem};
+pub use file_system::{DirectoryEntry, FileSystem, MAX_IN_MEMORY_STREAM_BYTES};
 
 /// Returns `true` if the directory entry name is `"."` or `".."`.
 ///

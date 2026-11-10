@@ -47,9 +47,9 @@ pub fn decompress_lznt1_to_len(input: &[u8], expected_len: usize) -> Result<Vec<
         pos += chunk_len;
 
         if !is_compressed {
-            // Uncompressed chunk: copy as-is.
+            // Uncompressed chunk: copy as-is. Its header cannot state more than one block.
             let remaining = expected_len - out.len();
-            let take = remaining.min(chunk.len()).min(LZNT1_BLOCK_SIZE);
+            let take = remaining.min(chunk.len());
             out.extend_from_slice(&chunk[..take]);
         } else {
             // Compressed chunk: decompress to up to 4KiB.
