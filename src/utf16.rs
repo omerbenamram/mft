@@ -68,18 +68,25 @@ impl<'a> Utf16LeStr<'a> {
 
     /// Execute `f` with a temporary UTF-8 view of this string.
     ///
-    /// This does not allocate per call (it reuses a thread-local scratch buffer), but callers
-    /// must not try to re-enter `Utf16LeStr` conversion APIs from inside `f`.
+    /// This reuses a thread-local scratch buffer instead of allocating per call. `f` may itself
+    /// convert other strings: a nested call works on a buffer of its own, which it allocates.
     pub fn with_utf8<R>(&self, f: impl FnOnce(&str) -> R) -> R {
+        self.with_utf8_bytes(|utf8| {
+            f(std::str::from_utf8(utf8).expect("utf16-simd outputs valid UTF-8"))
+        })
+    }
+
+    /// Execute `f` with this string converted to UTF-8, in the thread-local scratch buffer.
+    fn with_utf8_bytes<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
         if self.is_empty() {
-            return f("");
+            return f(&[]);
         }
 
-        UTF16_SCRATCH.with(|cell| {
-            let mut scratch = cell.borrow_mut();
-            let out = scratch.escape_utf16le_raw(self.utf16le, self.len_units());
-            let s = std::str::from_utf8(out).expect("utf16-simd outputs valid UTF-8");
-            f(s)
+        // The buffer is still borrowed when `f` converts another string, which then uses one of
+        // its own instead.
+        UTF16_SCRATCH.with(|cell| match cell.try_borrow_mut() {
+            Ok(mut scratch) => f(scratch.escape_utf16le_raw(self.utf16le, self.len_units())),
+            Err(_) => f(Scratch::new().escape_utf16le_raw(self.utf16le, self.len_units())),
         })
     }
 
@@ -147,14 +154,9 @@ impl Serialize for Utf16LeStr<'_> {
     where
         S: Serializer,
     {
-        if self.is_empty() {
-            return serializer.serialize_str("");
-        }
-
-        UTF16_SCRATCH.with(|cell| {
-            let mut scratch = cell.borrow_mut();
-            let out = scratch.escape_utf16le_raw(self.utf16le, self.len_units());
-            let s = std::str::from_utf8(out).map_err(S::Error::custom)?;
+        // A serializer may convert another string while it writes this one.
+        self.with_utf8_bytes(|utf8| {
+            let s = std::str::from_utf8(utf8).map_err(S::Error::custom)?;
             serializer.serialize_str(s)
         })
     }
@@ -171,5 +173,33 @@ impl fmt::Debug for Utf16LeStr<'_> {
 impl fmt::Display for Utf16LeStr<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.with_utf8(|s| f.write_str(s))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Utf16LeStr;
+
+    fn utf16le(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn with_utf8_can_be_nested() {
+        let (a, b) = (utf16le("naïve"), utf16le("café"));
+        let (a, b) = (
+            Utf16LeStr::from_utf16le_bytes(&a),
+            Utf16LeStr::from_utf16le_bytes(&b),
+        );
+
+        // A non-ASCII comparison converts the other string inside the closure.
+        assert!(a.with_utf8(|s| a.eq_utf8(s)));
+        assert!(!a.with_utf8(|s| b.eq_utf8(s)));
+        assert_eq!(
+            a.with_utf8(|outer| b.with_utf8(|inner| format!("{outer} {inner}"))),
+            "naïve café"
+        );
+        // The buffer is back in place afterwards.
+        assert_eq!(a.to_utf8_string(), "naïve");
     }
 }
