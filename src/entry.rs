@@ -279,11 +279,11 @@ impl MftEntry {
     /// numbered. `None` for a zeroed record, and for one with the older layout that has no such
     /// field (its update sequence array starts before offset 0x30).
     pub fn stored_record_number(&self) -> Option<u32> {
-        if self.header.signature == *ZERO_HEADER || self.header.usa_offset < 0x30 {
+        // A zeroed record's update sequence array offset is 0.
+        if self.header.usa_offset < 0x30 {
             return None;
         }
-        let number = self.data.get(0x2C..0x30)?.try_into().ok()?;
-        Some(u32::from_le_bytes(number))
+        crate::utils::read_u32(&self.data, 0x2C)
     }
 
     /// Retrieves most human-readable representation of a file path entry.
