@@ -69,7 +69,8 @@ enum InputType {
 
 impl InputType {
     /// Tells an `$MFT` (which starts with a `FILE` or `BAAD` record), an `$I30` (an `INDX`
-    /// record), a `$LogFile` (an `RSTR` or `CHKD` restart page), a `$Boot` (`NTFS    ` at offset
+    /// record), a `$LogFile` (an `RSTR` or `CHKD` restart page, or with that page damaged, the
+    /// second restart page or the first record page after them), a `$Boot` (`NTFS    ` at offset
     /// 3) and an `$SDS` (an entry at offset 0 whose hash matches its descriptor) from a `$J`
     /// (whose first bytes that aren't zero are a USN record).
     /// The sparse start of a `$J` can run to gigabytes of zeros, so all of it is skipped. Anything
@@ -78,7 +79,9 @@ impl InputType {
     fn detect(path: &Path) -> Result<Self> {
         let mut f = File::open(path)?;
         let mut start = Vec::new();
-        (&mut f).take(1 << 16).read_to_end(&mut start)?;
+        // Enough for the signatures of a `$LogFile`'s second restart page and first record page
+        // when its pages are 64 KiB, the largest there is.
+        (&mut f).take((2 << 16) + 4).read_to_end(&mut start)?;
         match start.get(..4) {
             Some(b"FILE" | b"BAAD") => return Ok(InputType::Mft),
             Some(b"INDX") => return Ok(InputType::I30),
@@ -91,6 +94,15 @@ impl InputType {
         }
         if SdsEntry::from_slice(&start, 0).is_some_and(|entry| entry.valid_hash) {
             return Ok(InputType::Sds);
+        }
+        // A `$LogFile` whose first restart page is damaged still has the second one, a page
+        // on, and its record pages after the two.
+        let signature_at = |at: usize| start.get(at..at + 4);
+        if (9..=16).map(|bits| 1usize << bits).any(|page_size| {
+            matches!(signature_at(page_size), Some(b"RSTR" | b"CHKD"))
+                || signature_at(2 * page_size) == Some(b"RCRD")
+        }) {
+            return Ok(InputType::LogFile);
         }
         f.rewind()?;
         match UsnJournal::new(f).next() {

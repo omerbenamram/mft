@@ -299,3 +299,41 @@ fn it_dumps_log_records() {
     let named: Vec<&str> = lines.filter(|line| !line.ends_with(',')).collect();
     insta::assert_snapshot!(format!("{header}\n{}", named.join("\n")));
 }
+
+#[test]
+fn it_detects_a_log_whose_first_restart_page_is_damaged() {
+    let sample = testdata_dir()
+        .join("logfile")
+        .join("narcos-sysreserved-head.LogFile");
+    let dump = |path: &std::path::Path| {
+        let mut cmd = cargo_bin_cmd!("mft_dump");
+        cmd.args(["-o", "csv"]).arg(path.as_os_str());
+        let output = cmd.output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let intact = dump(&sample);
+    assert!(intact.starts_with("Offset,Lsn,"));
+
+    let d = tempdir().unwrap();
+    let path = d.as_ref().join("$LogFile");
+    let log = fs::read(&sample).unwrap();
+    // Zeros, and bytes that are no page at all. The second restart page is a copy of the first.
+    for fill in [0u8, 0xA5] {
+        let mut damaged = log.clone();
+        damaged[..0x1000].fill(fill);
+        fs::write(&path, &damaged).unwrap();
+        assert!(dump(&path) == intact, "filled with {fill:#x}");
+    }
+
+    // With both restart pages gone, the record pages still say what the file is.
+    let mut damaged = log.clone();
+    damaged[..0x2000].fill(0);
+    fs::write(&path, &damaged).unwrap();
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.args(["-o", "csv"]).arg(path.as_os_str());
+    let output = cmd.output().unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("$LogFile"), "{stderr}");
+}
