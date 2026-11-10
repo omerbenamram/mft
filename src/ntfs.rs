@@ -4,6 +4,12 @@ use crate::err::{Error, Result};
 /// volume bytes-per-sector setting.
 pub const UPDATE_SEQUENCE_STRIDE_BYTES: usize = 512;
 
+/// Whether `size` can be the size of an NTFS record or `$LogFile` page: a power of two from 512
+/// bytes to 64 KiB.
+pub(crate) fn is_valid_page_size(size: usize) -> bool {
+    (UPDATE_SEQUENCE_STRIDE_BYTES..=0x10000).contains(&size) && size.is_power_of_two()
+}
+
 /// Applies NTFS Update Sequence Array (USA) fixups in-place.
 ///
 /// This is the "multi-sector transfer" protection used by structures like `FILE` (MFT record) and

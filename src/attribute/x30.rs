@@ -1,7 +1,7 @@
 use crate::Utf16LeStr;
 use crate::attribute::FileAttributeFlags;
 use crate::err::{Error, Result};
-use crate::utils::{read_u64, windows_filetime_to_timestamp};
+use crate::utils::read_u64;
 use log::trace;
 
 use byteorder::{LittleEndian, ReadBytesExt};
@@ -92,14 +92,10 @@ impl<'a> FileNameAttr<'a> {
         let parent =
             MftReference::from_reader(&mut stream).map_err(Error::failed_to_read_mft_reference)?;
         // Timestamps are stored as Windows FILETIME (100ns since 1601-01-01 UTC).
-        let created =
-            crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?)?;
-        let modified =
-            crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?)?;
-        let mft_modified =
-            crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?)?;
-        let accessed =
-            crate::utils::windows_filetime_to_timestamp(stream.read_u64::<LittleEndian>()?)?;
+        let created = crate::utils::read_filetime(&mut stream)?;
+        let modified = crate::utils::read_filetime(&mut stream)?;
+        let mft_modified = crate::utils::read_filetime(&mut stream)?;
+        let accessed = crate::utils::read_filetime(&mut stream)?;
 
         // The allocated size comes first (0x28), then the real size (0x30).
         let physical_size = stream.read_u64::<LittleEndian>()?;
@@ -149,15 +145,6 @@ impl<'a> NameInParent<'a> {
     /// exactly the values [`FileNameAttr::from_slice`] accepts, so that paths and parsed attributes
     /// agree on an entry's best name.
     pub(crate) fn from_slice(value: &'a [u8]) -> Option<NameInParent<'a>> {
-        // `FileNameAttr::from_slice` rejects a timestamp out of range.
-        let timestamps_valid = (0x08..0x28).step_by(8).all(|offset| {
-            read_u64(value, offset)
-                .is_some_and(|filetime| windows_filetime_to_timestamp(filetime).is_ok())
-        });
-        if !timestamps_valid {
-            return None;
-        }
-
         // The name follows the fixed fields, the last of which are its length and namespace.
         let name_length = usize::from(*value.get(0x40)?);
         let namespace = FileNamespace::from_u8(*value.get(0x41)?)?;
@@ -190,7 +177,7 @@ mod tests {
         for len in 0..=log_file.len() {
             assert_agree(&log_file[..len]);
         }
-        // Covers out-of-range timestamps, overlong names and unknown namespaces.
+        // Covers overlong names and unknown namespaces.
         for position in 0..log_file.len() {
             for byte in [0x00, 0x01, 0x04, 0x7F, 0x80, 0xFF] {
                 let mut value = log_file.clone();
