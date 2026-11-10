@@ -65,33 +65,34 @@ impl InputType {
     /// read as an `$MFT`, as before `$J` support, such as an `$MFT` whose first record was wiped.
     fn detect(path: &Path) -> Result<Self> {
         let mut f = File::open(path)?;
-        let mut signature = [0u8; 4];
-        let read = f.read(&mut signature)?;
-        if read == 4 {
-            match &signature {
-                b"FILE" | b"BAAD" => return Ok(InputType::Mft),
-                b"INDX" => return Ok(InputType::I30),
-                _ => {}
-            }
+        match read_signature(&mut f, 0)?.as_ref() {
+            Some(b"FILE" | b"BAAD") => return Ok(InputType::Mft),
+            Some(b"INDX") => return Ok(InputType::I30),
+            _ => {}
         }
         f.rewind()?;
-        match UsnJournal::new(f).next() {
+        match UsnJournal::new(&mut f).next() {
             Some(Ok(_)) => Ok(InputType::Usn),
             // An `$I30` can start with records that were allocated but never used, all zeros.
-            Some(Err(mft::err::Error::InvalidUsnRecord { offset, .. })) if offset % 512 == 0 => {
-                let mut f = File::open(path)?;
-                f.seek(SeekFrom::Start(offset))?;
-                let mut signature = [0u8; 4];
-                let read = f.read(&mut signature)?;
-                if read == 4 && &signature == b"INDX" {
-                    Ok(InputType::I30)
-                } else {
-                    Ok(InputType::Mft)
-                }
+            Some(Err(mft::err::Error::InvalidUsnRecord { offset, .. }))
+                if offset % 512 == 0 && read_signature(&mut f, offset)? == Some(*b"INDX") =>
+            {
+                Ok(InputType::I30)
             }
             Some(Err(mft::err::Error::InvalidUsnRecord { .. })) | None => Ok(InputType::Mft),
             Some(Err(error)) => Err(error.into()),
         }
+    }
+}
+
+/// Reads the 4 bytes at `offset`, or `None` when the input ends before them.
+fn read_signature(f: &mut File, offset: u64) -> io::Result<Option<[u8; 4]>> {
+    f.seek(SeekFrom::Start(offset))?;
+    let mut signature = [0u8; 4];
+    match f.read_exact(&mut signature) {
+        Ok(()) => Ok(Some(signature)),
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => Ok(None),
+        Err(e) => Err(e),
     }
 }
 
@@ -535,18 +536,23 @@ impl MftDump {
                 eprintln!("{error}");
             }
             for entry in live.iter().chain(&record.slack_entries()) {
-                let full_path = parser.as_mut().map(|parser| {
-                    parser.get_full_path_in_directory(
-                        entry.mft_reference.map_or(0, |r| r.entry),
-                        &entry.file_name.name.to_utf8_string(),
-                        entry.file_name.parent,
-                    )
-                });
+                // A slack entry whose header was overwritten names no record; `u64::MAX` is
+                // never a real record number, so it never matches the parent.
+                let entry_id = entry.mft_reference.map_or(u64::MAX, |r| r.entry);
+                let parent = entry.file_name.parent;
                 match &mut sink {
                     Sink::Csv(writer) => {
-                        writer.serialize(FlatIndxEntry::from_entry(&record, entry, full_path))?
+                        let mut row = FlatIndxEntry::from_entry(&record, entry, None);
+                        row.full_path = parser.as_mut().map(|parser| {
+                            parser.get_full_path_in_directory(entry_id, &row.name, parent)
+                        });
+                        writer.serialize(row)?
                     }
                     Sink::Json(out) => {
+                        let full_path = parser.as_mut().map(|parser| {
+                            let name = entry.file_name.name.to_utf8_string();
+                            parser.get_full_path_in_directory(entry_id, &name, parent)
+                        });
                         let json_entry = JsonWithPath {
                             full_path,
                             value: &JsonIndxEntry {
