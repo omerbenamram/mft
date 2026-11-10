@@ -7,28 +7,10 @@ mod common;
 
 use common::synth::{
     CLUSTER_SIZE, FLAG_COMPRESSED, NonResident, Record, Run, SynthVolume, lznt1_compress,
+    pad_to_cluster, text,
 };
 
 const ENTRY: u64 = 20;
-
-fn text(len: usize, tag: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(len + 64);
-    let mut line = 0usize;
-    while out.len() < len {
-        out.extend_from_slice(
-            format!("{tag} line {line:06} at byte {:08}\r\n", out.len()).as_bytes(),
-        );
-        line += 1;
-    }
-    out.truncate(len);
-    out
-}
-
-fn pad_to_cluster(mut bytes: Vec<u8>) -> Vec<u8> {
-    let padded = bytes.len().div_ceil(CLUSTER_SIZE) * CLUSTER_SIZE;
-    bytes.resize(padded, 0);
-    bytes
-}
 
 /// A `$DATA` attribute whose size field says almost 8 EiB while its runs map 4 clusters. What the
 /// runs don't map is a hole. Nothing may do work in proportion to the claimed size: a positioned
