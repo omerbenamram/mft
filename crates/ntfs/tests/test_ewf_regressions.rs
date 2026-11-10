@@ -122,3 +122,35 @@ fn test_ewf_gen2_file_hashes_match_reference_xml() {
         );
     }
 }
+
+/// Entry 48 (`Compressed/logfile1.txt`) is compressed and fragmented into so many extents that
+/// its `$ATTRIBUTE_LIST` is non-resident, and several compression units start in one extent and
+/// end in the next.
+#[test]
+fn test_ewf_gen2_compressed_file_with_non_resident_attribute_list_matches_reference_xml() {
+    let filename = "Compressed/logfile1.txt";
+
+    let xml_path = common::ntfs_fixture_path("ntfs1-gen2.xml");
+    if !common::ensure_fixture(&xml_path) {
+        return;
+    }
+    let expected = read_reference_hashes(&xml_path, &[filename]).expect("read reference hashes");
+    let (md5_expected, sha1_expected) = expected.get(filename).expect("reference hashes").clone();
+
+    let img_path = common::ntfs_fixture_path("ntfs1-gen2.E01");
+    if !common::ensure_fixture(&img_path) {
+        return;
+    }
+    let img = EwfImage::open(img_path).unwrap();
+    let volume = Volume::open(Arc::new(img), 0).unwrap();
+    let fs = FileSystem::new(volume);
+
+    let entry_id = fs.resolve_path(filename).unwrap();
+    assert_eq!(entry_id, 48);
+
+    let bytes = fs.read_file_default_stream(entry_id).unwrap();
+    assert_eq!(bytes.len(), 21_888_890);
+    assert_eq!(md5_hex(&bytes), md5_expected);
+    assert_eq!(sha1_hex(&bytes), sha1_expected);
+    assert_eq!(fs.md5_file_stream(entry_id, "").unwrap(), md5_expected);
+}
