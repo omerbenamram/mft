@@ -543,10 +543,12 @@ pub const LOG_RECORD_HEADER_SIZE: usize = 0x30;
 const NTFS_RECORD_HEADER_SIZE: usize = 0x20;
 
 bitflags! {
-    /// Log record flags.
+    /// Log record flags. Windows 10 also sets the bits `0x2` and `0x4`, on close to half of the
+    /// records of one sample; no public description of the log names them, so they are kept and
+    /// shown in hex.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct LogRecordFlags: u16 {
-        /// The record continues in the next page.
+        /// The record continues in the next page (`LOG_RECORD_MULTI_PAGE`).
         const MULTI_PAGE = 0x0001;
         const _ = !0;
     }
@@ -909,6 +911,12 @@ pub struct FlatLogRecord {
     pub undo_next_lsn: u64,
     pub transaction_id: u32,
     pub record_type: u32,
+    /// The names of the flags that have one, as in the JSON output: `MULTI_PAGE`, with any other
+    /// bits in hex.
+    pub flags: LogRecordFlags,
+    pub client_seq_number: u16,
+    pub client_index: u16,
+    pub client_data_length: u32,
     pub redo_operation: Option<String>,
     pub undo_operation: Option<String>,
     pub target_attribute: Option<u16>,
@@ -942,6 +950,10 @@ impl FlatLogRecord {
             undo_next_lsn: record.client_undo_next_lsn,
             transaction_id: record.transaction_id,
             record_type: record.record_type,
+            flags: record.flags,
+            client_seq_number: record.client_seq_number,
+            client_index: record.client_index,
+            client_data_length: record.client_data_length,
             redo_operation: ntfs.map(|n| name(n.redo_operation, n.redo_operation_name)),
             undo_operation: ntfs.map(|n| name(n.undo_operation, n.undo_operation_name)),
             target_attribute: ntfs.map(|n| n.target_attribute),
@@ -1263,6 +1275,49 @@ mod tests {
         let log = sealed(data);
         let offsets: Vec<_> = log.records().map(|r| r.offset).collect();
         assert_eq!(offsets, [0x22FB0, 0x23050, 0x23080]);
+    }
+
+    #[test]
+    fn the_csv_row_has_every_field_of_the_record_header() {
+        let mut data = empty_log(0x4000);
+        let offset = 0x2040;
+        put_record_header(&mut data, offset, 0x20);
+        data[offset + 0x1C..offset + 0x1E].copy_from_slice(&7u16.to_le_bytes());
+        data[offset + 0x1E..offset + 0x20].copy_from_slice(&3u16.to_le_bytes());
+        data[offset + 0x28..offset + 0x2A].copy_from_slice(&3u16.to_le_bytes());
+        let log = sealed(data);
+        let record = log.records().next().unwrap();
+        let mut writer = csv::Writer::from_writer(Vec::new());
+        writer
+            .serialize(FlatLogRecord::from_record(&record))
+            .unwrap();
+        let csv = String::from_utf8(writer.into_inner().unwrap()).unwrap();
+        let (header, row) = csv.trim_end().split_once('\n').unwrap();
+        let columns: Vec<_> = header.split(',').zip(row.split(',')).collect();
+        assert_eq!(
+            columns[..10],
+            [
+                ("Offset", "8256"),
+                ("Lsn", "1032"),
+                ("PreviousLsn", "0"),
+                ("UndoNextLsn", "0"),
+                ("TransactionId", "0"),
+                ("RecordType", "1"),
+                ("Flags", "MULTI_PAGE | 0x2"),
+                ("ClientSeqNumber", "7"),
+                ("ClientIndex", "3"),
+                ("ClientDataLength", "32"),
+            ]
+        );
+
+        // Every field of the JSON record is a column, but the redo and undo data, which have
+        // their lengths.
+        let serde_json::Value::Object(json) = serde_json::to_value(&record).unwrap() else {
+            panic!("a record is an object");
+        };
+        let fields = json.len() - 1 + json["ntfs"].as_object().unwrap().len();
+        // `index_entry` is five columns, and the operations have their names in theirs.
+        assert_eq!(columns.len(), fields - 2 - 1 + 5);
     }
 
     #[test]
