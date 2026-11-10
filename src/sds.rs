@@ -463,6 +463,45 @@ mod tests {
     }
 
     #[test]
+    fn a_damaged_entry_is_read_from_the_mirror_block() {
+        let mut sds = vec![0u8; 4 * SDS_BLOCK_SIZE];
+        for (i, offset) in [0, 64, 128, 2 * SDS_BLOCK_SIZE].into_iter().enumerate() {
+            put_entry(&mut sds, offset, 0x100 + i as u32);
+        }
+        sds.copy_within(..SDS_BLOCK_SIZE, SDS_BLOCK_SIZE);
+        sds.copy_within(2 * SDS_BLOCK_SIZE..3 * SDS_BLOCK_SIZE, 3 * SDS_BLOCK_SIZE);
+        let intact: Vec<_> = SdsEntries::new(&sds)
+            .map(|e| (e.offset, e.security_id, e.from_mirror))
+            .collect();
+        assert_eq!(intact.len(), 4);
+        assert!(intact.iter().all(|(_, _, from_mirror)| !from_mirror));
+
+        // The second entry is zeros, the third has a damaged descriptor, the fourth a damaged
+        // header.
+        sds[64..128].fill(0);
+        sds[128 + 20 + 28] = 0x13;
+        sds[2 * SDS_BLOCK_SIZE + 8] ^= 1;
+        let entries: Vec<_> = SdsEntries::new(&sds).collect();
+        let found: Vec<_> = entries
+            .iter()
+            .map(|e| (e.offset, e.security_id, e.from_mirror))
+            .collect();
+        let expected: Vec<_> = intact
+            .iter()
+            .map(|&(offset, id, _)| (offset, id, offset != 0))
+            .collect();
+        assert_eq!(found, expected);
+        assert!(entries.iter().all(|e| e.valid_hash));
+        assert_eq!(SecurityIds::from_sds(&sds).len(), 4);
+
+        // With the copy damaged too, the damaged entry is what there is.
+        sds[SDS_BLOCK_SIZE + 128 + 20 + 28] = 0x14;
+        let third = SdsEntries::new(&sds).nth(2).unwrap();
+        assert_eq!((third.security_id, third.valid_hash), (0x102, false));
+        assert!(!third.from_mirror);
+    }
+
+    #[test]
     fn entries_after_zeros_are_found() {
         let mut sds = vec![0u8; SDS_BLOCK_SIZE];
         put_entry(&mut sds, 0x1000, 0x100);
