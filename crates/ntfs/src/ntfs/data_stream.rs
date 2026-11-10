@@ -11,7 +11,9 @@
 //! The focus is **correctness** and robust behavior on real-world images:
 //! - Sparse runs are surfaced as zero-filled ranges.
 //! - Overflows are checked and reported as structured errors.
-//! - Reads that extend beyond the described runs fail (rather than silently truncating).
+//! - A stream may be longer than its runs (mapping pairs cut short on a deleted or damaged
+//!   record). The part past the runs is a hole and reads as zeros, so what is still mapped stays
+//!   readable. Reads past the stream's length fail.
 //!
 //! Current limitations:
 //! - `CompressedDataRunsStream` treats “mixed sparse + standard within a single compression unit”
@@ -33,6 +35,13 @@ struct RunMapping {
     vcn_start: u64,
     /// The data run covering `[vcn_start, vcn_start + run.lcn_length)`.
     run: DataRun,
+}
+
+/// Returns the number of clusters `data_runs` map, stored and sparse.
+pub(crate) fn mapped_clusters(data_runs: &[DataRun]) -> u64 {
+    data_runs
+        .iter()
+        .fold(0u64, |total, run| total.saturating_add(run.lcn_length))
 }
 
 fn build_run_mappings(data_runs: &[DataRun]) -> Vec<RunMapping> {
@@ -59,17 +68,24 @@ pub struct DataRunsStream {
     volume: Volume,
     /// Mapping pairs describing the stream layout.
     data_runs: Vec<DataRun>,
-    /// Logical stream length in bytes (may be smaller than the total run coverage).
+    /// Logical stream length in bytes (may be smaller or larger than the total run coverage).
     len: u64,
+    /// Number of bytes the runs map.
+    mapped_bytes: u64,
 }
 
 impl DataRunsStream {
     /// Creates a new stream over `data_runs` with a logical `len` in bytes.
+    ///
+    /// When `len` is larger than what the runs map, the rest of the stream reads as zeros.
     pub fn new(volume: Volume, data_runs: Vec<DataRun>, len: u64) -> Self {
+        let mapped_bytes =
+            mapped_clusters(&data_runs).saturating_mul(volume.header.cluster_size as u64);
         Self {
             volume,
             data_runs,
             len,
+            mapped_bytes,
         }
     }
 
@@ -95,6 +111,22 @@ impl ReadAt for DataRunsStream {
     }
 
     fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        if offset.saturating_add(buf.len() as u64) > self.len {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "read beyond end of stream",
+            ));
+        }
+
+        // Anything past the runs is a hole.
+        let mapped = usize::try_from(self.mapped_bytes.saturating_sub(offset))
+            .map_or(buf.len(), |m| m.min(buf.len()));
+        let (buf, hole) = buf.split_at_mut(mapped);
+        hole.fill(0);
+        if buf.is_empty() {
+            return Ok(());
+        }
+
         // Delegate to volume mapping; convert our Result to io::Result.
         match read_from_data_runs(&self.volume, &self.data_runs, offset, buf) {
             Ok(()) => Ok(()),
@@ -129,6 +161,8 @@ pub struct CompressedDataRunsStream {
     run_mappings: Vec<RunMapping>,
     /// Logical stream length in bytes.
     len: u64,
+    /// Number of clusters the runs map.
+    mapped_clusters: u64,
     /// Cluster size in bytes.
     cluster_size: u64,
     /// Compression unit size in clusters.
@@ -142,7 +176,8 @@ pub struct CompressedDataRunsStream {
 impl CompressedDataRunsStream {
     /// Creates a compressed stream backed by `data_runs`.
     ///
-    /// - `len` is the logical stream length in bytes.
+    /// - `len` is the logical stream length in bytes. Compression units past the end of the runs
+    ///   read as zeros.
     /// - `unit_clusters` is the compression-unit size in clusters (as declared in the attribute).
     pub fn new(
         volume: Volume,
@@ -172,6 +207,7 @@ impl CompressedDataRunsStream {
             volume,
             run_mappings: build_run_mappings(&data_runs),
             len,
+            mapped_clusters: mapped_clusters(&data_runs),
             cluster_size,
             unit_clusters,
             unit_bytes,
@@ -186,6 +222,37 @@ impl CompressedDataRunsStream {
     /// Returns `true` if the logical stream length is 0.
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// Returns how many bytes from `offset` on are covered by compression units that are not
+    /// stored at all (they read as zeros), or 0 when the unit at `offset` holds data. Everything
+    /// past the end of the runs is such a hole, up to the end of the stream.
+    ///
+    /// This lets a consumer step over a large hole without decoding it unit by unit.
+    pub fn sparse_len_at(&self, offset: u64) -> u64 {
+        let unit_index = offset / self.unit_bytes;
+        let unit_vcn_start = unit_index.saturating_mul(self.unit_clusters);
+
+        if unit_vcn_start >= self.mapped_clusters {
+            return self.len.saturating_sub(offset);
+        }
+
+        // The unit is a hole only when a single sparse run covers all of it; the hole then
+        // extends to the last unit boundary inside that run.
+        let Some((run_vcn_end, run_type)) = self.run_mappings.iter().find_map(|m| {
+            let end = m.vcn_start.saturating_add(m.run.lcn_length);
+            (m.vcn_start <= unit_vcn_start && unit_vcn_start < end).then_some((end, m.run.run_type))
+        }) else {
+            return 0;
+        };
+        if run_type != RunType::Sparse {
+            return 0;
+        }
+
+        let hole_end_unit = run_vcn_end / self.unit_clusters;
+        hole_end_unit
+            .saturating_mul(self.unit_bytes)
+            .saturating_sub(offset)
     }
 
     fn read_unit(&self, unit_index: u64) -> Result<Vec<u8>> {
@@ -245,8 +312,8 @@ impl CompressedDataRunsStream {
         let allocated_clusters: u64 = segments.iter().map(|(_, len)| *len).sum();
         let mut unit_out = vec![0u8; self.unit_bytes as usize];
 
-        if allocated_clusters == 0 && has_sparse {
-            // Entire unit is sparse => zeros.
+        if allocated_clusters == 0 {
+            // Entire unit is sparse, or past the end of the runs => zeros.
         } else if !has_sparse && allocated_clusters == self.unit_clusters {
             // Stored uncompressed: read the full unit.
             let mut dst_off = 0usize;
@@ -405,6 +472,71 @@ pub fn read_from_data_runs(
         });
     }
 
+    Ok(())
+}
+
+/// One piece of a stream, in stream order, as handed out by [`for_each_stream_piece`].
+#[derive(Debug)]
+pub enum StreamPiece<'a> {
+    /// Bytes read from the volume.
+    Data(&'a [u8]),
+    /// A sparse range of this many bytes, which reads as zeros.
+    Hole(u64),
+}
+
+/// Walks the first `len` bytes of the uncompressed stream described by `data_runs`, in order.
+///
+/// Stored runs are read from the volume and handed to `sink` in chunks of at most 1 MiB. A
+/// sparse run is handed over as a single [`StreamPiece::Hole`], however long it is, so the cost of
+/// a walk depends on the clusters the image stores and not on the sizes the mapping pairs claim.
+///
+/// When the runs map fewer than `len` bytes, the rest of the stream is one last hole.
+pub fn for_each_stream_piece(
+    volume: &Volume,
+    data_runs: &[DataRun],
+    len: u64,
+    mut sink: impl FnMut(StreamPiece<'_>) -> Result<()>,
+) -> Result<()> {
+    let cluster_size = volume.header.cluster_size as u64;
+    if cluster_size == 0 {
+        return Err(Error::InvalidData {
+            message: "cluster_size is 0".to_string(),
+        });
+    }
+
+    let mut buf: Vec<u8> = Vec::new();
+    let mut pos = 0u64;
+
+    for run in data_runs {
+        if pos >= len {
+            break;
+        }
+        let run_bytes = run.lcn_length.saturating_mul(cluster_size);
+        let take = run_bytes.min(len - pos);
+
+        match run.run_type {
+            RunType::Sparse => sink(StreamPiece::Hole(take))?,
+            RunType::Standard => {
+                let run_start = cluster_byte_offset(run.lcn_offset, cluster_size)?;
+                let mut done = 0u64;
+                while done < take {
+                    let n = (take - done).min(1024 * 1024) as usize;
+                    if buf.len() < n {
+                        buf.resize(n, 0);
+                    }
+                    let vol_off = run_start.checked_add(done).ok_or_else(lcn_out_of_range)?;
+                    volume.read_exact_at(vol_off, &mut buf[..n])?;
+                    sink(StreamPiece::Data(&buf[..n]))?;
+                    done += n as u64;
+                }
+            }
+        }
+        pos += take;
+    }
+
+    if pos < len {
+        sink(StreamPiece::Hole(len - pos))?;
+    }
     Ok(())
 }
 
@@ -588,6 +720,144 @@ mod tests {
             );
         }
         assert_eq!(img.reads.load(Ordering::Relaxed), 0);
+    }
+
+    /// A sparse run is one piece, whatever its length: walking a stream must not cost time in
+    /// proportion to a size that only the mapping pairs claim.
+    #[test]
+    fn for_each_stream_piece_hands_out_a_huge_sparse_run_as_one_hole() {
+        let cluster_size = 4u32;
+        let img = MemImage::new((0u8..64).collect());
+        let reads = img.reads.clone();
+        let volume = test_volume(Arc::new(img), cluster_size);
+
+        let sparse_clusters = 1u64 << 58;
+        let runs = vec![
+            DataRun {
+                lcn_offset: 1,
+                lcn_length: 2,
+                run_type: RunType::Standard,
+            },
+            DataRun {
+                lcn_offset: 0,
+                lcn_length: sparse_clusters,
+                run_type: RunType::Sparse,
+            },
+            DataRun {
+                lcn_offset: 4,
+                lcn_length: 1,
+                run_type: RunType::Standard,
+            },
+        ];
+        let len = 8 + sparse_clusters * 4 + 3;
+
+        let mut pieces: Vec<std::result::Result<Vec<u8>, u64>> = Vec::new();
+        for_each_stream_piece(&volume, &runs, len, |piece| {
+            pieces.push(match piece {
+                StreamPiece::Data(bytes) => Ok(bytes.to_vec()),
+                StreamPiece::Hole(len) => Err(len),
+            });
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            pieces,
+            vec![
+                Ok(vec![4, 5, 6, 7, 8, 9, 10, 11]),
+                Err(sparse_clusters * 4),
+                // The stream ends 3 bytes into the last cluster.
+                Ok(vec![16, 17, 18]),
+            ]
+        );
+        assert_eq!(reads.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn for_each_stream_piece_ends_with_a_hole_when_runs_are_shorter_than_len() {
+        let cluster_size = 4u32;
+        let volume = test_volume(Arc::new(MemImage::new((0u8..64).collect())), cluster_size);
+        let runs = vec![DataRun {
+            lcn_offset: 1,
+            lcn_length: 2,
+            run_type: RunType::Standard,
+        }];
+
+        let mut pieces: Vec<std::result::Result<Vec<u8>, u64>> = Vec::new();
+        for_each_stream_piece(&volume, &runs, 1 << 40, |piece| {
+            pieces.push(match piece {
+                StreamPiece::Data(bytes) => Ok(bytes.to_vec()),
+                StreamPiece::Hole(len) => Err(len),
+            });
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            pieces,
+            vec![Ok(vec![4, 5, 6, 7, 8, 9, 10, 11]), Err((1 << 40) - 8)]
+        );
+    }
+
+    #[test]
+    fn data_runs_stream_reads_zeros_past_its_runs() {
+        let cluster_size = 4u32;
+        let volume = test_volume(Arc::new(MemImage::new((0u8..64).collect())), cluster_size);
+        let runs = vec![DataRun {
+            lcn_offset: 1,
+            lcn_length: 2,
+            run_type: RunType::Standard,
+        }];
+        let stream = DataRunsStream::new(volume, runs, 1 << 40);
+
+        let mut buf = [0xAAu8; 6];
+        stream.read_exact_at(6, &mut buf).unwrap();
+        assert_eq!(buf, [10, 11, 0, 0, 0, 0]);
+        let mut buf = [0xAAu8; 6];
+        stream.read_exact_at((1 << 40) - 6, &mut buf).unwrap();
+        assert_eq!(buf, [0; 6]);
+        // Past the stream's own length is still an error.
+        assert!(stream.read_exact_at((1 << 40) - 5, &mut buf).is_err());
+    }
+
+    #[test]
+    fn compressed_sparse_len_at_covers_whole_sparse_units_only() {
+        let cluster_size = 4u32;
+        let volume = test_volume(Arc::new(MemImage::new(vec![0u8; 64])), cluster_size);
+
+        // Units are 4 clusters (16 bytes). Unit 0: 1 stored cluster + 3 sparse (compressed).
+        // Units 1..=1000: sparse. Unit 1001: stored.
+        let runs = vec![
+            DataRun {
+                lcn_offset: 0,
+                lcn_length: 1,
+                run_type: RunType::Standard,
+            },
+            DataRun {
+                lcn_offset: 0,
+                lcn_length: 3 + 4 * 1000,
+                run_type: RunType::Sparse,
+            },
+            DataRun {
+                lcn_offset: 4,
+                lcn_length: 4,
+                run_type: RunType::Standard,
+            },
+        ];
+        let stream = CompressedDataRunsStream::new(volume, runs, 16 * 6000, 4).unwrap();
+
+        // Unit 0 holds data, although most of it is a sparse run.
+        assert_eq!(stream.sparse_len_at(0), 0);
+        assert_eq!(stream.sparse_len_at(5), 0);
+        // From unit 1 to the end of unit 1000.
+        assert_eq!(stream.sparse_len_at(16), 16 * 1000);
+        assert_eq!(stream.sparse_len_at(16 + 7), 16 * 1000 - 7);
+        assert_eq!(stream.sparse_len_at(16 * 1000), 16);
+        // Unit 1001 is stored.
+        assert_eq!(stream.sparse_len_at(16 * 1001), 0);
+        // Past the runs everything is a hole, to the end of the stream.
+        assert_eq!(stream.sparse_len_at(16 * 1002), 16 * 4998);
+        assert_eq!(stream.sparse_len_at(16 * 5000 + 3), 16 * 1000 - 3);
+        assert_eq!(stream.sparse_len_at(16 * 6000), 0);
     }
 
     #[test]
