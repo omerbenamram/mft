@@ -444,3 +444,55 @@ fn it_dumps_log_records() {
     let named: Vec<&str> = lines.filter(|line| !line.ends_with(',')).collect();
     insta::assert_snapshot!(format!("{header}\n{}", named.join("\n")));
 }
+
+#[test]
+fn it_detects_a_log_whose_first_restart_page_is_damaged() {
+    let sample = testdata_dir()
+        .join("logfile")
+        .join("narcos-sysreserved-head.LogFile");
+    let dump = |path: &std::path::Path| {
+        let mut cmd = cargo_bin_cmd!("mft_dump");
+        cmd.args(["-o", "csv"]).arg(path.as_os_str());
+        let output = cmd.output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let intact = dump(&sample);
+    assert!(intact.starts_with("Offset,Lsn,"));
+
+    let d = tempdir().unwrap();
+    let path = d.as_ref().join("$LogFile");
+    let log = fs::read(&sample).unwrap();
+    // Zeros, bytes that are no page at all, and such bytes with what reads as a page size where
+    // a restart page has its own. The second restart page is a copy of the first.
+    for (fill, page_size) in [(0u8, None), (0xA5, None), (0xA5, Some(512u32))] {
+        let mut damaged = log.clone();
+        damaged[..0x1000].fill(fill);
+        if let Some(page_size) = page_size {
+            damaged[0x10..0x14].copy_from_slice(&page_size.to_le_bytes());
+        }
+        fs::write(&path, &damaged).unwrap();
+        assert!(
+            dump(&path) == intact,
+            "filled with {fill:#x}, page size {page_size:?}"
+        );
+    }
+}
+
+#[test]
+fn it_reads_a_usn_journal_with_a_stray_restart_signature_as_one() {
+    // A `$J` without its sparse start, with `RSTR` in a file name at 0x800, where a second
+    // restart page after one of 2 KiB would start. No restart page is there, so it is no
+    // `$LogFile`.
+    let mut j = fs::read(testdata_dir().join("usn").join("narcos-head.J")).unwrap();
+    j.drain(..0x2000);
+    j[0x800..0x804].copy_from_slice(b"RSTR");
+    let d = tempdir().unwrap();
+    let path = d.as_ref().join("$J");
+    fs::write(&path, &j).unwrap();
+
+    let detected = usn_jsonl(&[path.as_os_str()]);
+    let usn = usn_jsonl(&["--input-type".as_ref(), "usn".as_ref(), path.as_os_str()]);
+    assert!(!detected.is_empty());
+    assert_eq!(detected, usn);
+}
