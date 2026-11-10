@@ -64,3 +64,5 @@ pub fn ensure_fixture(path: &Path) -> bool {
 
     true
 }
+
+pub mod synth;

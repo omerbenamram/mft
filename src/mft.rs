@@ -10,9 +10,9 @@ use crate::MftReference;
 use lru::LruCache;
 use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File};
-use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
+use std::io::{self, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::{Component, MAIN_SEPARATOR_STR, Path, PathBuf};
 
 /// How an entry contributes to the paths of its children.
 enum PathStep {
@@ -85,7 +85,58 @@ fn stale_parent_path(reference: MftReference) -> PathBuf {
         "Found stale parent reference to entry ID {} (sequence {})",
         reference.entry, reference.sequence
     );
-    PathBuf::from("[Orphaned]")
+    PathBuf::from(ORPHANED)
+}
+
+/// Adds `name` to `path` as one more level.
+///
+/// `PathBuf::push` replaces the path so far with a name the host reads as absolute: one that
+/// starts with `/` on Unix, or with `\` or a drive such as `C:` on Windows. Windows doesn't
+/// create such names, but other NTFS drivers accept `:` and `\` in them, and a crafted MFT can
+/// hold anything.
+///
+/// Such a name in the root directory has no path to go after, so it goes after `.`, which keeps
+/// the result relative.
+fn push_name(path: &mut PathBuf, name: &str) {
+    let path = path.as_mut_os_string();
+    if path.is_empty() {
+        if !looks_rooted(name) {
+            path.push(name);
+            return;
+        }
+        path.push(".");
+    }
+    path.push(MAIN_SEPARATOR_STR);
+    path.push(name);
+}
+
+/// Whether the host reads `name` as a path that starts somewhere other than the current
+/// directory.
+fn looks_rooted(name: &str) -> bool {
+    matches!(
+        Path::new(name).components().next(),
+        Some(Component::Prefix(_) | Component::RootDir)
+    )
+}
+
+/// The directory that stands in for a parent that can't be found.
+const ORPHANED: &str = "[Orphaned]";
+
+/// `[Orphaned]/<name>`.
+fn orphaned_path(name: &str) -> PathBuf {
+    let mut path = path_with_room(Path::new(ORPHANED), 1 + name.len());
+    push_name(&mut path, name);
+    path
+}
+
+/// The path of `name` in the root directory.
+fn root_path(name: &str) -> PathBuf {
+    if !looks_rooted(name) {
+        return PathBuf::from(name);
+    }
+    let mut path = PathBuf::with_capacity(2 + name.len());
+    push_name(&mut path, name);
+    path
 }
 
 /// A copy of `path` with room for `extra` more bytes, so pushing them doesn't copy it again.
@@ -181,7 +232,7 @@ impl<T: Read + Seek> MftParser<T> {
         const MAX_PROBES: u64 = 64;
 
         fn is_plausible(entry_size: u32) -> bool {
-            entry_size.is_power_of_two() && (512..=65536).contains(&entry_size)
+            crate::ntfs::is_valid_page_size(entry_size as usize)
         }
 
         data.rewind()?;
@@ -238,7 +289,17 @@ impl<T: Read + Seek> MftParser<T> {
     /// Reads the raw bytes of an entry into `buffer`, which is one entry long.
     fn read_entry_bytes(&mut self, entry_number: u64, buffer: &mut [u8]) -> Result<()> {
         let entry_size = u64::from(self.entry_size);
-        let desired_offset = entry_number * entry_size;
+        // An entry number whose offset doesn't fit would wrap around to another entry's bytes.
+        let next_offset = entry_number
+            .checked_add(1)
+            .and_then(|n| n.checked_mul(entry_size))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("entry {entry_number} is past the end of any MFT"),
+                )
+            })?;
+        let desired_offset = next_offset - entry_size;
 
         // Avoid seeking when reading sequential entries; this keeps the BufReader hot and
         // removes a large number of __lseek syscalls in tight loops.
@@ -248,7 +309,7 @@ impl<T: Read + Seek> MftParser<T> {
             self.data.seek(SeekFrom::Start(desired_offset))?;
         }
         self.data.read_exact(buffer)?;
-        self.next_read_offset = Some(desired_offset + entry_size);
+        self.next_read_offset = Some(next_offset);
         Ok(())
     }
 
@@ -424,7 +485,7 @@ impl<T: Read + Seek> MftParser<T> {
         } = &first_step
             && let Some(mut path) = self.cached_directory_path(*parent, 1 + name.len())
         {
-            path.push(name);
+            push_name(&mut path, name);
             self.cache_path(entry_id, generation, path.clone());
             return path;
         }
@@ -457,7 +518,7 @@ impl<T: Read + Seek> MftParser<T> {
             });
             let next = match parent {
                 PathParent::Root => break PathBuf::with_capacity(names_len),
-                PathParent::Orphan => break PathBuf::from("[Orphaned]"),
+                PathParent::Orphan => break PathBuf::from(ORPHANED),
                 PathParent::Entry(reference) => reference,
             };
 
@@ -485,7 +546,7 @@ impl<T: Read + Seek> MftParser<T> {
                     self.cycle_cuts.insert(chain[cut].id);
                     chain.truncate(cut + 1);
                 }
-                break PathBuf::from("[Orphaned]");
+                break PathBuf::from(ORPHANED);
             }
 
             (current_id, current_generation) = (next.entry, generation);
@@ -493,7 +554,9 @@ impl<T: Read + Seek> MftParser<T> {
         };
 
         for link in chain.into_iter().rev() {
-            prefix.extend(link.name);
+            if let Some(name) = &link.name {
+                push_name(&mut prefix, name);
+            }
             self.cache_path(link.id, link.generation, prefix.clone());
         }
         prefix
@@ -559,9 +622,9 @@ impl<T: Read + Seek> MftParser<T> {
     /// Gets the full path of a file under one of its names, such as one of its hard links, which
     /// [`MftParser::get_full_path_for_entry`] doesn't pick.
     pub fn get_full_path_for_name(&mut self, entry: &MftEntry, name: &FileNameAttr<'_>) -> PathBuf {
-        self.path_in_parent(
+        self.get_full_path_in_directory(
             entry.header.record_number,
-            name.name.to_utf8_string(),
+            &name.name.to_utf8_string(),
             name.parent,
         )
     }
@@ -575,26 +638,20 @@ impl<T: Read + Seek> MftParser<T> {
         name: &str,
         parent: MftReference,
     ) -> PathBuf {
-        self.path_in_parent(entry_id, name.to_string(), parent)
-    }
-
-    /// The path of the file `entry_id` named `name` in the directory `parent` points at.
-    /// A stale `parent` (its record now holds another file) gives `[Orphaned]/<name>`.
-    fn path_in_parent(&mut self, entry_id: u64, name: String, parent: MftReference) -> PathBuf {
         match parent.entry {
             // MFT entry 5 is the root path.
-            5 => PathBuf::from(name),
+            5 => root_path(name),
             0 => {
                 trace!("Found orphaned entry ID {entry_id}");
-                PathBuf::from("[Orphaned]").join(name)
+                orphaned_path(name)
             }
             id if id == entry_id => {
                 trace!("Found self-referential file path, for entry ID {entry_id}");
-                PathBuf::from("[Orphaned]").join(name)
+                orphaned_path(name)
             }
             _ => {
                 let mut path = self.get_directory_path(parent, 1 + name.len());
-                path.push(name);
+                push_name(&mut path, name);
                 path
             }
         }
@@ -621,7 +678,9 @@ impl<T: Read + Seek> MftParser<T> {
         }
 
         match filename_header {
-            Some((name, parent)) => Ok(Some(self.path_in_parent(entry_id, name, parent))),
+            Some((name, parent)) => Ok(Some(
+                self.get_full_path_in_directory(entry_id, &name, parent),
+            )),
             None => match entry.header.base_reference.entry {
                 // I don't have a parent reference, and no X30 attribute. Though luck.
                 0 => Ok(None),
@@ -811,6 +870,91 @@ mod tests {
     }
 
     #[test]
+    fn test_get_entry_rejects_a_number_whose_offset_overflows() {
+        let mut parser = MftParser::from_buffer(cyclic_mft()).unwrap();
+
+        // 2^54 * 1024 wraps to offset 0, which used to return entry 0 under this number.
+        assert!(parser.get_entry(1 << 54).is_err());
+        assert!(parser.get_entry(u64::MAX).is_err());
+        assert_eq!(parser.get_entry(5).unwrap().header.record_number, 5);
+    }
+
+    #[test]
+    fn test_a_zeroed_record_keeps_its_number() {
+        let mut mft = cyclic_mft();
+        mft.extend(vec![0; ENTRY_SIZE]);
+        let mut parser = MftParser::from_buffer(mft).unwrap();
+
+        let entry = parser.get_entry(9).unwrap();
+        assert!(!entry.header.is_valid());
+        assert_eq!(entry.header.record_number, 9);
+    }
+
+    #[test]
+    fn test_stored_record_number() {
+        let mut record = synthetic_entry(false, Some(("a.txt", 5)));
+        record[0x2C..0x30].copy_from_slice(&7u32.to_le_bytes());
+        // Read as entry 9, whatever the record says about itself.
+        let entry = MftEntry::from_buffer(record.clone(), 9).unwrap();
+        assert_eq!(entry.header.record_number, 9);
+        assert_eq!(entry.stored_record_number(), Some(7));
+
+        // A record NTFS marked as damaged still says where it belongs.
+        let mut baad = record.clone();
+        baad[0..4].copy_from_slice(b"BAAD");
+        let entry = MftEntry::from_buffer(baad, 9).unwrap();
+        assert_eq!(entry.stored_record_number(), Some(7));
+
+        // The layout before NTFS 3.1 has its update sequence array where the number would be.
+        record[4..6].copy_from_slice(&0x2Au16.to_le_bytes());
+        record[0x2A..0x2C].copy_from_slice(&1u16.to_le_bytes());
+        record[0x2C..0x30].fill(0);
+        let entry = MftEntry::from_buffer(record, 9).unwrap();
+        assert_eq!(entry.valid_fixup, Some(true));
+        assert_eq!(entry.stored_record_number(), None);
+
+        let zeroed = MftEntry::from_buffer(vec![0; ENTRY_SIZE], 9).unwrap();
+        assert_eq!(zeroed.stored_record_number(), None);
+
+        // A real MFT numbers its records.
+        let mut parser = MftParser::from_path(mft_sample()).unwrap();
+        for id in [0u32, 5, 100] {
+            let entry = parser.get_entry(u64::from(id)).unwrap();
+            assert_eq!(entry.stored_record_number(), Some(id));
+        }
+    }
+
+    #[test]
+    fn test_get_full_path_keeps_the_parents_of_a_name_that_looks_absolute() {
+        // Names that `PathBuf::push` takes for an absolute path, on Unix and on Windows.
+        let mft = mft_of([
+            synthetic_entry(true, Some(("A", 5))),
+            synthetic_entry(true, Some(("/etc", 6))),
+            synthetic_entry(false, Some(("passwd", 7))),
+            synthetic_entry(false, Some(("C:x", 6))),
+            synthetic_entry(false, Some(("/orphan", 0))),
+            synthetic_entry(true, Some(("/root", 5))),
+            synthetic_entry(false, Some(("f", 11))),
+        ]);
+        let mut parser = MftParser::from_buffer(mft).unwrap();
+
+        let path =
+            |parser: &mut MftParser<_>, id| crate::utils::windows_path(&full_path(parser, id));
+        // The file first, so that its directories are resolved as a chain.
+        assert_eq!(path(&mut parser, 8), r"A\etc\passwd");
+        assert_eq!(path(&mut parser, 7), r"A\etc");
+        assert_eq!(path(&mut parser, 9), r"A\C:x");
+        assert_eq!(path(&mut parser, 10), r"[Orphaned]\orphan");
+
+        // In the root, the path stays relative.
+        for id in [12, 11] {
+            assert!(full_path(&mut parser, id).is_relative());
+        }
+        assert_eq!(path(&mut parser, 12), r".\root\f");
+        assert_eq!(path(&mut parser, 11), r".\root");
+    }
+
+    #[test]
     fn test_get_full_path_breaks_parent_cycles() {
         // The cycle is cut at its lowest entry ID (6).
         assert_paths_in_any_order(
@@ -991,6 +1135,23 @@ mod tests {
             &mft,
             &[(6, "A"), (7, "[Orphaned]"), (8, "[Orphaned]/f.txt")],
         );
+    }
+
+    #[test]
+    fn test_get_full_path_with_an_out_of_range_timestamp() {
+        // 6 is a directory whose `$FILE_NAME` has a timestamp past year 9999, which Windows
+        // allows. It and the file in it keep their names and paths.
+        let mut dir = synthetic_entry(true, Some(("A", 5)));
+        let created = 0x38 + 24 + 8;
+        dir[created..created + 8].copy_from_slice(&0x7000_0000_0000_0000u64.to_le_bytes());
+        let mft = mft_of([dir, synthetic_entry(false, Some(("f.txt", 6)))]);
+
+        let mut parser = MftParser::from_buffer(mft.clone()).unwrap();
+        let entry = parser.get_entry(6).unwrap();
+        let name = entry.find_best_name_attribute().unwrap();
+        assert_eq!(name.name, "A");
+        assert_eq!(name.created, crate::Timestamp::MAX);
+        assert_paths_in_any_order(&mft, &[(6, "A"), (7, "A/f.txt")]);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use crate::backends::AffOpenOptions;
 use crate::backends::backend::Backend;
+use crate::backends::page::{PageCache, copy_page_bytes, decode_compressed_page};
 use crate::format;
 use crate::format::AF_AFFKEY;
 use crate::{ContainerKind, Segment};
@@ -10,7 +11,7 @@ use openssl::pkey::PKey;
 use openssl::rsa::Rsa;
 use openssl::symm::{Cipher, Crypter, Mode};
 use std::io;
-use std::io::Read;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -31,7 +32,12 @@ pub(crate) fn wrap_backend(
         inner,
         state,
         auto_decrypt: opts.auto_decrypt,
+        cache: new_page_cache(opts.page_cache_pages),
     }))
+}
+
+fn new_page_cache(pages: usize) -> PageCache {
+    PageCache::new(NonZeroUsize::new(pages).unwrap_or(NonZeroUsize::MIN))
 }
 
 #[derive(Debug, Clone)]
@@ -230,11 +236,12 @@ impl CryptoState {
 }
 
 /// Crypto wrapper backend.
-#[derive(Clone)]
 struct CryptoBackend {
     inner: Arc<dyn Backend>,
     state: CryptoState,
     auto_decrypt: bool,
+    /// Decoded pages, each holding only the bytes its segment decodes to.
+    cache: PageCache,
 }
 
 impl std::fmt::Debug for CryptoBackend {
@@ -269,8 +276,11 @@ impl ReadAt for CryptoBackend {
             let within = (cur % page_size as u64) as usize;
             let take = remaining.min(page_size - within);
 
-            let page = self.read_page(page_index)?;
-            buf[out_pos..out_pos + take].copy_from_slice(&page[within..within + take]);
+            let dst = &mut buf[out_pos..out_pos + take];
+            match self.read_page(page_index)? {
+                Some(page) => copy_page_bytes(&page, within, dst),
+                None => dst.fill(0),
+            }
 
             out_pos += take;
             remaining -= take;
@@ -353,9 +363,27 @@ impl Backend for CryptoBackend {
 }
 
 impl CryptoBackend {
-    fn read_page(&self, page_index: u64) -> io::Result<Vec<u8>> {
+    /// Returns the decoded bytes of page `page_index`: what its (possibly decrypted) segment
+    /// holds, at most one page; the rest of the page is zeros. Returns `None` for a page the
+    /// container does not store, which is all zeros.
+    ///
+    /// Decoded pages are cached and shared, so a run of small reads decodes a page once and
+    /// never copies it as a whole.
+    fn read_page(&self, page_index: u64) -> io::Result<Option<Arc<Vec<u8>>>> {
+        if let Some(hit) = self.cache.get(page_index) {
+            return Ok(Some(hit));
+        }
+
+        // A page that is not stored costs nothing to "decode"; keep it out of the cache so it
+        // does not push out a page that does.
+        Ok(self
+            .decode_page(page_index)?
+            .map(|page| self.cache.insert(page_index, page)))
+    }
+
+    /// Decodes page `page_index`, or returns `None` when the container does not store it.
+    fn decode_page(&self, page_index: u64) -> io::Result<Option<Vec<u8>>> {
         let page_size = self.page_size();
-        let mut out = vec![0u8; page_size];
 
         // AFFLIB supports both `page<N>` and the deprecated `seg<N>` nomenclature.
         let mut name = format!("page{page_index}");
@@ -365,58 +393,17 @@ impl CryptoBackend {
             seg = self.read_segment(&name)?;
         }
         let Some(seg) = seg else {
-            return Ok(out);
+            return Ok(None);
         };
 
         // Decode page bytes from the (possibly decrypted) segment data.
         if (seg.arg & format::AF_PAGE_COMPRESSED) == 0 {
-            let take = seg.data.len().min(out.len());
-            out[..take].copy_from_slice(&seg.data[..take]);
-            return Ok(out);
+            let mut data = seg.data;
+            data.truncate(page_size);
+            return Ok(Some(data));
         }
 
-        match seg.arg & format::AF_PAGE_COMP_ALG_MASK {
-            format::AF_PAGE_COMP_ALG_ZERO => {
-                // ZERO compressor => page is all zero.
-                Ok(out)
-            }
-            format::AF_PAGE_COMP_ALG_ZLIB => {
-                let cursor = io::Cursor::new(seg.data);
-                let mut decoder = flate2::read::ZlibDecoder::new(cursor);
-                let mut written = 0usize;
-                while written < out.len() {
-                    let n = decoder.read(&mut out[written..])?;
-                    if n == 0 {
-                        break;
-                    }
-                    written += n;
-                }
-                Ok(out)
-            }
-            format::AF_PAGE_COMP_ALG_LZMA => {
-                #[cfg(feature = "lzma")]
-                {
-                    let mut input = io::Cursor::new(seg.data);
-                    let mut output = io::Cursor::new(&mut out[..]);
-                    lzma_rs::lzma_decompress(&mut input, &mut output).map_err(|e| {
-                        io::Error::new(io::ErrorKind::InvalidData, format!("LZMA: {e}"))
-                    })?;
-                    Ok(out)
-                }
-                #[cfg(not(feature = "lzma"))]
-                {
-                    let _ = seg;
-                    Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "LZMA page but feature `lzma` is disabled",
-                    ))
-                }
-            }
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "unsupported page compression",
-            )),
-        }
+        decode_compressed_page(seg.arg, &seg.data, page_size).map(Some)
     }
 }
 
@@ -522,6 +509,7 @@ mod tests {
             inner,
             state: CryptoState { aes_key: Some(key) },
             auto_decrypt: true,
+            cache: new_page_cache(2),
         };
 
         let seg = crypto.read_segment(segname).unwrap().unwrap();

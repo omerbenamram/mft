@@ -386,19 +386,17 @@ fn cmd_usn(fs: &FileSystem) -> Result<()> {
     for raw in journal.iter_record_bytes() {
         let raw = raw?;
 
-        // A damaged record (such as one with a timestamp out of range) doesn't end the dump.
+        writeln!(out, "USN record:")?;
+        writeln!(out, "\tOffset\t\t\t\t: 0x{:x}", raw.offset)?;
+        // A damaged record doesn't end the dump.
         let rec = match ntfs::ntfs::usn::UsnRecord::from_slice(&raw.bytes, raw.offset) {
             Ok(rec) => rec,
             Err(error) => {
-                writeln!(out, "USN record:")?;
-                writeln!(out, "\tOffset\t\t\t\t: 0x{:x}", raw.offset)?;
                 writeln!(out, "\tError\t\t\t\t: {error}")?;
                 writeln!(out)?;
                 continue;
             }
         };
-        writeln!(out, "USN record:")?;
-        writeln!(out, "\tOffset\t\t\t\t: 0x{:x}", raw.offset)?;
         if let Some(timestamp) = rec.timestamp() {
             writeln!(out, "\tUpdate time\t\t\t: {timestamp}")?;
         }
@@ -424,14 +422,14 @@ fn cmd_usn(fs: &FileSystem) -> Result<()> {
         }
         writeln!(out)?;
 
+        if let Some(name) = rec.name() {
+            writeln!(out, "\tName\t\t\t\t: {name}")?;
+        }
+        write_file_references(&mut out, &rec)?;
         match &rec.details {
             ntfs::ntfs::usn::UsnRecordDetails::Change {
-                name,
-                file_attributes,
-                ..
+                file_attributes, ..
             } => {
-                writeln!(out, "\tName\t\t\t\t: {name}")?;
-                write_file_references(&mut out, &rec)?;
                 writeln!(
                     out,
                     "\tFile attribute flags\t\t: 0x{:08x}",
@@ -445,7 +443,6 @@ fn cmd_usn(fs: &FileSystem) -> Result<()> {
                 remaining_extents,
                 extents,
             } => {
-                write_file_references(&mut out, &rec)?;
                 writeln!(out, "\tRemaining extents\t\t: {remaining_extents}")?;
                 for extent in extents {
                     writeln!(
