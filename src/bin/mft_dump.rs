@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use mft::entry::ZERO_HEADER;
 use std::ops::RangeInclusive;
 use std::str::FromStr;
-use std::{fs, io, path};
+use std::{fs, io};
 
 #[derive(Debug, PartialOrd, PartialEq)]
 #[allow(clippy::upper_case_acronyms)]
@@ -269,6 +269,7 @@ impl MftDump {
             None => Box::new(0..number_of_entries as usize) as Box<dyn Iterator<Item = usize>>,
         };
 
+        let mut failed_streams = 0u64;
         for i in entries {
             let entry = parser.get_entry(i as u64);
 
@@ -324,28 +325,27 @@ impl MftDump {
                     })
                     .enumerate()
                 {
-                    let orig_path_component: String = data_streams_dir
-                        .join(&sanitized_path)
-                        .to_string_lossy()
-                        .to_string();
-
                     // Add some random bits to prevent collisions
                     let random: [u8; 6] = rand::random();
-                    let rando_string: String = to_hex_string(&random);
+                    let file_name = stream_file_name(
+                        &sanitized_path,
+                        &to_hex_string(&random),
+                        i,
+                        &name.to_utf8_string(),
+                    );
+                    let data_stream_path = data_streams_dir.join(file_name);
 
-                    let truncated: String = orig_path_component.chars().take(150).collect();
-                    let data_stream_path =
-                        format!("{truncated}__{rando_string}_{i}_{name}.dontrun");
-
-                    if PathBuf::from(&data_stream_path).exists() {
-                        return Err(anyhow!(
-                            "Tried to override an existing stream {data_stream_path} already exists!\
-                                 This is a bug, please report to github!"
-                        ));
+                    // One stream that can't be written doesn't end the dump: the run goes on
+                    // and fails at its end. `create_new` never overwrites an earlier export.
+                    if let Err(e) = File::create_new(&data_stream_path)
+                        .and_then(|mut f| f.write_all(stream.data()))
+                    {
+                        eprintln!(
+                            "Failed to write stream to {}: {e}",
+                            data_stream_path.display()
+                        );
+                        failed_streams += 1;
                     }
-
-                    let mut f = File::create(&data_stream_path)?;
-                    f.write_all(stream.data())?;
                 }
             }
 
@@ -366,6 +366,12 @@ impl MftDump {
                         .expect("CSV Writer is for OutputFormat::CSV"),
                 )?,
             }
+        }
+
+        if failed_streams > 0 {
+            return Err(anyhow!(
+                "{failed_streams} resident stream(s) could not be written, see the errors above"
+            ));
         }
 
         Ok(())
@@ -480,18 +486,53 @@ fn to_hex_string(bytes: &[u8]) -> String {
     s
 }
 
-// adapter from python version
-// https://github.com/pallets/werkzeug/blob/9394af646038abf8b59d6f866a1ea5189f6d46b8/src/werkzeug/utils.py#L414
+/// Replaces what can't be part of a file name on some platform: path separators and the other
+/// characters Windows reserves (an NTFS volume written by another system can hold them), and
+/// control characters.
 pub fn sanitized(component: &str) -> String {
     let mut buf = String::with_capacity(component.len());
     for c in component.chars() {
-        match c {
-            _sep if path::is_separator(c) => buf.push('_'),
-            _ => buf.push(c),
-        }
+        buf.push(match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        });
     }
-
     buf
+}
+
+/// The longest file name most file systems take, in bytes.
+const MAX_FILE_NAME_LEN: usize = 255;
+/// The most bytes of a stream's name that go into its file name. NTFS allows 255 UTF-16 units,
+/// which would leave no room for the path.
+const MAX_STREAM_NAME_LEN: usize = 80;
+
+/// The longest prefix of `s` that fits in `max_len` bytes.
+fn truncated(s: &str, max_len: usize) -> &str {
+    let mut end = s.len().min(max_len);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// The file name an exported stream is written to:
+/// `{path}__{random}_{stream_number}_{stream_name}.dontrun`. The path and the stream's name are
+/// cut so that the whole name fits in [`MAX_FILE_NAME_LEN`].
+fn stream_file_name(
+    sanitized_path: &str,
+    random: &str,
+    stream_number: usize,
+    stream_name: &str,
+) -> String {
+    let stream_name = sanitized(stream_name);
+    let stream_name = truncated(&stream_name, MAX_STREAM_NAME_LEN);
+    let suffix = format!("__{random}_{stream_number}_{stream_name}.dontrun");
+    let path = truncated(
+        sanitized_path,
+        MAX_FILE_NAME_LEN.saturating_sub(suffix.len()),
+    );
+    format!("{path}{suffix}")
 }
 
 fn main() -> Result<()> {
@@ -610,8 +651,30 @@ impl fmt::Debug for ForcedBacktrace {
 
 #[cfg(test)]
 mod tests {
-    use super::{MftParser, Path, Ranges, is_listed_by_its_base};
+    use super::{
+        MAX_FILE_NAME_LEN, MftParser, Path, Ranges, is_listed_by_its_base, stream_file_name,
+    };
     use std::str::FromStr;
+
+    #[test]
+    fn stream_file_names_fit_and_have_no_separators() {
+        // 150 three-byte characters of path, and a stream name with separators.
+        let path = "\u{65E5}".repeat(150);
+        let name = stream_file_name(&path, "0123456789AB", 3, "a/b\\c\u{0}d:e?");
+        assert!(name.len() <= MAX_FILE_NAME_LEN, "{} bytes", name.len());
+        assert!(name.ends_with("__0123456789AB_3_a_b_c_d_e_.dontrun"));
+        assert!(!name.contains(['/', '\\']));
+
+        // A stream name as long as NTFS allows still leaves room for some of the path.
+        let name = stream_file_name("dir_file.txt", "0123456789AB", 0, &"\u{65E5}".repeat(255));
+        assert!(name.len() <= MAX_FILE_NAME_LEN);
+        assert!(name.starts_with("dir_file.txt__0123456789AB_0_\u{65E5}"));
+
+        assert_eq!(
+            stream_file_name("a_b.txt", "0123456789AB", 0, ""),
+            "a_b.txt__0123456789AB_0_.dontrun"
+        );
+    }
 
     #[test]
     fn it_works_with_single_number() {
