@@ -9,6 +9,7 @@ mod aff1;
 mod afm;
 pub(crate) mod backend;
 mod open;
+pub(crate) mod page;
 mod split_raw;
 
 pub use backend::{ContainerKind, Segment};
