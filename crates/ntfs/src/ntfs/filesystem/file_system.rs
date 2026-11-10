@@ -1238,10 +1238,9 @@ impl FileSystem {
         }
 
         // Attribute list extents.
-        for al in self.read_attribute_list(&base_entry)? {
-            if al.attribute_type != MftAttributeType::DATA as u32 || al.name != stream_name {
-                continue;
-            }
+        for al in
+            self.read_attribute_list(&base_entry, MftAttributeType::DATA as u32, stream_name)?
+        {
             // The list also names the attributes held in the base record; those are collected
             // above.
             if al.segment_entry == base_entry_id {
@@ -1290,19 +1289,32 @@ impl FileSystem {
         Ok(extents)
     }
 
-    /// Returns the entries of the `$ATTRIBUTE_LIST` of `base_entry`, or nothing when the record
-    /// has no attribute list.
+    /// Returns the entries of the `$ATTRIBUTE_LIST` of `base_entry` that describe the attribute
+    /// of type `attribute_type` named `name`, or nothing when the record has no attribute list.
     ///
     /// The list is resident in most records. When a file has so many extents that the list no
     /// longer fits in the record, NTFS makes the list itself non-resident; it is then read from
     /// its data runs (which always live in the base record).
-    fn read_attribute_list(&self, base_entry: &mft::MftEntry) -> Result<Vec<AttributeListItem>> {
+    fn read_attribute_list(
+        &self,
+        base_entry: &mft::MftEntry,
+        attribute_type: u32,
+        name: &str,
+    ) -> Result<Vec<AttributeListItem>> {
+        let matching = |list: &AttributeListAttr<'_>| -> Vec<AttributeListItem> {
+            list.entries
+                .iter()
+                .filter(|e| e.attribute_type == attribute_type && e.name == name)
+                .map(AttributeListItem::from)
+                .collect()
+        };
+
         for attr in base_entry
             .iter_attributes_matching(Some(vec![MftAttributeType::AttributeList]))
             .filter_map(std::result::Result::ok)
         {
             if let Some(list) = attr.data.as_attribute_list() {
-                return Ok(list.entries.iter().map(AttributeListItem::from).collect());
+                return Ok(matching(list));
             }
 
             let ResidentialHeader::NonResident(nr) = &attr.header.residential_header else {
@@ -1324,14 +1336,13 @@ impl FileSystem {
                     ),
                 });
             }
-            let mut raw = vec![0u8; nr.file_size as usize];
-            read_from_data_runs(&self.volume, runs, 0, &mut raw)?;
             // Bytes past the valid data length are not part of the list.
-            let valid =
-                usize::try_from(nr.valid_data_length).map_or(raw.len(), |v| v.min(raw.len()));
+            let valid = nr.valid_data_length.min(nr.file_size) as usize;
+            let mut raw = vec![0u8; valid];
+            read_from_data_runs(&self.volume, runs, 0, &mut raw)?;
 
-            let list = AttributeListAttr::from_slice(&raw[..valid])?;
-            return Ok(list.entries.iter().map(AttributeListItem::from).collect());
+            let list = AttributeListAttr::from_slice(&raw)?;
+            return Ok(matching(&list));
         }
         Ok(Vec::new())
     }
@@ -1790,11 +1801,9 @@ impl DataExtent {
 /// Upper bound for a non-resident `$ATTRIBUTE_LIST`. NTFS itself limits the list to 256 KiB.
 const MAX_ATTRIBUTE_LIST_SIZE: u64 = 1024 * 1024;
 
-/// One `$ATTRIBUTE_LIST` entry, detached from the buffer it was parsed from.
+/// Where one `$ATTRIBUTE_LIST` entry points, detached from the buffer it was parsed from.
 #[derive(Debug, Clone)]
 struct AttributeListItem {
-    attribute_type: u32,
-    name: String,
     lowest_vcn: u64,
     /// MFT entry number of the record that holds the attribute.
     segment_entry: u64,
@@ -1805,8 +1814,6 @@ struct AttributeListItem {
 impl From<&AttributeListEntry<'_>> for AttributeListItem {
     fn from(entry: &AttributeListEntry<'_>) -> Self {
         Self {
-            attribute_type: entry.attribute_type,
-            name: entry.name.to_string(),
             lowest_vcn: entry.lowest_vcn,
             segment_entry: entry.segment_reference.entry,
             instance: entry.reserved,
