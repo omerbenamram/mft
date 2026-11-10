@@ -13,15 +13,16 @@
 use crate::format;
 use crate::{Error, Result};
 use forensic_image::ReadAt;
-use lru::LruCache;
 use std::collections::HashMap;
 use std::io;
 use std::num::NonZeroUsize;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use super::backend::{Backend, ContainerKind, Segment};
-use super::page::{copy_page_bytes, decode_compressed_page, decoded_len_of_compressed_page};
+use super::page::{
+    PageCache, copy_page_bytes, decode_compressed_page, decoded_len_of_compressed_page,
+};
 
 #[derive(Debug, Clone, Copy)]
 struct PageEntry {
@@ -47,7 +48,7 @@ pub(crate) struct Aff1Image {
     segments: HashMap<String, SegmentEntry>,
     pages: HashMap<u64, PageEntry>,
     /// Decoded ZLIB/LZMA pages. Each holds only the bytes the page decodes to.
-    cache: Mutex<LruCache<u64, Arc<Vec<u8>>>>,
+    cache: PageCache,
 }
 
 impl Aff1Image {
@@ -270,7 +271,7 @@ impl Aff1Image {
             segments,
             pages,
             // Keep small: typical pages are large (MiBs).
-            cache: Mutex::new(LruCache::new(cache_pages)),
+            cache: PageCache::new(cache_pages),
         })
     }
 
@@ -316,22 +317,12 @@ impl Aff1Image {
             return Ok(());
         }
 
-        let cached = self
-            .cache
-            .lock()
-            .expect("poisoned")
-            .get(&page_index)
-            .cloned();
-        let page = match cached {
+        let page = match self.cache.get(page_index) {
             Some(page) => page,
-            None => {
-                let page = Arc::new(decode_compressed_page(entry.flags, seg, self.page_size)?);
-                self.cache
-                    .lock()
-                    .expect("poisoned")
-                    .put(page_index, Arc::clone(&page));
-                page
-            }
+            None => self.cache.insert(
+                page_index,
+                decode_compressed_page(entry.flags, seg, self.page_size)?,
+            ),
         };
         copy_page_bytes(&page, within, buf);
         Ok(())
