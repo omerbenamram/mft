@@ -886,9 +886,9 @@ impl Ewf2Reader {
 
             match self.compression_method {
                 EWF2_COMPRESSION_LZ => {
-                    let cursor = io::Cursor::new(slice);
-                    let mut decoder = ZlibDecoder::new(cursor);
-                    decoder.read_exact(&mut out)?;
+                    let expected_len =
+                        expected_chunk_len(self.media_size, self.chunk_size, chunk_index);
+                    inflate_chunk(&slice, &mut out, expected_len)?;
                 }
                 EWF2_COMPRESSION_NONE => {
                     return Err(Error::Invalid(
@@ -1658,40 +1658,8 @@ impl Ewf1Reader {
         let (start, end, is_compressed) = chunk_range_v1(group, idx)?;
 
         let slice = read_file_range(&segment.file, segment.file_len, start, end)?;
-        let mut out = vec![0u8; self.chunk_size];
-
-        if is_compressed {
-            // Compressed chunks contain a zlib stream that expands to exactly `chunk_size` bytes.
-            // (EWF1 uses zlib/deflate for chunk compression.)
-            let cursor = io::Cursor::new(slice);
-            let mut decoder = ZlibDecoder::new(cursor);
-            decoder.read_exact(&mut out)?;
-        } else {
-            // Uncompressed chunks are stored as: [chunk bytes][u32 adler32 checksum].
-            let required = self
-                .chunk_size
-                .checked_add(4)
-                .ok_or_else(|| Error::Invalid("chunk size overflow".to_string()))?;
-            if slice.len() < required {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "short uncompressed chunk",
-                )
-                .into());
-            }
-
-            let data_part = &slice[..self.chunk_size];
-            let checksum_part = &slice[self.chunk_size..self.chunk_size + 4];
-            let stored = u32::from_le_bytes(checksum_part.try_into().expect("len=4"));
-            let calculated = adler32_rfc1950(data_part);
-
-            if stored != calculated {
-                return Err(Error::Corrupt(
-                    "uncompressed chunk checksum mismatch".to_string(),
-                ));
-            }
-            out.copy_from_slice(data_part);
-        }
+        let expected_len = expected_chunk_len(self.media_size, self.chunk_size, chunk_index);
+        let out = decode_chunk_v1(&slice, is_compressed, self.chunk_size, expected_len)?;
 
         self.cache
             .lock()
@@ -1991,6 +1959,89 @@ fn parse_chunk_groups_v1(
     }
 
     Ok((chunk_groups, chunk_count))
+}
+
+/// Returns how many bytes of chunk `chunk_index` hold media data.
+///
+/// Every chunk is `chunk_size` bytes except the last one, which is shorter when the media size is
+/// not a multiple of the chunk size (libewf stores only the sectors that exist).
+///
+/// A chunk that starts at or past the end of the media holds no media bytes at all. The readers
+/// never ask for one (the chunk count is checked against the media size when an image is
+/// opened); should one be asked for, it is held to a full chunk rather than to nothing, so that
+/// a truncated chunk cannot pass as valid.
+pub(crate) fn expected_chunk_len(media_size: u64, chunk_size: usize, chunk_index: u64) -> usize {
+    let chunk_start = chunk_index.saturating_mul(chunk_size as u64);
+    match media_size.checked_sub(chunk_start) {
+        Some(remaining) if remaining > 0 => {
+            usize::try_from(remaining).map_or(chunk_size, |r| r.min(chunk_size))
+        }
+        _ => chunk_size,
+    }
+}
+
+/// Inflates a zlib stream into `out`, which is one chunk long.
+///
+/// The stream must hold at least `expected_len` bytes. Bytes of `out` past the end of the stream
+/// are left as they were (zeros for a fresh chunk buffer).
+pub(crate) fn inflate_chunk(compressed: &[u8], out: &mut [u8], expected_len: usize) -> Result<()> {
+    let mut decoder = ZlibDecoder::new(compressed);
+    let mut filled = 0usize;
+    while filled < out.len() {
+        let n = decoder.read(&mut out[filled..])?;
+        if n == 0 {
+            break;
+        }
+        filled += n;
+    }
+    if filled < expected_len {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "short compressed chunk").into());
+    }
+    Ok(())
+}
+
+/// Decodes one stored EWF1 chunk into a `chunk_size` buffer.
+///
+/// `expected_len` is the number of media bytes the chunk must hold, see [`expected_chunk_len`].
+/// A last chunk that holds fewer than `chunk_size` bytes is zero-padded.
+pub(crate) fn decode_chunk_v1(
+    stored: &[u8],
+    is_compressed: bool,
+    chunk_size: usize,
+    expected_len: usize,
+) -> Result<Vec<u8>> {
+    let mut out = vec![0u8; chunk_size];
+
+    if is_compressed {
+        // Compressed chunks contain a zlib stream that expands to the chunk's media bytes.
+        // (EWF1 uses zlib/deflate for chunk compression.)
+        inflate_chunk(stored, &mut out, expected_len)?;
+        return Ok(out);
+    }
+
+    // Uncompressed chunks are stored as: [chunk bytes][u32 adler32 checksum]. The chunk bytes are
+    // `chunk_size` long, except for a short last chunk.
+    let data_len = if stored.len() >= chunk_size.saturating_add(4) {
+        chunk_size
+    } else {
+        stored.len().saturating_sub(4)
+    };
+    if stored.len() < 4 || data_len < expected_len {
+        return Err(
+            io::Error::new(io::ErrorKind::UnexpectedEof, "short uncompressed chunk").into(),
+        );
+    }
+
+    let data_part = &stored[..data_len];
+    let checksum_part = &stored[data_len..data_len + 4];
+    let stored_checksum = u32::from_le_bytes(checksum_part.try_into().expect("len=4"));
+    if stored_checksum != adler32_rfc1950(data_part) {
+        return Err(Error::Corrupt(
+            "uncompressed chunk checksum mismatch".to_string(),
+        ));
+    }
+    out[..data_len].copy_from_slice(data_part);
+    Ok(out)
 }
 
 fn chunk_range_v1(group: &Ewf1ChunkGroup, idx: usize) -> Result<(u64, u64, bool)> {
@@ -4154,5 +4205,22 @@ mod tests {
         assert!(meta.digests.sha1.is_some());
 
         Ok(())
+    }
+
+    #[test]
+    fn test_expected_chunk_len() {
+        // 20 sectors in chunks of 16.
+        assert_eq!(expected_chunk_len(20 * 512, 16 * 512, 0), 16 * 512);
+        assert_eq!(expected_chunk_len(20 * 512, 16 * 512, 1), 4 * 512);
+        assert_eq!(expected_chunk_len(32 * 512, 16 * 512, 1), 16 * 512);
+        // No chunk exists at or past the end of the media. One that is asked for anyway must
+        // not be accepted with nothing in it.
+        assert_eq!(expected_chunk_len(32 * 512, 16 * 512, 2), 16 * 512);
+        assert_eq!(expected_chunk_len(20 * 512, 16 * 512, 7), 16 * 512);
+        assert_eq!(expected_chunk_len(0, 16 * 512, 0), 16 * 512);
+
+        let truncated = zlib_compress(&[7u8; 100]);
+        let len = expected_chunk_len(32 * 512, 16 * 512, 2);
+        assert!(decode_chunk_v1(&truncated, true, 16 * 512, len).is_err());
     }
 }
