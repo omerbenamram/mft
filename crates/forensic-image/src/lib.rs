@@ -47,3 +47,8 @@ pub trait ReadAt: Send + Sync {
         self.len() == 0
     }
 }
+
+// Compiles the examples in README.md as doc tests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

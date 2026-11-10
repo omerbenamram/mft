@@ -25,3 +25,8 @@ pub use error::{Error, Result};
 pub use info::{EwfCompression, EwfFileFormat, EwfFormat, EwfInfo};
 pub use reader::{EwfReader, LefEntry, LefExtent, LefReader, VerifyOptions};
 pub use writer::{Ewf2CompressionMethod, Ewf2Writer, Ewf2WriterOptions, EwfWriter};
+
+// Compiles the examples in README.md as doc tests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

@@ -53,3 +53,8 @@ pub use backends::AffOpenOptions;
 pub use backends::{ContainerKind, Segment};
 pub use error::{Error, Result};
 pub use verify::{SignatureStatus, Verifier};
+
+// Compiles the examples in README.md as doc tests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

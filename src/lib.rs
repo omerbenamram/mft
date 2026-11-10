@@ -40,3 +40,8 @@ pub use utf16::Utf16LeStr;
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+// Compiles the examples in README.md as doc tests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

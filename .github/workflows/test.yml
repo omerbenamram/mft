@@ -82,6 +82,10 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --exclude ntfs-explorer-gui --all-targets ${{ matrix.features }}
 
+      # `--all-targets` leaves out the doc tests, which include the examples of each README.md.
+      - name: Run doc tests
+        run: cargo test --workspace --exclude ntfs-explorer-gui --doc ${{ matrix.features }}
+
   gui:
     name: NTFS explorer GUI
     runs-on: ubuntu-latest
