@@ -1965,10 +1965,19 @@ fn parse_chunk_groups_v1(
 ///
 /// Every chunk is `chunk_size` bytes except the last one, which is shorter when the media size is
 /// not a multiple of the chunk size (libewf stores only the sectors that exist).
+///
+/// A chunk that starts at or past the end of the media holds no media bytes at all. The readers
+/// never ask for one (the chunk count is checked against the media size when an image is
+/// opened); should one be asked for, it is held to a full chunk rather than to nothing, so that
+/// a truncated chunk cannot pass as valid.
 pub(crate) fn expected_chunk_len(media_size: u64, chunk_size: usize, chunk_index: u64) -> usize {
     let chunk_start = chunk_index.saturating_mul(chunk_size as u64);
-    let remaining = media_size.saturating_sub(chunk_start);
-    usize::try_from(remaining).map_or(chunk_size, |r| r.min(chunk_size))
+    match media_size.checked_sub(chunk_start) {
+        Some(remaining) if remaining > 0 => {
+            usize::try_from(remaining).map_or(chunk_size, |r| r.min(chunk_size))
+        }
+        _ => chunk_size,
+    }
 }
 
 /// Inflates a zlib stream into `out`, which is one chunk long.
@@ -4196,5 +4205,22 @@ mod tests {
         assert!(meta.digests.sha1.is_some());
 
         Ok(())
+    }
+
+    #[test]
+    fn test_expected_chunk_len() {
+        // 20 sectors in chunks of 16.
+        assert_eq!(expected_chunk_len(20 * 512, 16 * 512, 0), 16 * 512);
+        assert_eq!(expected_chunk_len(20 * 512, 16 * 512, 1), 4 * 512);
+        assert_eq!(expected_chunk_len(32 * 512, 16 * 512, 1), 16 * 512);
+        // No chunk exists at or past the end of the media. One that is asked for anyway must
+        // not be accepted with nothing in it.
+        assert_eq!(expected_chunk_len(32 * 512, 16 * 512, 2), 16 * 512);
+        assert_eq!(expected_chunk_len(20 * 512, 16 * 512, 7), 16 * 512);
+        assert_eq!(expected_chunk_len(0, 16 * 512, 0), 16 * 512);
+
+        let truncated = zlib_compress(&[7u8; 100]);
+        let len = expected_chunk_len(32 * 512, 16 * 512, 2);
+        assert!(decode_chunk_v1(&truncated, true, 16 * 512, len).is_err());
     }
 }
