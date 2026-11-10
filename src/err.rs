@@ -51,6 +51,8 @@ pub enum Error {
     FailedToDecodeDataRuns { bad_data_runs: Vec<u8> },
     #[error("Invalid USN record at offset {offset}: {detail}")]
     InvalidUsnRecord { offset: u64, detail: String },
+    #[error("Invalid index record at offset {offset}: {detail}")]
+    InvalidIndexRecord { offset: u64, detail: String },
     #[error("An unexpected error has occurred: {}", detail)]
     Any { detail: String },
 }

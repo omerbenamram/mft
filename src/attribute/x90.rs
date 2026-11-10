@@ -138,7 +138,7 @@ pub struct IndexEntryHeader<'a> {
     pub fname_info: FileNameAttr<'a>,
 }
 bitflags! {
-    #[derive(Clone, Debug, PartialEq)]
+    #[derive(Clone, Copy, Debug, PartialEq)]
     pub struct IndexEntryFlags: u32 {
         const INDEX_ENTRY_NODE = 0x01;
         const INDEX_ENTRY_END  = 0x02;

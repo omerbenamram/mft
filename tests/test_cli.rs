@@ -219,6 +219,34 @@ fn it_dumps_a_usn_journal_as_csv() {
     insta::assert_snapshot!(csv.lines().take(3).collect::<Vec<_>>().join("\n"));
 }
 
+#[test]
+fn it_dumps_i30_entries_with_slack() {
+    let sample = testdata_dir().join("i30").join("narcos-windows.I30");
+
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.args(["-o", "csv"]).arg(sample.as_os_str());
+    let output = cmd.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+
+    let csv = String::from_utf8(output.stdout).unwrap();
+    let mut reader = csv::Reader::from_reader(csv.as_bytes());
+    let headers = reader.headers().unwrap().clone();
+    let column = |name: &str| headers.iter().position(|h| h == name).unwrap();
+    let (from_slack, name) = (column("FromSlack"), column("Name"));
+    let rows: Vec<csv::StringRecord> = reader.records().map(Result::unwrap).collect();
+    let (slack, live): (Vec<_>, Vec<_>) = rows.iter().partition(|row| &row[from_slack] == "true");
+    assert_eq!(live.len(), 99);
+    // The deleted names: in slack, but no longer in the index.
+    let live_names: std::collections::BTreeSet<_> = live.iter().map(|row| &row[name]).collect();
+    let deleted: std::collections::BTreeSet<_> = slack
+        .iter()
+        .map(|row| &row[name])
+        .filter(|name| !live_names.contains(name))
+        .collect();
+    insta::assert_debug_snapshot!(deleted);
+}
+
 /// Runs `mft_dump -o jsonl` with `args`, and gives its records.
 fn usn_jsonl(args: &[&std::ffi::OsStr]) -> Vec<serde_json::Value> {
     let mut cmd = cargo_bin_cmd!("mft_dump");
@@ -275,4 +303,24 @@ fn usn_record_with_a_128_bit_file_id_has_no_full_path() {
     fs::write(&path, &r).unwrap();
     let records = usn_jsonl(&["--mft".as_ref(), mft.as_os_str(), path.as_os_str()]);
     assert_eq!(records[0]["full_path"], "x.txt");
+}
+
+#[test]
+fn mft_option_still_detects_an_i30() {
+    let sample = fs::read(testdata_dir().join("i30").join("narcos-windows.I30")).unwrap();
+    let d = tempdir().unwrap();
+    let mft = mft_sample();
+    // As is, and with its first index record allocated but never used: all zeros.
+    let mut zeroed = sample.clone();
+    zeroed[..4096].fill(0);
+    for (name, bytes) in [("as-is.I30", sample), ("zeroed.I30", zeroed)] {
+        let path = d.path().join(name);
+        fs::write(&path, bytes).unwrap();
+        let records = usn_jsonl(&["--mft".as_ref(), mft.as_os_str(), path.as_os_str()]);
+        assert!(!records.is_empty(), "{name}");
+        assert!(
+            records.iter().all(|r| r.get("record_vcn").is_some()),
+            "{name} wasn't read as an `$I30`"
+        );
+    }
 }

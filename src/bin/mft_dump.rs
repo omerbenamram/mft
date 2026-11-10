@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use mft::MftEntry;
 use mft::attribute::MftAttributeType;
+use mft::indx::{FlatIndxEntry, IndxEntry, IndxFile};
 use mft::mft::MftParser;
 use mft::usn::{FlatUsnRecord, UsnJournal, UsnRecord};
 
@@ -18,7 +19,7 @@ use sonic_rs as sonic_json;
 use std::backtrace::Backtrace;
 use std::fmt::{self, Write as FmtWrite};
 use std::fs::File;
-use std::io::{BufWriter, Read, Seek, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use mft::entry::ZERO_HEADER;
@@ -26,7 +27,7 @@ use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::{fs, io};
 
-#[derive(Debug, PartialOrd, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialOrd, PartialEq)]
 #[allow(clippy::upper_case_acronyms)]
 enum OutputFormat {
     JSON,
@@ -53,6 +54,8 @@ enum InputType {
     Mft,
     /// The `$UsnJrnl:$J` change journal.
     Usn,
+    /// A directory's `$INDEX_ALLOCATION:$I30` stream of `INDX` records.
+    I30,
 }
 
 /// A `$J` input: its journal, and the first record when detecting the input already read it.
@@ -60,23 +63,50 @@ enum InputType {
 /// only once.
 type UsnInput = (UsnJournal<File>, Option<UsnRecord>);
 
-/// Tells an `$MFT` (which starts with a `FILE` or `BAAD` record) from a `$J` (whose first bytes
-/// that aren't zero are a USN record), giving the `$J`'s journal or `None` for an `$MFT`.
-/// Anything that isn't a `$J` is read as an `$MFT`, as before `$J` support, such as an `$MFT`
-/// whose first record was wiped.
-fn detect_usn(path: &Path) -> Result<Option<UsnInput>> {
-    let mut f = File::open(path)?;
-    let mut signature = [0u8; 4];
-    let read = f.read(&mut signature)?;
-    if read == 4 && matches!(&signature, b"FILE" | b"BAAD") {
-        return Ok(None);
+/// What detecting `INPUT` found, with the open journal of a `$J`.
+enum Detected {
+    Mft,
+    Usn(UsnInput),
+    I30,
+}
+
+impl Detected {
+    /// Tells an `$MFT` (which starts with a `FILE` or `BAAD` record) and an `$I30` (an `INDX`
+    /// record) from a `$J` (whose first bytes that aren't zero are a USN record). The sparse
+    /// start of a `$J` can run to gigabytes of zeros, so all of it is skipped. Anything else is
+    /// read as an `$MFT`, as before `$J` support, such as an `$MFT` whose first record was wiped.
+    fn detect(path: &Path) -> Result<Self> {
+        let mut f = File::open(path)?;
+        match read_signature(&mut f, 0)?.as_ref() {
+            Some(b"FILE" | b"BAAD") => return Ok(Detected::Mft),
+            Some(b"INDX") => return Ok(Detected::I30),
+            _ => {}
+        }
+        f.rewind()?;
+        let mut journal = UsnJournal::new(f);
+        match journal.next() {
+            Some(Ok(first)) => Ok(Detected::Usn((journal, Some(first)))),
+            // An `$I30` can start with records that were allocated but never used, all zeros.
+            Some(Err(mft::err::Error::InvalidUsnRecord { offset, .. }))
+                if offset % 512 == 0
+                    && read_signature(&mut File::open(path)?, offset)? == Some(*b"INDX") =>
+            {
+                Ok(Detected::I30)
+            }
+            Some(Err(mft::err::Error::InvalidUsnRecord { .. })) | None => Ok(Detected::Mft),
+            Some(Err(error)) => Err(error.into()),
+        }
     }
-    f.rewind()?;
-    let mut journal = UsnJournal::new(f);
-    match journal.next() {
-        Some(Ok(first)) => Ok(Some((journal, Some(first)))),
-        Some(Err(mft::err::Error::InvalidUsnRecord { .. })) | None => Ok(None),
-        Some(Err(error)) => Err(error.into()),
+}
+
+/// Reads the 4 bytes at `offset`, or `None` when the input ends before them.
+fn read_signature(f: &mut File, offset: u64) -> io::Result<Option<[u8; 4]>> {
+    f.seek(SeekFrom::Start(offset))?;
+    let mut signature = [0u8; 4];
+    match f.read_exact(&mut signature) {
+        Ok(()) => Ok(Some(signature)),
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => Ok(None),
+        Err(e) => Err(e),
     }
 }
 
@@ -123,17 +153,27 @@ struct JsonEntry<'a> {
     entry: &'a MftEntry,
 }
 
-/// A JSON output record for a `$J` input: the USN record plus the file's full path, when an
-/// `$MFT` was given to resolve it.
+/// A JSON output record for a `$J` or `$I30` input: the record plus the file's full path, when
+/// an `$MFT` was given to resolve it.
 #[derive(Serialize)]
-struct JsonUsnRecord<'a> {
+struct JsonWithPath<'a, T> {
     #[serde(
         serialize_with = "mft::serialize_option_windows_path",
         skip_serializing_if = "Option::is_none"
     )]
     full_path: Option<PathBuf>,
     #[serde(flatten)]
-    record: &'a UsnRecord,
+    value: &'a T,
+}
+
+/// An `$I30` index entry with the index record it is in.
+#[derive(Serialize)]
+struct JsonIndxEntry<'a> {
+    record_vcn: u64,
+    record_lsn: u64,
+    record_valid_fixup: bool,
+    #[serde(flatten)]
+    entry: &'a IndxEntry<'a>,
 }
 
 struct MftDump {
@@ -214,6 +254,7 @@ impl MftDump {
             "auto" => None,
             "mft" => Some(InputType::Mft),
             "usn" => Some(InputType::Usn),
+            "i30" => Some(InputType::I30),
             other => unreachable!("clap only accepts the listed input types, not {other}"),
         };
         let paths_mft = matches.get_one::<String>("mft").map(PathBuf::from);
@@ -308,22 +349,28 @@ impl MftDump {
     pub fn run(&mut self) -> Result<()> {
         self.try_to_initialize_logging();
 
-        let open_usn = |path: &Path| -> Result<Option<UsnInput>> {
-            Ok(Some((UsnJournal::new(File::open(path)?), None)))
+        let open_usn =
+            |path: &Path| -> Result<UsnInput> { Ok((UsnJournal::new(File::open(path)?), None)) };
+        let detected = match self.input_type {
+            Some(InputType::Mft) => Detected::Mft,
+            Some(InputType::Usn) => Detected::Usn(open_usn(&self.filepath)?),
+            Some(InputType::I30) => Detected::I30,
+            None => match Detected::detect(&self.filepath)? {
+                // `--mft` only applies to a `$J` or an `$I30`, so an input that isn't an `$I30`,
+                // such as a `$J` whose first records are damaged, is read as a `$J`.
+                Detected::Mft if self.paths_mft.is_some() => {
+                    Detected::Usn(open_usn(&self.filepath)?)
+                }
+                detected => detected,
+            },
         };
-        let usn = match self.input_type {
-            Some(InputType::Mft) => None,
-            Some(InputType::Usn) => open_usn(&self.filepath)?,
-            // `--mft` only applies to a `$J`, so a `$J` whose first records are damaged is still
-            // read as one.
-            None if self.paths_mft.is_some() => open_usn(&self.filepath)?,
-            None => detect_usn(&self.filepath)?,
-        };
-        if let Some((journal, first)) = usn {
-            return self.run_usn(journal, first);
+        match detected {
+            Detected::Usn((journal, first)) => return self.run_usn(journal, first),
+            Detected::I30 => return self.run_i30(),
+            Detected::Mft => {}
         }
         if self.paths_mft.is_some() {
-            return Err(anyhow!("`--mft` only applies to a `$J` input"));
+            return Err(anyhow!("`--mft` only applies to a `$J` or `$I30` input"));
         }
 
         let mut parser = MftParser::from_path(&self.filepath)?;
@@ -462,19 +509,7 @@ impl MftDump {
     /// Dumps the records of a `$J` change journal, starting with `first` when detecting the
     /// input already read it from `journal`.
     fn run_usn(&mut self, journal: UsnJournal<File>, first: Option<UsnRecord>) -> Result<()> {
-        if self.output_format == OutputFormat::Bodyfile {
-            return Err(anyhow!("`-o bodyfile` doesn't apply to a `$J` input"));
-        }
-        if self.ranges.is_some() || self.data_streams_output.is_some() || self.csv_rows.any() {
-            return Err(anyhow!(
-                "`--ranges`, `--extract-resident-streams`, `--hard-link-rows` and `--stream-rows` \
-                 only apply to an `$MFT` input"
-            ));
-        }
-        let mut parser = match &self.paths_mft {
-            Some(path) => Some(MftParser::from_path(path)?),
-            None => None,
-        };
+        let mut parser = self.open_for_other_input("$J")?;
         let records = first
             .map(Ok)
             .into_iter()
@@ -500,32 +535,108 @@ impl MftDump {
                 record.parent_reference,
             ))
         };
-        if self.output_format == OutputFormat::CSV {
-            let out = self
-                .output
-                .take()
-                .expect("There can only be one flow accessing the output at a time");
-            let mut writer = csv::Writer::from_writer(out);
-            for record in records {
-                let record = record?;
-                let path = full_path(&record);
-                writer.serialize(FlatUsnRecord::from_record(record, path))?;
-            }
-            writer.flush()?;
-            return Ok(());
-        }
+        let mut sink = self.take_sink();
         for record in records {
             let record = record?;
-            self.print_json(&JsonUsnRecord {
-                full_path: full_path(&record),
-                record: &record,
-            })?;
+            let full_path = full_path(&record);
+            match &mut sink {
+                Sink::Csv(writer) => {
+                    writer.serialize(FlatUsnRecord::from_record(record, full_path))?
+                }
+                Sink::Json(out) => {
+                    let json_record = JsonWithPath {
+                        full_path,
+                        value: &record,
+                    };
+                    write_json_line(&mut self.json_buf, self.output_format, out, &json_record)?;
+                }
+            }
         }
-        self.output
-            .as_mut()
-            .expect("CSV Flow cannot occur, so `Mftdump` should still Own `output`")
-            .flush()?;
-        Ok(())
+        sink.flush()
+    }
+
+    /// Dumps the entries of a directory's `$I30` index records, live ones and the ones recovered
+    /// from slack space.
+    fn run_i30(&mut self) -> Result<()> {
+        let mut parser = self.open_for_other_input("$I30")?;
+        let mut sink = self.take_sink();
+
+        for record in IndxFile::new(File::open(&self.filepath)?) {
+            let record = match record {
+                Ok(record) => record,
+                Err(error @ mft::err::Error::InvalidIndexRecord { .. }) => {
+                    eprintln!("{error}");
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let (live, error) = record.entries_until_error();
+            if let Some(error) = error {
+                eprintln!("{error}");
+            }
+            for entry in live.iter().chain(&record.slack_entries()) {
+                // A slack entry whose header was overwritten names no record; `u64::MAX` is
+                // never a real record number, so it never matches the parent.
+                let entry_id = entry.mft_reference.map_or(u64::MAX, |r| r.entry);
+                let parent = entry.file_name.parent;
+                match &mut sink {
+                    Sink::Csv(writer) => {
+                        let mut row = FlatIndxEntry::from_entry(&record, entry, None);
+                        row.full_path = parser.as_mut().map(|parser| {
+                            parser.get_full_path_in_directory(entry_id, &row.name, parent)
+                        });
+                        writer.serialize(row)?
+                    }
+                    Sink::Json(out) => {
+                        let full_path = parser.as_mut().map(|parser| {
+                            let name = entry.file_name.name.to_utf8_string();
+                            parser.get_full_path_in_directory(entry_id, &name, parent)
+                        });
+                        let json_entry = JsonWithPath {
+                            full_path,
+                            value: &JsonIndxEntry {
+                                record_vcn: record.vcn,
+                                record_lsn: record.lsn,
+                                record_valid_fixup: record.valid_fixup,
+                                entry,
+                            },
+                        };
+                        write_json_line(&mut self.json_buf, self.output_format, out, &json_entry)?;
+                    }
+                }
+            }
+        }
+        sink.flush()
+    }
+
+    /// Checks that only the flags that apply to a `kind` input are set, and opens the `--mft`
+    /// that resolves its paths.
+    fn open_for_other_input(&self, kind: &str) -> Result<Option<MftParser<io::BufReader<File>>>> {
+        if self.output_format == OutputFormat::Bodyfile {
+            return Err(anyhow!("`-o bodyfile` doesn't apply to a `{kind}` input"));
+        }
+        if self.ranges.is_some() || self.data_streams_output.is_some() || self.csv_rows.any() {
+            return Err(anyhow!(
+                "`--ranges`, `--extract-resident-streams`, `--hard-link-rows` and `--stream-rows` \
+                 only apply to an `$MFT` input"
+            ));
+        }
+        Ok(match &self.paths_mft {
+            Some(path) => Some(MftParser::from_path(path)?),
+            None => None,
+        })
+    }
+
+    /// Takes the output, as a CSV writer for `-o csv`.
+    fn take_sink(&mut self) -> Sink {
+        let out = self
+            .output
+            .take()
+            .expect("There can only be one flow accessing the output at a time");
+        match self.output_format {
+            OutputFormat::CSV => Sink::Csv(Box::new(csv::Writer::from_writer(out))),
+            _ => Sink::Json(out),
+        }
     }
 
     fn try_to_initialize_logging(&self) {
@@ -551,18 +662,7 @@ impl MftDump {
             .output
             .as_mut()
             .expect("CSV Flow cannot occur, so `Mftdump` should still Own `output`");
-
-        self.json_buf.clear();
-        if self.output_format == OutputFormat::JSON {
-            sonic_json::to_writer_pretty(&mut self.json_buf, value)?;
-        } else {
-            // JSONL is the performance-critical mode; use a faster serializer.
-            sonic_json::to_writer(&mut self.json_buf, value)?;
-        }
-        self.json_buf.push(b'\n');
-        out.write_all(&self.json_buf)?;
-
-        Ok(())
+        write_json_line(&mut self.json_buf, self.output_format, out, value)
     }
 
     pub fn print_bodyfile_entry(
@@ -626,6 +726,41 @@ fn is_listed_by_its_base<T: Read + Seek>(parser: &mut MftParser<T>, entry: &MftE
                 .iter()
                 .any(|e| e.header.record_number == record_number)
         })
+}
+
+/// Where the rows of a `$J` or `$I30` input go.
+enum Sink {
+    Csv(Box<csv::Writer<Box<dyn Write>>>),
+    Json(Box<dyn Write>),
+}
+
+impl Sink {
+    fn flush(&mut self) -> Result<()> {
+        match self {
+            Sink::Csv(writer) => writer.flush()?,
+            Sink::Json(out) => out.flush()?,
+        }
+        Ok(())
+    }
+}
+
+/// Writes `value` as one JSON (pretty) or JSONL line, through `buf`.
+fn write_json_line(
+    buf: &mut Vec<u8>,
+    format: OutputFormat,
+    out: &mut impl Write,
+    value: &impl Serialize,
+) -> Result<()> {
+    buf.clear();
+    if format == OutputFormat::JSON {
+        sonic_json::to_writer_pretty(&mut *buf, value)?;
+    } else {
+        // JSONL is the performance-critical mode; use a faster serializer.
+        sonic_json::to_writer(&mut *buf, value)?;
+    }
+    buf.push(b'\n');
+    out.write_all(buf)?;
+    Ok(())
 }
 
 fn to_hex_string(bytes: &[u8]) -> String {
@@ -699,9 +834,10 @@ fn main() -> Result<()> {
             Arg::new("input-type")
                 .long("input-type")
                 .action(ArgAction::Set)
-                .value_parser(clap::builder::PossibleValuesParser::new(["auto", "mft", "usn"]))
+                .value_parser(clap::builder::PossibleValuesParser::new(["auto", "mft", "usn", "i30"]))
                 .default_value("auto")
-                .help(indoc!("What INPUT is: an `$MFT`, or a `usn` change journal (`$Extend\\$UsnJrnl:$J`).
+                .help(indoc!("What INPUT is: an `$MFT`, a `usn` change journal (`$Extend\\$UsnJrnl:$J`), or a directory's
+                             `i30` index records (`$INDEX_ALLOCATION:$I30`, live entries and ones recovered from slack).
                              `auto` tells them apart by their first bytes.")),
         )
         .arg(
@@ -709,7 +845,7 @@ fn main() -> Result<()> {
                 .long("mft")
                 .short('m')
                 .action(ArgAction::Set)
-                .help(indoc!("With a `$J` input, the volume's `$MFT`, to add each file's full path.
+                .help(indoc!("With a `$J` or `$I30` input, the volume's `$MFT`, to add each file's full path.
                              A path through a directory whose record was reused since starts with `[Orphaned]`.")),
         )
         .arg(
