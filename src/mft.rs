@@ -100,11 +100,7 @@ fn stale_parent_path(reference: MftReference) -> PathBuf {
 fn push_name(path: &mut PathBuf, name: &str) {
     let path = path.as_mut_os_string();
     if path.is_empty() {
-        let rooted = matches!(
-            Path::new(name).components().next(),
-            Some(Component::Prefix(_) | Component::RootDir)
-        );
-        if !rooted {
+        if !looks_rooted(name) {
             path.push(name);
             return;
         }
@@ -112,6 +108,15 @@ fn push_name(path: &mut PathBuf, name: &str) {
     }
     path.push(MAIN_SEPARATOR_STR);
     path.push(name);
+}
+
+/// Whether the host reads `name` as a path that starts somewhere other than the current
+/// directory.
+fn looks_rooted(name: &str) -> bool {
+    matches!(
+        Path::new(name).components().next(),
+        Some(Component::Prefix(_) | Component::RootDir)
+    )
 }
 
 /// The directory that stands in for a parent that can't be found.
@@ -125,9 +130,12 @@ fn orphaned_path(name: &str) -> PathBuf {
 }
 
 /// The path of `name` in the root directory.
-fn root_path(name: &str) -> PathBuf {
-    let mut path = PathBuf::with_capacity(name.len());
-    push_name(&mut path, name);
+fn root_path(name: String) -> PathBuf {
+    if !looks_rooted(&name) {
+        return PathBuf::from(name);
+    }
+    let mut path = PathBuf::with_capacity(2 + name.len());
+    push_name(&mut path, &name);
     path
 }
 
@@ -626,7 +634,7 @@ impl<T: Read + Seek> MftParser<T> {
     fn path_in_parent(&mut self, entry_id: u64, name: String, parent: MftReference) -> PathBuf {
         match parent.entry {
             // MFT entry 5 is the root path.
-            5 => root_path(&name),
+            5 => root_path(name),
             0 => {
                 trace!("Found orphaned entry ID {entry_id}");
                 orphaned_path(&name)
