@@ -556,8 +556,8 @@ impl MftDump {
                 }
                 Err(error) => return Err(error.into()),
             };
-            let (live, error) = record.entries_until_error();
-            if let Some(error) = error {
+            let (live, errors) = record.entries_and_errors();
+            for error in errors {
                 eprintln!("{error}");
             }
             for entry in live.iter().chain(&record.slack_entries()) {
