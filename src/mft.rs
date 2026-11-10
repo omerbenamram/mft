@@ -239,15 +239,16 @@ impl<T: Read + Seek> MftParser<T> {
     fn read_entry_bytes(&mut self, entry_number: u64, buffer: &mut [u8]) -> Result<()> {
         let entry_size = u64::from(self.entry_size);
         // An entry number whose offset doesn't fit would wrap around to another entry's bytes.
-        let (desired_offset, next_offset) = entry_number
-            .checked_mul(entry_size)
-            .and_then(|offset| Some((offset, offset.checked_add(entry_size)?)))
+        let next_offset = entry_number
+            .checked_add(1)
+            .and_then(|n| n.checked_mul(entry_size))
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("entry {entry_number} is past the end of any MFT"),
                 )
             })?;
+        let desired_offset = next_offset - entry_size;
 
         // Avoid seeking when reading sequential entries; this keeps the BufReader hot and
         // removes a large number of __lseek syscalls in tight loops.
