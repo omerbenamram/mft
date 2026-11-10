@@ -123,8 +123,7 @@ impl ReadAt for AfdImage {
                 // index via `af_get_page` / `af_get_seg` (see `lib/afflib_stream.cpp` +
                 // `lib/vnode_afd.cpp` in the vendored AFFLIBv3 snapshot), not by performing a
                 // per-subfile stream read with an `imagesize` bounds check.
-                let page = file.read_page(page_index)?;
-                buf[out_pos..out_pos + take].copy_from_slice(&page[within..within + take]);
+                file.read_page_into(page_index, within, &mut buf[out_pos..out_pos + take])?;
             } else {
                 buf[out_pos..out_pos + take].fill(0);
             }

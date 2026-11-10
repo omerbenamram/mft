@@ -8,6 +8,8 @@
 //!
 //! Note: The public API is stabilized as part of the crate extraction work. Expect additions as we
 //! expand format coverage (EWF2, delta/shadow files, write resume, etc.).
+// Makes the Rust examples of README.md doc tests of this crate.
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
 mod error;
 mod ewf1;

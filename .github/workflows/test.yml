@@ -41,6 +41,14 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --exclude ntfs-explorer-gui --all-targets --all-features -- -D warnings
 
+      # The fuzz crate is a workspace of its own, so the two steps above do not reach it. Clippy
+      # compiles the targets, which fails when a change to `mft` breaks them. It needs neither
+      # nightly nor cargo-fuzz.
+      - name: Check the fuzz targets
+        run: |
+          cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+          cargo clippy --manifest-path fuzz/Cargo.toml -- -D warnings
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -81,6 +89,10 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --exclude ntfs-explorer-gui --all-targets ${{ matrix.features }}
+
+      # `--all-targets` leaves out the doc tests, which include the examples of each README.md.
+      - name: Run doc tests
+        run: cargo test --workspace --exclude ntfs-explorer-gui --doc ${{ matrix.features }}
 
   gui:
     name: NTFS explorer GUI
