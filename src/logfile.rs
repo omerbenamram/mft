@@ -16,9 +16,10 @@ use byteorder::{ByteOrder, LittleEndian};
 use serde::Serialize;
 
 use crate::MftReference;
-use crate::attribute::x30::FileNameAttr;
+use crate::attribute::x30::NameInParent;
 use crate::err::{Error, Result};
 use crate::impl_serialize_for_bitflags;
+use crate::indx::ENTRY_HEADER_SIZE;
 use crate::ntfs::{UPDATE_SEQUENCE_STRIDE_BYTES, is_valid_page_size};
 use crate::utf16::Utf16LeStr;
 use crate::utils::{read_u16, read_u32, read_u64};
@@ -517,6 +518,13 @@ impl RecordPage {
 pub const LOG_RECORD_HEADER_SIZE: usize = 0x30;
 /// The size of the NTFS client data header (`NTFS_LOG_RECORD_HEADER`), before its LCNs.
 const NTFS_RECORD_HEADER_SIZE: usize = 0x20;
+/// The most client data a record is taken to have. NTFS's largest records, the table dumps
+/// that go with a checkpoint, are tens of KiB on a busy volume; a length beyond this is damage,
+/// not a record, and isn't worth assembling from the pages that follow.
+pub const MAX_CLIENT_DATA_LENGTH: usize = 4 << 20;
+/// The most LCNs an NTFS record lists: the clusters of the record or index buffer it changes,
+/// which is at most 64 KiB, over clusters of at least 512 bytes.
+const MAX_LCNS: usize = 128;
 
 bitflags! {
     /// Log record flags.
@@ -543,7 +551,8 @@ pub struct LogRecord {
     pub client_data_length: u32,
     pub client_seq_number: u16,
     pub client_index: u16,
-    /// 1 for a client record, 2 for a client restart record (a checkpoint).
+    /// [`CLIENT_RECORD`] for a client record, [`CLIENT_RESTART_RECORD`] for a client restart
+    /// record (a checkpoint).
     pub record_type: u32,
     pub transaction_id: u32,
     pub flags: LogRecordFlags,
@@ -576,8 +585,16 @@ pub struct NtfsLogRecord {
     pub redo_data: Vec<u8>,
     #[serde(serialize_with = "crate::attribute::raw::data_as_hex")]
     pub undo_data: Vec<u8>,
+    /// Whether the LCNs, the redo data or the undo data run past where they can end (the LCNs
+    /// into the redo or undo data, the data past the end of the client data). They then hold
+    /// only what fits, which tells a damaged record from one with nothing to redo or undo.
+    pub truncated: bool,
     /// For an operation on an index entry (adding one to a directory, or removing one), the
     /// file the entry names.
+    ///
+    /// The record doesn't say which index the entry is in, and only a `$FILE_NAME` key is
+    /// read: an entry of another index (`$O`, `$Q`, `$R`, `$SII`, `$SDH`) is left out unless
+    /// its key happens to parse as one.
     pub index_entry: Option<LoggedIndexEntry>,
 }
 
@@ -588,6 +605,20 @@ pub struct LoggedIndexEntry {
     pub parent: MftReference,
     pub name: String,
 }
+
+/// The record type of a client record, one that logs a change.
+pub const CLIENT_RECORD: u32 = 1;
+/// The record type of a client restart record, a checkpoint.
+pub const CLIENT_RESTART_RECORD: u32 = 2;
+
+/// The operation that adds an entry to an index root (`$INDEX_ROOT`).
+pub const ADD_INDEX_ENTRY_ROOT: u16 = 0x0C;
+/// The operation that adds an entry to an index buffer (`$INDEX_ALLOCATION`).
+pub const ADD_INDEX_ENTRY_ALLOCATION: u16 = 0x0E;
+
+/// The operation that zeroes the end of an MFT record. Its redo length is how many bytes to
+/// zero, with no data logged.
+pub const ZERO_END_OF_FILE_RECORD: u16 = 0x25;
 
 /// The names of the NTFS log operations.
 /// <https://github.com/libyal/libfsntfs/blob/main/documentation/New%20Technologies%20File%20System%20(NTFS).asciidoc#log-operation-types>
@@ -605,9 +636,9 @@ pub fn operation_name(operation: u16) -> Option<&'static str> {
         0x09 => "UpdateMappingPairs",
         0x0A => "DeleteDirtyClusters",
         0x0B => "SetNewAttributeSizes",
-        0x0C => "AddIndexEntryRoot",
+        ADD_INDEX_ENTRY_ROOT => "AddIndexEntryRoot",
         0x0D => "DeleteIndexEntryRoot",
-        0x0E => "AddIndexEntryAllocation",
+        ADD_INDEX_ENTRY_ALLOCATION => "AddIndexEntryAllocation",
         0x0F => "DeleteIndexEntryAllocation",
         0x10 => "WriteEndOfIndexBuffer",
         0x11 => "SetIndexEntryVcnRoot",
@@ -630,7 +661,7 @@ pub fn operation_name(operation: u16) -> Option<&'static str> {
         0x22 => "UpdateRecordDataAllocation",
         0x23 => "UpdateRelativeDataInIndex",
         0x24 => "UpdateRelativeDataInIndex2",
-        0x25 => "ZeroEndOfFileRecord",
+        ZERO_END_OF_FILE_RECORD => "ZeroEndOfFileRecord",
         _ => return None,
     })
 }
@@ -640,24 +671,43 @@ impl NtfsLogRecord {
     pub fn from_slice(data: &[u8]) -> Option<Self> {
         let field = |at| read_u16(data, at);
         let (redo_operation, undo_operation) = (field(0)?, field(2)?);
-        let part = |offset: u16, length: u16| {
-            let start = usize::from(offset);
-            data.get(start..start + usize::from(length))
-                .unwrap_or_default()
-                .to_vec()
-        };
-        let redo_data = part(field(4)?, field(6)?);
-        let undo_data = part(field(8)?, field(0x0A)?);
+        let (redo_offset, redo_length) = (usize::from(field(4)?), usize::from(field(6)?));
+        let (undo_offset, undo_length) = (usize::from(field(8)?), usize::from(field(0x0A)?));
         let lcns_to_follow = usize::from(field(0x0E)?);
-        let lcns = (0..lcns_to_follow)
+        let target_vcn = read_u64(data, 0x18)?;
+
+        // The redo and undo data, or what of them fits in the client data.
+        let part = |offset: usize, length: usize| {
+            let end = (offset + length).min(data.len());
+            let fits = data.get(offset..end).unwrap_or_default();
+            (fits.to_vec(), fits.len() < length)
+        };
+        let (redo_data, redo_cut) = part(redo_offset, redo_length);
+        let (undo_data, undo_cut) = part(undo_offset, undo_length);
+
+        // The LCNs follow the header and end before the redo and undo data.
+        let lcns_end = [
+            (redo_offset, redo_data.len()),
+            (undo_offset, undo_data.len()),
+        ]
+        .into_iter()
+        .filter(|&(_, length)| length > 0)
+        .map(|(offset, _)| offset)
+        .fold(data.len(), usize::min);
+        let lcns_fit = (lcns_end.saturating_sub(NTFS_RECORD_HEADER_SIZE) / 8).min(MAX_LCNS);
+        let lcns = (0..lcns_to_follow.min(lcns_fit))
             .map_while(|i| read_u64(data, NTFS_RECORD_HEADER_SIZE + 8 * i))
             .collect();
 
         // Adding an entry logs it to redo, removing one logs it to undo.
-        let index_entry = match (redo_operation, undo_operation) {
-            (0x0C | 0x0E, _) => LoggedIndexEntry::from_slice(&redo_data),
-            (_, 0x0C | 0x0E) => LoggedIndexEntry::from_slice(&undo_data),
-            _ => None,
+        let is_add =
+            |operation| matches!(operation, ADD_INDEX_ENTRY_ROOT | ADD_INDEX_ENTRY_ALLOCATION);
+        let index_entry = if is_add(redo_operation) {
+            LoggedIndexEntry::from_slice(&redo_data)
+        } else if is_add(undo_operation) {
+            LoggedIndexEntry::from_slice(&undo_data)
+        } else {
+            None
         };
 
         Some(NtfsLogRecord {
@@ -669,10 +719,13 @@ impl NtfsLogRecord {
             record_offset: field(0x10)?,
             attribute_offset: field(0x12)?,
             cluster_block_offset: field(0x14)?,
-            target_vcn: read_u64(data, 0x18)?,
+            target_vcn,
             lcns,
             redo_data,
             undo_data,
+            truncated: (redo_cut && redo_operation != ZERO_END_OF_FILE_RECORD)
+                || undo_cut
+                || lcns_to_follow > lcns_fit,
             index_entry,
         })
     }
@@ -684,12 +737,12 @@ impl LoggedIndexEntry {
     fn from_slice(entry: &[u8]) -> Option<Self> {
         let file_reference = MftReference::from(read_u64(entry, 0)?);
         let key_length = usize::from(read_u16(entry, 0x0A)?);
-        let key = entry.get(0x10..0x10 + key_length)?;
-        let file_name = FileNameAttr::from_slice(key).ok()?;
+        let key = entry.get(ENTRY_HEADER_SIZE..ENTRY_HEADER_SIZE + key_length)?;
+        let name = NameInParent::from_slice(key)?;
         Some(LoggedIndexEntry {
             file_reference,
-            parent: file_name.parent,
-            name: file_name.name.to_utf8_string(),
+            parent: name.parent,
+            name: name.name.to_utf8_string(),
         })
     }
 }
@@ -702,13 +755,21 @@ impl LogFile {
     /// Each page is scanned on every 8-byte boundary for a record header whose LSN gives its own
     /// offset (its low bits, as in [`LogFile::lsn_offset`], but whatever its sequence number:
     /// pages from passes long before the checkpoint's survive where the log hasn't reached
-    /// since), so a record is found even when the records before it are damaged, and the copies of the log's tail in the buffer pages (whose LSNs give the
-    /// offset of the original) aren't found twice. A record that continues past the end of the
-    /// file is left out.
+    /// since), so a record is found even when the records before it are damaged, and the copies
+    /// of the log's tail in the buffer pages (whose LSNs give the offset of the original) aren't
+    /// found twice.
+    ///
+    /// A record that continues into the next page is left out unless that page is a record
+    /// page whose fixups all matched and that was written in the same pass of the log, no
+    /// earlier than the record; and so is one with more than [`MAX_CLIENT_DATA_LENGTH`] bytes
+    /// of client data.
+    ///
+    /// Not handled: a record found only in the buffer pages (the tail Windows hadn't written
+    /// back), and a record that continues past the end of the file into the first record page,
+    /// where the log wraps around.
     pub fn records(&self) -> impl Iterator<Item = LogRecord> + '_ {
         let page_size = self.page_size();
-        let data_offset = usize::from(self.restart_page().restart_area.log_page_data_offset)
-            .clamp(RECORD_PAGE_HEADER_SIZE, page_size);
+        let data_offset = self.log_page_data_offset();
         self.record_pages
             .iter()
             .flatten()
@@ -719,27 +780,38 @@ impl LogFile {
                     ..start + page_size - LOG_RECORD_HEADER_SIZE + 1)
                     .step_by(8)
             })
-            .filter_map(move |offset| self.record_at(offset, data_offset))
+            .filter_map(move |offset| self.record_at(offset))
+    }
+
+    /// Where log records start in a record page, from the restart page in use.
+    fn log_page_data_offset(&self) -> usize {
+        // A restart area that parses has it after the page header and inside the page.
+        usize::from(self.restart_page().restart_area.log_page_data_offset)
     }
 
     /// The record whose header starts at `offset`, if there is one.
-    fn record_at(&self, offset: usize, data_offset: usize) -> Option<LogRecord> {
+    fn record_at(&self, offset: usize) -> Option<LogRecord> {
         let header = self.data.get(offset..offset + LOG_RECORD_HEADER_SIZE)?;
         let lsn = read_u64(header, 0)?;
         let record_type = read_u32(header, 0x20)?;
         let client_data_length = read_u32(header, 0x18)?;
+        let length = client_data_length as usize;
         if lsn == 0
             || self.lsn_file_offset(lsn) != Some(offset as u64)
-            || !(1..=2).contains(&record_type)
-            || client_data_length as usize > self.data.len() - offset - LOG_RECORD_HEADER_SIZE
+            || !matches!(record_type, CLIENT_RECORD | CLIENT_RESTART_RECORD)
+            || length > MAX_CLIENT_DATA_LENGTH
+            || length > self.data.len() - offset - LOG_RECORD_HEADER_SIZE
         {
             return None;
         }
-        let client_data = self.client_data(
-            offset + LOG_RECORD_HEADER_SIZE,
-            client_data_length as usize,
-            data_offset,
-        )?;
+        let pieces = self.client_data(lsn, offset + LOG_RECORD_HEADER_SIZE, length)?;
+        // Only a client record's data is read, and it is copied together only when it spans
+        // pages.
+        let ntfs = match (record_type, pieces.as_slice()) {
+            (CLIENT_RECORD, [data]) => NtfsLogRecord::from_slice(data),
+            (CLIENT_RECORD, _) => NtfsLogRecord::from_slice(&pieces.concat()),
+            _ => None,
+        };
         Some(LogRecord {
             offset: offset as u64,
             lsn,
@@ -751,35 +823,67 @@ impl LogFile {
             record_type,
             transaction_id: read_u32(header, 0x24)?,
             flags: LogRecordFlags::from_bits_retain(read_u16(header, 0x28)?),
-            ntfs: if record_type == 1 {
-                NtfsLogRecord::from_slice(&client_data)
-            } else {
-                None
-            },
+            ntfs,
         })
     }
 
-    /// `length` bytes of client data from `offset` on, continuing past the end of a page at the
-    /// data of the next one.
-    fn client_data(&self, mut offset: usize, length: usize, data_offset: usize) -> Option<Vec<u8>> {
-        let mut client_data = Vec::with_capacity(length);
-        while client_data.len() < length {
-            // A record whose header ends a page continues after the next page's header.
-            // Record pages follow the restart pages, which needn't be a record page long.
-            let page_start =
-                offset - (offset - self.record_pages_start()) % self.page_size();
-            // A page the record continues into must be a record page: a page that was never
-            // written, or that holds something else, isn't the rest of this record.
-            if offset == page_start && self.data.get(page_start..page_start + 4) != Some(b"RCRD") {
+    /// The pieces of the `length` bytes of client data of the record `lsn`, from `offset` on:
+    /// the rest of the page the header is in, then the data of each page the record continues
+    /// into. `None` when the record continues into a page that isn't the rest of it.
+    fn client_data(&self, lsn: u64, offset: usize, length: usize) -> Option<Vec<&[u8]>> {
+        let page_size = self.page_size();
+        let data_offset = self.log_page_data_offset();
+        // The end of the page the header ends in. Record pages follow the restart pages,
+        // which needn't be a record page long.
+        let pages_start = self.record_pages_start();
+        let mut page = pages_start + ((offset - 1 - pages_start) / page_size + 1) * page_size;
+        let first = (page - offset).min(length);
+        let mut pieces = vec![self.data.get(offset..offset + first)?];
+        let mut left = length - first;
+        while left > 0 {
+            if !self.continues_record(page, lsn) {
                 return None;
             }
-            offset = offset.max(page_start + data_offset);
-            let page_end = page_start + self.page_size();
-            let n = (page_end - offset).min(length - client_data.len());
-            client_data.extend_from_slice(self.data.get(offset..offset + n)?);
-            offset = page_end;
+            let n = (page_size - data_offset).min(left);
+            pieces.push(self.data.get(page + data_offset..page + data_offset + n)?);
+            left -= n;
+            page += page_size;
         }
-        Some(client_data)
+        Some(pieces)
+    }
+
+    /// Whether the page at `offset` can hold the rest of the record `lsn`: a record page whose
+    /// fixups all matched, written in the same pass of the log as the record and no earlier.
+    /// A page that was never written, holds something else, or was written over in a later
+    /// pass isn't the rest of this record.
+    fn continues_record(&self, offset: usize, lsn: u64) -> bool {
+        let Some(page) = self.record_page_at(offset as u64) else {
+            return false;
+        };
+        let bits = self.restart_page().restart_area.seq_number_bits;
+        let sequence = |lsn: u64| lsn >> (64 - bits);
+        // The page's last LSN is the newest record that starts in it, and its last end LSN the
+        // newest that ends in it: the record or one after it does one or the other.
+        page.valid_fixup
+            && [page.last_lsn, page.last_end_lsn]
+                .into_iter()
+                .any(|page_lsn| page_lsn >= lsn && sequence(page_lsn) == sequence(lsn))
+    }
+
+    /// The record page that starts at `offset`, if it parsed.
+    fn record_page_at(&self, offset: u64) -> Option<&RecordPage> {
+        // The record pages are in file order, and `from_buffer` only makes `InvalidLogFile`
+        // errors, which carry the page's offset.
+        let page_offset = |page: &Result<RecordPage>| match page {
+            Ok(page) => page.offset,
+            Err(Error::InvalidLogFile { offset, .. }) => *offset,
+            Err(_) => u64::MAX,
+        };
+        let index = self
+            .record_pages
+            .binary_search_by_key(&offset, page_offset)
+            .ok()?;
+        self.record_pages[index].as_ref().ok()
     }
 }
 
@@ -804,6 +908,7 @@ pub struct FlatLogRecord {
     pub lcns: Option<String>,
     pub redo_length: Option<usize>,
     pub undo_length: Option<usize>,
+    pub truncated: Option<bool>,
     pub file_reference: Option<u64>,
     pub file_sequence: Option<u16>,
     pub parent_reference: Option<u64>,
@@ -842,6 +947,7 @@ impl FlatLogRecord {
             }),
             redo_length: ntfs.map(|n| n.redo_data.len()),
             undo_length: ntfs.map(|n| n.undo_data.len()),
+            truncated: ntfs.map(|n| n.truncated),
             file_reference: entry.map(|e| e.file_reference.entry),
             file_sequence: entry.map(|e| e.file_reference.sequence),
             parent_reference: entry.map(|e| e.parent.entry),
