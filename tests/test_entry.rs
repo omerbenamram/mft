@@ -7,7 +7,6 @@ use mft::attribute::header::ResidentialHeader;
 use mft::attribute::x30::FileNamespace;
 use mft::attribute::x90::{IndexCollationRules, IndexEntryFlags, ViewIndexValue};
 use mft::entry::MftEntry;
-use mft::err::Error as MftError;
 use mft::mft::MftParser;
 
 fn filetime_bytes_to_timestamp(bytes: [u8; 8]) -> Timestamp {
@@ -152,7 +151,7 @@ fn test_view_index_entries() {
 }
 
 #[test]
-fn test_out_of_range_filetime_is_error_not_panic() {
+fn test_out_of_range_filetime_keeps_the_attribute() {
     // Start from a real on-disk entry buffer, then corrupt a FILETIME inside the
     // $STANDARD_INFORMATION (0x10) payload.
     let mut raw = include_bytes!("../samples/entry_single_file").to_vec();
@@ -180,37 +179,24 @@ fn test_out_of_range_filetime_is_error_not_panic() {
         usize::try_from(attr_start).expect("attr_start fits in usize") + usize::from(data_offset);
     assert!(data_start + 8 <= raw.len(), "corrupt offset is in-bounds");
 
-    // Corrupt the first FILETIME (created) to an out-of-range value for `jiff::Timestamp`.
-    raw[data_start..data_start + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+    // Windows accepts file times up to the year 30828, past what `jiff::Timestamp` holds.
+    raw[data_start..data_start + 8].copy_from_slice(&0x7000_0000_0000_0000u64.to_le_bytes());
 
-    // Re-parse and ensure we get a clean error (no panic), and the entry still serializes.
-    let entry = MftEntry::from_buffer(raw, 0).expect("failed to parse corrupted entry");
+    let entry = MftEntry::from_buffer(raw, 0).expect("failed to parse entry");
+    let attributes: Vec<_> = entry
+        .iter_attributes()
+        .collect::<Result<_, _>>()
+        .expect("every attribute still parses");
+    let standard_info = attributes
+        .iter()
+        .find_map(|a| a.data.as_standard_info())
+        .expect("$STANDARD_INFORMATION is still there");
+    // The timestamp is clamped, and the ones next to it are untouched.
+    assert_eq!(standard_info.created, mft::Timestamp::MAX);
+    assert!(standard_info.modified < mft::Timestamp::MAX);
 
-    let mut saw_out_of_range = false;
-    for res in entry.iter_attributes() {
-        match res {
-            Ok(_) => {}
-            Err(MftError::FiletimeTimestampOutOfRange { filetime_100ns }) => {
-                saw_out_of_range = true;
-                assert_eq!(filetime_100ns, u64::MAX);
-            }
-            Err(_) => {}
-        }
-    }
-    assert!(
-        saw_out_of_range,
-        "expected an out-of-range timestamp error while parsing attributes"
-    );
-
-    // `MftEntry` serialization reports attribute parse errors instead of panicking.
     let json = serde_json::to_value(&entry).expect("entry should serialize");
-    let errors = json["errors"].as_array().expect("expected an errors field");
-    assert!(
-        errors.iter().any(|e| e
-            .as_str()
-            .is_some_and(|s| s.contains("out of range for jiff::Timestamp"))),
-        "unexpected errors: {errors:?}"
-    );
+    assert!(json.get("errors").is_none());
 }
 
 #[test]
