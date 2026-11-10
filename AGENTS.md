@@ -78,12 +78,13 @@ Use plain words and full sentences: short ones, one idea each, in the active voi
 
 ### Checks
 
-`.github/workflows/test.yml` runs these on every pull request and on `master`, except the benchmark and the fuzz build.
+`.github/workflows/test.yml` runs these on every pull request and on `master`, except the benchmark.
 
 Run `git lfs pull` once in each checkout before you test `crates/`. `.gitattributes` puts `*.E??`, `*.aff` and `*.dd` files, in either case, in Git LFS. Other image types, such as `.raw`, are not in LFS.
 
 - `cargo fmt --all -- --check`. `pre-commit install` makes this run before each commit.
 - `cargo clippy --workspace --exclude ntfs-explorer-gui --all-targets --all-features -- -D warnings`
+- `cargo fmt --manifest-path fuzz/Cargo.toml -- --check` and `cargo clippy --manifest-path fuzz/Cargo.toml -- -D warnings`. The fuzz crate is a workspace of its own, so the two commands above do not reach it. Clippy compiles the fuzz targets, so it fails when a change to `mft` breaks them. CI does not run the targets: `fuzz/README.md` says how. In a cloud session, add `--target x86_64-unknown-linux-gnu` to `cargo +nightly fuzz run`, because the `cargo-fuzz` installed there defaults to musl.
 - `cargo test --workspace --exclude ntfs-explorer-gui --all-targets --all-features`. This is the Linux job, and `--all-features` also builds the FUSE mount frontend. macOS and Windows run it without `--all-features`.
 - `cargo test --workspace --exclude ntfs-explorer-gui --doc --all-features`, because `--all-targets` leaves out the doc tests. They include the Rust examples of each `README.md`.
 - To run the tests as CI does, set `NTFS_TESTDATA_REQUIRED=1` and fetch the two AFFLIBv3 fixtures with the `curl` commands in the workflow. Without that variable, a test in `crates/` whose fixture is missing is skipped without a word.
@@ -91,7 +92,6 @@ Run `git lfs pull` once in each checkout before you test `crates/`. `.gitattribu
 - When you change `CHANGELOG.md` or `version` in `Cargo.toml`: `scripts/release-notes.sh <version in Cargo.toml>`. CI fails a pull request when the current version has no notes in `CHANGELOG.md`.
 - When you change `crates/ntfs-explorer-gui`: `cargo clippy -p ntfs-explorer-gui --all-targets -- -D warnings` and `cargo test -p ntfs-explorer-gui`. They need the webview packages that the `gui` job installs.
 - When you change a parsing hot path: `cargo bench --bench benchmark`, before and after.
-- When you change `MftEntry::from_buffer`, `decode_data_runs` or `MftParser`: `cargo +nightly fuzz build`, because no CI job builds the fuzz targets. In a cloud session, add `--target x86_64-unknown-linux-gnu`, because the `cargo-fuzz` installed there defaults to musl.
 
 A `macos-latest` job sometimes never gets a runner: it has no steps and no logs. Omer said that such a job does not block a merge. A job that ran and failed does block it.
 
