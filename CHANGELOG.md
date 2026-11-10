@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- A zeroed (never used) record's `header.record_number` is the number it was read as, instead of always 0.
 - `Utf16LeStr::with_utf8` can be nested: converting or comparing another string inside the closure (`eq_utf8` with a non-ASCII string, `to_utf8_string`, `Display`) no longer panics with `RefCell already borrowed`.
 - `MftParser::get_entry` returns an error for an entry number whose byte offset overflows (such as `1 << 54` with 1 KiB records), instead of returning entry 0 labelled with that number in release builds and panicking in debug builds.
 - `mft_dump -e` no longer stops the whole dump when one stream can't be written. A file under a long path of non-ASCII names (80 Japanese characters are enough) gave a file name over 255 bytes, and a stream name holding a `/` gave a path into a missing directory: either one ended the run with an error and without the rest of the output. Exported file names are now cut to 255 bytes, and separators, the other characters Windows reserves and control characters become `_` in the stream's name as well as the path. A stream that still can't be written is reported on stderr and skipped, and the run then exits with an error once everything else is written. An existing file is never overwritten. The path part of the name is no longer shortened by the length of the output directory.

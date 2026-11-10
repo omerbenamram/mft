@@ -819,6 +819,17 @@ mod tests {
     }
 
     #[test]
+    fn test_a_zeroed_record_keeps_its_number() {
+        let mut mft = cyclic_mft();
+        mft.extend(vec![0; ENTRY_SIZE]);
+        let mut parser = MftParser::from_buffer(mft).unwrap();
+
+        let entry = parser.get_entry(9).unwrap();
+        assert!(!entry.header.is_valid());
+        assert_eq!(entry.header.record_number, 9);
+    }
+
+    #[test]
     fn test_get_full_path_breaks_parent_cycles() {
         // The cycle is cut at its lowest entry ID (6).
         assert_paths_in_any_order(
