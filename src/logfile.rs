@@ -159,7 +159,7 @@ pub struct LogFile {
     record_pages_start: usize,
     /// The record pages that were written, in file order.
     record_pages: Vec<Result<RecordPage>>,
-    /// The tail copies that are newer than the page they are a copy of, in file order.
+    /// The tail copies that are newer than the page they are a copy of, one for each such page.
     tail_copies: Vec<TailCopy>,
     /// For each page-sized slot from `record_pages_start` on, the index of the first slot at or
     /// after it that holds no record page: one that doesn't start with `RCRD` and has no newer
