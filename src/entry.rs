@@ -271,6 +271,21 @@ impl MftEntry {
         })
     }
 
+    /// The record number NTFS stored in the record itself, at offset 0x2A (NTFS 3.1 and later).
+    ///
+    /// `header.record_number` is the position the record was read from. The two differ when a
+    /// record was copied or carved from somewhere else, and for records a formatter never
+    /// numbered. `None` for a record that isn't a `FILE` record, or that has the older layout
+    /// without the field (its update sequence array starts before offset 0x30).
+    pub fn stored_record_number(&self) -> Option<u64> {
+        if !self.header.is_valid() || self.header.usa_offset < 0x30 {
+            return None;
+        }
+        let high = u16::from_le_bytes(self.data.get(0x2A..0x2C)?.try_into().ok()?);
+        let low = u32::from_le_bytes(self.data.get(0x2C..0x30)?.try_into().ok()?);
+        Some(u64::from(high) << 32 | u64::from(low))
+    }
+
     /// Retrieves most human-readable representation of a file path entry.
     /// Will prefer `Win32` file name attributes, then `POSIX` ones, and fallback to `Dos` paths.
     ///

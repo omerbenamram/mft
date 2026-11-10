@@ -826,6 +826,37 @@ mod tests {
     }
 
     #[test]
+    fn test_stored_record_number() {
+        let mut record = synthetic_entry(false, Some(("a.txt", 5)));
+        record[0x2A..0x2C].copy_from_slice(&2u16.to_le_bytes());
+        record[0x2C..0x30].copy_from_slice(&7u32.to_le_bytes());
+        // Read as entry 9, whatever the record says about itself.
+        let entry = MftEntry::from_buffer(record.clone(), 9).unwrap();
+        assert_eq!(entry.header.record_number, 9);
+        assert_eq!(entry.stored_record_number(), Some((2 << 32) | 7));
+
+        // The layout before NTFS 3.1 has its update sequence array where the number would be.
+        record[4..6].copy_from_slice(&0x2Au16.to_le_bytes());
+        record[0x2A..0x2C].copy_from_slice(&1u16.to_le_bytes());
+        record[0x2C..0x30].fill(0);
+        let entry = MftEntry::from_buffer(record, 9).unwrap();
+        assert_eq!(entry.valid_fixup, Some(true));
+        assert_eq!(entry.stored_record_number(), None);
+
+        let zeroed = MftEntry::from_buffer(vec![0; ENTRY_SIZE], 9).unwrap();
+        assert_eq!(zeroed.stored_record_number(), None);
+
+        // A real MFT numbers its records.
+        let mut parser = MftParser::from_path(mft_sample()).unwrap();
+        for id in [0, 5, 100] {
+            assert_eq!(
+                parser.get_entry(id).unwrap().stored_record_number(),
+                Some(id)
+            );
+        }
+    }
+
+    #[test]
     fn test_get_full_path_breaks_parent_cycles() {
         // The cycle is cut at its lowest entry ID (6).
         assert_paths_in_any_order(
