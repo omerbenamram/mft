@@ -6,8 +6,10 @@ use serde::Serialize;
 
 use mft::MftEntry;
 use mft::attribute::MftAttributeType;
+use mft::boot::{BOOT_SECTOR_SIZE, BootSector, FlatBootSector};
 use mft::indx::{FlatIndxEntry, IndxEntry, IndxFile};
 use mft::mft::MftParser;
+use mft::sds::{FlatSdsEntry, SdsEntries, SdsEntry, looks_like_sds};
 use mft::usn::{FlatUsnRecord, UsnJournal, UsnRecord};
 
 use dialoguer::Confirm;
@@ -56,6 +58,10 @@ enum InputType {
     Usn,
     /// A directory's `$INDEX_ALLOCATION:$I30` stream of `INDX` records.
     I30,
+    /// The `$Boot` file, or the first sector of a volume.
+    Boot,
+    /// The `$Secure:$SDS` stream of security descriptors.
+    Sds,
 }
 
 /// A `$J` input: its journal, and the first record when detecting the input already read it.
@@ -68,19 +74,31 @@ enum Detected {
     Mft,
     Usn(UsnInput),
     I30,
+    Boot,
+    Sds,
 }
 
 impl Detected {
-    /// Tells an `$MFT` (which starts with a `FILE` or `BAAD` record) and an `$I30` (an `INDX`
-    /// record) from a `$J` (whose first bytes that aren't zero are a USN record). The sparse
-    /// start of a `$J` can run to gigabytes of zeros, so all of it is skipped. Anything else is
-    /// read as an `$MFT`, as before `$J` support, such as an `$MFT` whose first record was wiped.
+    /// Tells an `$MFT` (which starts with a `FILE` or `BAAD` record), an `$I30` (an `INDX`
+    /// record), a `$Boot` (`NTFS    ` at offset 3) and an `$SDS` (an entry in the first 64 KiB
+    /// whose hash matches its descriptor) from a `$J` (whose first bytes that aren't zero are a
+    /// USN record). The sparse start of a `$J` can run to gigabytes of zeros, so all of it is
+    /// skipped. Anything else is read as an `$MFT`, as before `$J` support, such as an `$MFT`
+    /// whose first record was wiped.
     fn detect(path: &Path) -> Result<Self> {
         let mut f = File::open(path)?;
-        match read_signature(&mut f, 0)?.as_ref() {
+        let mut start = Vec::new();
+        (&mut f).take(1 << 16).read_to_end(&mut start)?;
+        match start.get(..4) {
             Some(b"FILE" | b"BAAD") => return Ok(Detected::Mft),
             Some(b"INDX") => return Ok(Detected::I30),
             _ => {}
+        }
+        if start.get(3..11) == Some(b"NTFS    ") {
+            return Ok(Detected::Boot);
+        }
+        if looks_like_sds(&start) {
+            return Ok(Detected::Sds);
         }
         f.rewind()?;
         let mut journal = UsnJournal::new(f);
@@ -176,6 +194,14 @@ struct JsonIndxEntry<'a> {
     entry: &'a IndxEntry<'a>,
 }
 
+/// An `$SDS` entry, with its descriptor as SDDL too.
+#[derive(Serialize)]
+struct JsonSdsEntry<'a> {
+    sddl: Option<String>,
+    #[serde(flatten)]
+    entry: &'a SdsEntry<'a>,
+}
+
 struct MftDump {
     filepath: PathBuf,
     // We use an option here to be able to move the output out of mftdump from a mutable reference.
@@ -255,6 +281,8 @@ impl MftDump {
             "mft" => Some(InputType::Mft),
             "usn" => Some(InputType::Usn),
             "i30" => Some(InputType::I30),
+            "boot" => Some(InputType::Boot),
+            "sds" => Some(InputType::Sds),
             other => unreachable!("clap only accepts the listed input types, not {other}"),
         };
         let paths_mft = matches.get_one::<String>("mft").map(PathBuf::from);
@@ -355,6 +383,8 @@ impl MftDump {
             Some(InputType::Mft) => Detected::Mft,
             Some(InputType::Usn) => Detected::Usn(open_usn(&self.filepath)?),
             Some(InputType::I30) => Detected::I30,
+            Some(InputType::Boot) => Detected::Boot,
+            Some(InputType::Sds) => Detected::Sds,
             None => match Detected::detect(&self.filepath)? {
                 // `--mft` only applies to a `$J` or an `$I30`, so an input that isn't an `$I30`,
                 // such as a `$J` whose first records are damaged, is read as a `$J`.
@@ -367,6 +397,8 @@ impl MftDump {
         match detected {
             Detected::Usn((journal, first)) => return self.run_usn(journal, first),
             Detected::I30 => return self.run_i30(),
+            Detected::Boot => return self.run_boot(),
+            Detected::Sds => return self.run_sds(),
             Detected::Mft => {}
         }
         if self.paths_mft.is_some() {
@@ -609,9 +641,62 @@ impl MftDump {
         sink.flush()
     }
 
+    /// Dumps the boot sector of a `$Boot`.
+    fn run_boot(&mut self) -> Result<()> {
+        self.check_no_mft("$Boot")?;
+        let mut sector = Vec::new();
+        File::open(&self.filepath)?
+            .take(BOOT_SECTOR_SIZE as u64)
+            .read_to_end(&mut sector)?;
+        let boot = BootSector::from_slice(&sector)?;
+        let mut sink = self.take_sink();
+        match &mut sink {
+            Sink::Csv(writer) => writer.serialize(FlatBootSector::from(&boot))?,
+            Sink::Json(out) => write_json_line(&mut self.json_buf, self.output_format, out, &boot)?,
+        }
+        sink.flush()
+    }
+
+    /// Dumps the security descriptors of a `$Secure:$SDS`, skipping the copy of each block.
+    fn run_sds(&mut self) -> Result<()> {
+        self.check_no_mft("$SDS")?;
+        let sds = fs::read(&self.filepath)?;
+        let mut sink = self.take_sink();
+        for entry in SdsEntries::new(&sds) {
+            match &mut sink {
+                Sink::Csv(writer) => writer.serialize(FlatSdsEntry::from_entry(&entry))?,
+                Sink::Json(out) => {
+                    let json_entry = JsonSdsEntry {
+                        sddl: entry.sddl(),
+                        entry: &entry,
+                    };
+                    write_json_line(&mut self.json_buf, self.output_format, out, &json_entry)?
+                }
+            }
+        }
+        sink.flush()
+    }
+
+    /// Checks the flags of an input that has no paths to resolve.
+    fn check_no_mft(&self, kind: &str) -> Result<()> {
+        if self.paths_mft.is_some() {
+            return Err(anyhow!("`--mft` doesn't apply to a `{kind}` input"));
+        }
+        self.check_other_input_flags(kind)
+    }
+
     /// Checks that only the flags that apply to a `kind` input are set, and opens the `--mft`
     /// that resolves its paths.
     fn open_for_other_input(&self, kind: &str) -> Result<Option<MftParser<io::BufReader<File>>>> {
+        self.check_other_input_flags(kind)?;
+        Ok(match &self.paths_mft {
+            Some(path) => Some(MftParser::from_path(path)?),
+            None => None,
+        })
+    }
+
+    /// Checks that none of the flags that only apply to an `$MFT` input are set.
+    fn check_other_input_flags(&self, kind: &str) -> Result<()> {
         if self.output_format == OutputFormat::Bodyfile {
             return Err(anyhow!("`-o bodyfile` doesn't apply to a `{kind}` input"));
         }
@@ -621,10 +706,7 @@ impl MftDump {
                  only apply to an `$MFT` input"
             ));
         }
-        Ok(match &self.paths_mft {
-            Some(path) => Some(MftParser::from_path(path)?),
-            None => None,
-        })
+        Ok(())
     }
 
     /// Takes the output, as a CSV writer for `-o csv`.
@@ -834,10 +916,11 @@ fn main() -> Result<()> {
             Arg::new("input-type")
                 .long("input-type")
                 .action(ArgAction::Set)
-                .value_parser(clap::builder::PossibleValuesParser::new(["auto", "mft", "usn", "i30"]))
+                .value_parser(clap::builder::PossibleValuesParser::new(["auto", "mft", "usn", "i30", "boot", "sds"]))
                 .default_value("auto")
                 .help(indoc!("What INPUT is: an `$MFT`, a `usn` change journal (`$Extend\\$UsnJrnl:$J`), or a directory's
-                             `i30` index records (`$INDEX_ALLOCATION:$I30`, live entries and ones recovered from slack).
+                             `i30` index records (`$INDEX_ALLOCATION:$I30`, live entries and ones recovered from slack),
+                             a `boot` sector (`$Boot`), or the `sds` security descriptors (`$Secure:$SDS`).
                              `auto` tells them apart by their first bytes.")),
         )
         .arg(

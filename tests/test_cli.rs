@@ -247,6 +247,80 @@ fn it_dumps_i30_entries_with_slack() {
     insta::assert_debug_snapshot!(deleted);
 }
 
+#[test]
+fn it_dumps_a_boot_sector() {
+    let sample = testdata_dir().join("boot").join("narcos.Boot");
+
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.args(["-o", "jsonl"]).arg(sample.as_os_str());
+    let output = cmd.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+#[test]
+fn it_dumps_security_descriptors() {
+    let sample = testdata_dir().join("secure").join("narcos-head.SDS");
+
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.args(["-o", "csv"]).arg(sample.as_os_str());
+    let output = cmd.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+#[test]
+fn it_rejects_mft_for_inputs_without_paths() {
+    for (dir, file, kind) in [
+        ("boot", "narcos.Boot", "$Boot"),
+        ("secure", "narcos-head.SDS", "$SDS"),
+    ] {
+        let sample = testdata_dir().join(dir).join(file);
+
+        let mut cmd = cargo_bin_cmd!("mft_dump");
+        cmd.arg("--mft").arg(mft_sample()).arg(sample.as_os_str());
+        let output = cmd.output().unwrap();
+        assert!(!output.status.success(), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            stderr.contains(&format!("`--mft` doesn't apply to a `{kind}` input")),
+            "{stderr}"
+        );
+    }
+}
+
+#[test]
+fn it_dumps_a_boot_sector_as_csv() {
+    let sample = testdata_dir().join("boot").join("narcos.Boot");
+
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.args(["-o", "csv"]).arg(sample.as_os_str());
+    let output = cmd.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    insta::assert_snapshot!(String::from_utf8(output.stdout).unwrap());
+}
+
+#[test]
+fn it_detects_an_sds_whose_first_entry_is_damaged() {
+    let mut sds = fs::read(testdata_dir().join("secure").join("narcos-head.SDS")).unwrap();
+    // Wipe the first entry's header.
+    sds[..20].fill(0xFF);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("damaged.SDS");
+    fs::write(&path, &sds).unwrap();
+
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.args(["-o", "csv"]).arg(&path);
+    let output = cmd.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.starts_with("Offset,FromMirror,SecurityId,"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("\n128,false,257,"), "{stdout}");
+}
 /// Runs `mft_dump -o jsonl` with `args`, and gives its records.
 fn usn_jsonl(args: &[&std::ffi::OsStr]) -> Vec<serde_json::Value> {
     let mut cmd = cargo_bin_cmd!("mft_dump");

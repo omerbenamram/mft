@@ -152,6 +152,81 @@ impl<'a> SecurityDescriptorAttr<'a> {
     }
 }
 
+impl SecurityDescriptorAttr<'_> {
+    /// Formats the descriptor in the Security Descriptor Definition Language, as
+    /// `ConvertSecurityDescriptorToStringSecurityDescriptorW` would, except that SIDs and access
+    /// masks are always written out (`S-1-5-18` rather than `SY`, `0x1f01ff` rather than `FA`),
+    /// and the application data of callback and resource attribute ACEs is left out. So a
+    /// conditional ACE (`XA`, `XD`, `XU`, `ZA`) is printed without its condition, and reads as if
+    /// it applied unconditionally, and a resource attribute ACE (`RA`) without its attribute.
+    /// <https://learn.microsoft.com/en-us/windows/win32/secauthz/security-descriptor-string-format>
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mft::attribute::x50::SecurityDescriptorAttr;
+    ///
+    /// // Owner SYSTEM (S-1-5-18), group Administrators (S-1-5-32-544), no ACLs.
+    /// let value: &[u8] = &[
+    ///     0x01, 0x00, 0x00, 0x80, 0x14, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ///     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05,
+    ///     0x12, 0x00, 0x00, 0x00, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x20, 0x00,
+    ///     0x00, 0x00, 0x20, 0x02, 0x00, 0x00,
+    /// ];
+    ///
+    /// let descriptor = SecurityDescriptorAttr::from_slice(value).unwrap();
+    /// assert_eq!(descriptor.to_sddl(), "O:S-1-5-18G:S-1-5-32-544");
+    /// ```
+    pub fn to_sddl(&self) -> String {
+        use SecurityDescriptorControl as C;
+
+        let mut sddl = String::new();
+        if let Some(owner) = &self.owner {
+            let _ = write!(sddl, "O:{owner}");
+        }
+        if let Some(group) = &self.group {
+            let _ = write!(sddl, "G:{group}");
+        }
+        for (tag, present, acl, flags) in [
+            (
+                "D",
+                C::SE_DACL_PRESENT,
+                &self.dacl,
+                [
+                    (C::SE_DACL_PROTECTED, "P"),
+                    (C::SE_DACL_AUTO_INHERIT_REQ, "AR"),
+                    (C::SE_DACL_AUTO_INHERITED, "AI"),
+                ],
+            ),
+            (
+                "S",
+                C::SE_SACL_PRESENT,
+                &self.sacl,
+                [
+                    (C::SE_SACL_PROTECTED, "P"),
+                    (C::SE_SACL_AUTO_INHERIT_REQ, "AR"),
+                    (C::SE_SACL_AUTO_INHERITED, "AI"),
+                ],
+            ),
+        ] {
+            if !self.control.contains(present) {
+                continue;
+            }
+            let _ = write!(sddl, "{tag}:");
+            for (flag, name) in flags {
+                if self.control.contains(flag) {
+                    sddl.push_str(name);
+                }
+            }
+            match acl {
+                None => sddl.push_str("NO_ACCESS_CONTROL"),
+                Some(acl) => acl.entries.iter().for_each(|ace| ace.write_sddl(&mut sddl)),
+            }
+        }
+        sddl
+    }
+}
+
 impl<'a> Acl<'a> {
     /// Parses an ACL at the start of `value`. Its ACEs must fit in the ACL's size.
     fn from_slice(value: &'a [u8]) -> Option<Self> {
@@ -225,6 +300,83 @@ impl<'a> Ace<'a> {
         decoded.data = body.get(sid_offset + sid_len..)?;
         Some(decoded)
     }
+}
+
+impl Ace<'_> {
+    /// Appends the ACE as an SDDL ACE string: `(type;flags;rights;object;inherited;sid)`.
+    fn write_sddl(&self, sddl: &mut String) {
+        sddl.push('(');
+        match sddl_ace_type(self.ace_type) {
+            Some(code) => sddl.push_str(code),
+            None => {
+                let _ = write!(sddl, "0x{:x}", self.ace_type);
+            }
+        }
+        sddl.push(';');
+        // 0x40 is TRUST_PROTECTED_FILTER_ACE_FLAG on an access filter ACE, and
+        // SUCCESSFUL_ACCESS_ACE_FLAG on the others.
+        let flag_0x40 = if self.ace_type == SYSTEM_ACCESS_FILTER_ACE_TYPE {
+            "TP"
+        } else {
+            "SA"
+        };
+        for (flag, name) in [
+            (AceFlags::OBJECT_INHERIT_ACE, "OI"),
+            (AceFlags::CONTAINER_INHERIT_ACE, "CI"),
+            (AceFlags::NO_PROPAGATE_INHERIT_ACE, "NP"),
+            (AceFlags::INHERIT_ONLY_ACE, "IO"),
+            (AceFlags::INHERITED_ACE, "ID"),
+            (AceFlags::CRITICAL_ACE_FLAG, "CR"),
+            (AceFlags::SUCCESSFUL_ACCESS_ACE_FLAG, flag_0x40),
+            (AceFlags::FAILED_ACCESS_ACE_FLAG, "FA"),
+        ] {
+            if self.flags.contains(flag) {
+                sddl.push_str(name);
+            }
+        }
+        sddl.push(';');
+        if let Some(mask) = self.access_mask {
+            let _ = write!(sddl, "0x{mask:x}");
+        }
+        for guid in [&self.object_type, &self.inherited_object_type] {
+            sddl.push(';');
+            if let Some(guid) = guid {
+                let _ = write!(sddl, "{guid:x}");
+            }
+        }
+        sddl.push(';');
+        if let Some(sid) = &self.sid {
+            sddl.push_str(sid);
+        }
+        sddl.push(')');
+    }
+}
+
+/// `SYSTEM_ACCESS_FILTER_ACE_TYPE`.
+const SYSTEM_ACCESS_FILTER_ACE_TYPE: u8 = 0x15;
+
+/// The SDDL codes of the ACE types SDDL has one for.
+fn sddl_ace_type(ace_type: u8) -> Option<&'static str> {
+    Some(match ace_type {
+        0x00 => "A",
+        0x01 => "D",
+        0x02 => "AU",
+        0x03 => "AL",
+        0x05 => "OA",
+        0x06 => "OD",
+        0x07 => "OU",
+        0x08 => "OL",
+        0x09 => "XA",
+        0x0A => "XD",
+        0x0B => "ZA",
+        0x0D => "XU",
+        0x11 => "ML",
+        0x12 => "RA",
+        0x13 => "SP",
+        0x14 => "TL",
+        0x15 => "FL",
+        _ => return None,
+    })
 }
 
 /// Formats the SID at `offset` as a string, and returns its length.
@@ -401,5 +553,54 @@ mod tests {
 
         // A truncated value.
         assert!(SecurityDescriptorAttr::from_slice(&volume()[..0x30]).is_none());
+    }
+
+    #[test]
+    fn ace_flag_0x40_depends_on_the_ace_type() {
+        let ace = |ace_type| {
+            let mut ace = vec![ace_type, 0x40 | 0x02, 0, 0];
+            ace.extend_from_slice(&0x1u32.to_le_bytes());
+            ace.extend_from_slice(&[1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
+            let size = ace.len() as u16;
+            ace[2..4].copy_from_slice(&size.to_le_bytes());
+            let mut sddl = String::new();
+            Ace::from_slice(&ace).unwrap().write_sddl(&mut sddl);
+            sddl
+        };
+        assert_eq!(ace(0x02), "(AU;CISA;0x1;;;S-1-1-0)");
+        assert_eq!(
+            ace(SYSTEM_ACCESS_FILTER_ACE_TYPE),
+            "(FL;CITP;0x1;;;S-1-1-0)"
+        );
+    }
+
+    #[test]
+    fn object_ace_guids_are_lowercase_in_sddl() {
+        let mut ace = vec![0x05, 0x00, 0, 0];
+        ace.extend_from_slice(&0x10u32.to_le_bytes());
+        ace.extend_from_slice(&OBJECT_TYPE_PRESENT.to_le_bytes());
+        ace.extend_from_slice(&[
+            0x25, 0x96, 0x84, 0x54, 0x78, 0x54, 0x94, 0x49, 0xA5, 0xBA, 0x3E, 0x3B, 0x03, 0x28,
+            0xC3, 0x0D,
+        ]);
+        ace.extend_from_slice(&[1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
+        let size = ace.len() as u16;
+        ace[2..4].copy_from_slice(&size.to_le_bytes());
+        let mut sddl = String::new();
+        Ace::from_slice(&ace).unwrap().write_sddl(&mut sddl);
+        assert_eq!(
+            sddl,
+            "(OA;;0x10;54849625-5478-4994-a5ba-3e3b0328c30d;;S-1-1-0)"
+        );
+    }
+
+    #[test]
+    fn formats_sddl() {
+        let value = volume();
+        let descriptor = SecurityDescriptorAttr::from_slice(&value).unwrap();
+        assert_eq!(
+            descriptor.to_sddl(),
+            "O:S-1-5-32-544G:S-1-5-32-544D:(A;;0x12019f;;;S-1-5-18)(A;;0x12019f;;;S-1-5-32-544)"
+        );
     }
 }
