@@ -111,6 +111,13 @@ impl ReadAt for DataRunsStream {
     }
 
     fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        if offset.saturating_add(buf.len() as u64) > self.len {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "read beyond end of stream",
+            ));
+        }
+
         // Anything past the runs is a hole.
         let mapped = usize::try_from(self.mapped_bytes.saturating_sub(offset))
             .map_or(buf.len(), |m| m.min(buf.len()));
@@ -767,20 +774,49 @@ mod tests {
     }
 
     #[test]
-    fn for_each_stream_piece_errors_when_runs_are_shorter_than_len() {
+    fn for_each_stream_piece_ends_with_a_hole_when_runs_are_shorter_than_len() {
         let cluster_size = 4u32;
-        let volume = test_volume(Arc::new(MemImage::new(vec![0u8; 64])), cluster_size);
+        let volume = test_volume(Arc::new(MemImage::new((0u8..64).collect())), cluster_size);
         let runs = vec![DataRun {
-            lcn_offset: 0,
+            lcn_offset: 1,
             lcn_length: 2,
             run_type: RunType::Standard,
         }];
 
-        let err = for_each_stream_piece(&volume, &runs, 9, |_| Ok(())).unwrap_err();
-        match err {
-            Error::InvalidData { message } => assert_eq!(message, "read beyond end of data runs"),
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let mut pieces: Vec<std::result::Result<Vec<u8>, u64>> = Vec::new();
+        for_each_stream_piece(&volume, &runs, 1 << 40, |piece| {
+            pieces.push(match piece {
+                StreamPiece::Data(bytes) => Ok(bytes.to_vec()),
+                StreamPiece::Hole(len) => Err(len),
+            });
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            pieces,
+            vec![Ok(vec![4, 5, 6, 7, 8, 9, 10, 11]), Err((1 << 40) - 8)]
+        );
+    }
+
+    #[test]
+    fn data_runs_stream_reads_zeros_past_its_runs() {
+        let cluster_size = 4u32;
+        let volume = test_volume(Arc::new(MemImage::new((0u8..64).collect())), cluster_size);
+        let runs = vec![DataRun {
+            lcn_offset: 1,
+            lcn_length: 2,
+            run_type: RunType::Standard,
+        }];
+        let stream = DataRunsStream::new(volume, runs, 1 << 40);
+
+        let mut buf = [0xAAu8; 6];
+        stream.read_exact_at(6, &mut buf).unwrap();
+        assert_eq!(buf, [10, 11, 0, 0, 0, 0]);
+        let mut buf = [0xAAu8; 6];
+        stream.read_exact_at((1 << 40) - 6, &mut buf).unwrap();
+        assert_eq!(buf, [0; 6]);
+        // Past the stream's own length is still an error.
+        assert!(stream.read_exact_at((1 << 40) - 5, &mut buf).is_err());
     }
 
     #[test]
@@ -807,7 +843,7 @@ mod tests {
                 run_type: RunType::Standard,
             },
         ];
-        let stream = CompressedDataRunsStream::new(volume, runs, 16 * 1002, 4).unwrap();
+        let stream = CompressedDataRunsStream::new(volume, runs, 16 * 6000, 4).unwrap();
 
         // Unit 0 holds data, although most of it is a sparse run.
         assert_eq!(stream.sparse_len_at(0), 0);
@@ -818,8 +854,10 @@ mod tests {
         assert_eq!(stream.sparse_len_at(16 * 1000), 16);
         // Unit 1001 is stored.
         assert_eq!(stream.sparse_len_at(16 * 1001), 0);
-        // Past the runs.
-        assert_eq!(stream.sparse_len_at(16 * 5000), 0);
+        // Past the runs everything is a hole, to the end of the stream.
+        assert_eq!(stream.sparse_len_at(16 * 1002), 16 * 4998);
+        assert_eq!(stream.sparse_len_at(16 * 5000 + 3), 16 * 1000 - 3);
+        assert_eq!(stream.sparse_len_at(16 * 6000), 0);
     }
 
     #[test]
