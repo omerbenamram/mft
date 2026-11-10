@@ -7,9 +7,10 @@ use crate::ntfs::{Error, Result, Volume};
 use md5::{Digest as _, Md5};
 use mft::attribute::AttributeDataFlags;
 use mft::attribute::MftAttributeType;
+use mft::attribute::data_run::{DataRun, RunType};
 use mft::attribute::header::ResidentialHeader;
 use mft::attribute::non_resident_attr::NonResidentAttr;
-use mft::attribute::x20::AttributeListAttr;
+use mft::attribute::x20::{AttributeListAttr, AttributeListEntry};
 use std::collections::{HashSet, VecDeque};
 use std::fs::File;
 use std::io::Write as _;
@@ -389,7 +390,7 @@ impl FileSystem {
     /// This avoids allocating the entire file into memory and supports:
     /// - resident and non-resident data
     /// - sparse regions (written as zeros)
-    /// - NTFS-compressed `$DATA` (single-extent only)
+    /// - NTFS-compressed `$DATA`
     pub fn export_file_default_stream_to_path(&self, entry_id: u64, out: &Path) -> Result<()> {
         let entry = self.volume.read_mft_entry(entry_id)?;
         if entry.is_dir() {
@@ -441,28 +442,11 @@ impl FileSystem {
         }
 
         let is_compressed = data_extents.iter().any(|e| e.is_compressed);
-        if is_compressed && data_extents.len() != 1 {
-            return Err(Error::Unsupported {
-                what: "compressed $DATA with attribute list (multiple extents)".to_string(),
-            });
-        }
 
         let file_size = data_extents[0].file_size;
 
         if is_compressed {
-            let extent = &data_extents[0];
-            let unit_clusters =
-                extent
-                    .compression_unit_clusters
-                    .ok_or_else(|| Error::InvalidData {
-                        message: "missing compression unit size".to_string(),
-                    })?;
-            let stream = CompressedDataRunsStream::new(
-                self.volume.clone(),
-                extent.data_runs.clone(),
-                extent.file_size,
-                unit_clusters,
-            )?;
+            let stream = self.open_compressed_stream(&data_extents)?;
 
             let mut buf = vec![0u8; 1024 * 1024];
             let mut off = 0u64;
@@ -545,7 +529,7 @@ impl FileSystem {
     ///
     /// Notes:
     /// - The returned reader is **read-only**.
-    /// - Compressed streams are supported (LZNT1), but currently only for a single extent.
+    /// - Compressed streams are supported (LZNT1).
     /// - Alternate Data Streams (ADS) are supported via `stream_name`.
     pub fn open_file_stream_read_at(
         &self,
@@ -681,28 +665,11 @@ impl FileSystem {
         }
 
         let is_compressed = data_extents.iter().any(|e| e.is_compressed);
-        if is_compressed && data_extents.len() != 1 {
-            return Err(Error::Unsupported {
-                what: "compressed $DATA with attribute list (multiple extents)".to_string(),
-            });
-        }
 
         let file_size = data_extents[0].file_size;
 
         if is_compressed {
-            let extent = &data_extents[0];
-            let unit_clusters =
-                extent
-                    .compression_unit_clusters
-                    .ok_or_else(|| Error::InvalidData {
-                        message: "missing compression unit size".to_string(),
-                    })?;
-            let stream = CompressedDataRunsStream::new(
-                self.volume.clone(),
-                extent.data_runs.clone(),
-                extent.file_size,
-                unit_clusters,
-            )?;
+            let stream = self.open_compressed_stream(&data_extents)?;
             return md5_readat(&stream, file_size).map_err(Error::Io);
         }
 
@@ -833,31 +800,13 @@ impl FileSystem {
             });
         }
 
-        // Compression is currently only supported for a single extent.
         let is_compressed = data_extents.iter().any(|e| e.is_compressed);
-        if is_compressed && data_extents.len() != 1 {
-            return Err(Error::Unsupported {
-                what: "compressed $DATA with attribute list (multiple extents)".to_string(),
-            });
-        }
 
         let file_size = data_extents[0].file_size;
 
         if is_compressed {
             let mut out = vec![0u8; file_size as usize];
-            let extent = &data_extents[0];
-            let unit_clusters =
-                extent
-                    .compression_unit_clusters
-                    .ok_or_else(|| Error::InvalidData {
-                        message: "missing compression unit size".to_string(),
-                    })?;
-            let stream = CompressedDataRunsStream::new(
-                self.volume.clone(),
-                extent.data_runs.clone(),
-                extent.file_size,
-                unit_clusters,
-            )?;
+            let stream = self.open_compressed_stream(&data_extents)?;
             stream.read_exact_at(0, &mut out).map_err(Error::Io)?;
             return Ok(out);
         }
@@ -910,13 +859,7 @@ impl FileSystem {
             });
         }
 
-        // Compression is currently only supported for a single extent.
         let is_compressed = data_extents.iter().any(|e| e.is_compressed);
-        if is_compressed && data_extents.len() != 1 {
-            return Err(Error::Unsupported {
-                what: "compressed $DATA with attribute list (multiple extents)".to_string(),
-            });
-        }
 
         let file_size = data_extents[0].file_size;
         let logical_len = len_override.unwrap_or(file_size);
@@ -931,19 +874,7 @@ impl FileSystem {
                 });
             }
 
-            let extent = &data_extents[0];
-            let unit_clusters =
-                extent
-                    .compression_unit_clusters
-                    .ok_or_else(|| Error::InvalidData {
-                        message: "missing compression unit size".to_string(),
-                    })?;
-            let stream = CompressedDataRunsStream::new(
-                self.volume.clone(),
-                extent.data_runs.clone(),
-                extent.file_size,
-                unit_clusters,
-            )?;
+            let stream = self.open_compressed_stream(&data_extents)?;
             return Ok(Arc::new(stream));
         }
 
@@ -1307,64 +1238,136 @@ impl FileSystem {
         }
 
         // Attribute list extents.
-        if let Some(attr_list) = find_attribute_list(&base_entry)? {
-            for al in attr_list.entries {
-                if al.attribute_type != MftAttributeType::DATA as u32 {
-                    continue;
-                }
-                if al.name != stream_name {
-                    continue;
-                }
+        for al in
+            self.read_attribute_list(&base_entry, MftAttributeType::DATA as u32, stream_name)?
+        {
+            // The list also names the attributes held in the base record; those are collected
+            // above.
+            if al.segment_entry == base_entry_id {
+                continue;
+            }
 
-                let seg_id = al.segment_reference.entry;
-                let seg = self.volume.read_mft_entry(seg_id)?;
+            let seg_id = al.segment_entry;
+            let seg = self.volume.read_mft_entry(seg_id)?;
 
-                // Try to match by instance id.
-                let instance = al.reserved;
-                let mut found = None;
-                for attr in seg
-                    .iter_attributes_matching(Some(vec![MftAttributeType::DATA]))
-                    .filter_map(std::result::Result::ok)
-                    .filter(|a| a.header.name == stream_name)
-                {
-                    if attr.header.instance == instance {
-                        found = Some(attr);
-                        break;
-                    }
-                }
-                let attr = found.ok_or_else(|| Error::NotFound {
+            // Match by instance id.
+            let attr = seg
+                .iter_attributes_matching(Some(vec![MftAttributeType::DATA]))
+                .filter_map(std::result::Result::ok)
+                .filter(|a| a.header.name == stream_name)
+                .find(|a| a.header.instance == al.instance)
+                .ok_or_else(|| Error::NotFound {
                     what: format!(
                         "attribute list references missing DATA extent in entry {seg_id}"
                     ),
                 })?;
 
-                let nr = match &attr.header.residential_header {
-                    ResidentialHeader::NonResident(nr) => nr,
-                    _ => {
-                        return Err(Error::InvalidData {
-                            message: "attribute list referenced non non-resident extent"
-                                .to_string(),
-                        });
-                    }
-                };
-                let runs = attr
-                    .data
-                    .as_data_runs()
-                    .cloned()
-                    .ok_or_else(|| Error::InvalidData {
-                        message: "expected data runs".to_string(),
-                    })?
-                    .data_runs;
+            let nr = match &attr.header.residential_header {
+                ResidentialHeader::NonResident(nr) => nr,
+                _ => {
+                    return Err(Error::InvalidData {
+                        message: "attribute list referenced non non-resident extent".to_string(),
+                    });
+                }
+            };
+            let runs = attr
+                .data
+                .as_data_runs()
+                .cloned()
+                .ok_or_else(|| Error::InvalidData {
+                    message: "expected data runs".to_string(),
+                })?
+                .data_runs;
 
-                let mut extent = DataExtent::from_non_resident_attr(&attr, nr, runs)?;
-                extent.vcn_first = al.lowest_vcn;
-                extents.push(extent);
-            }
+            let mut extent = DataExtent::from_non_resident_attr(&attr, nr, runs)?;
+            extent.vcn_first = al.lowest_vcn;
+            extents.push(extent);
         }
 
         // Sort by VCN.
         extents.sort_by_key(|e| e.vcn_first);
         Ok(extents)
+    }
+
+    /// Returns the entries of the `$ATTRIBUTE_LIST` of `base_entry` that describe the attribute
+    /// of type `attribute_type` named `name`, or nothing when the record has no attribute list.
+    ///
+    /// The list is resident in most records. When a file has so many extents that the list no
+    /// longer fits in the record, NTFS makes the list itself non-resident; it is then read from
+    /// its data runs (which always live in the base record).
+    fn read_attribute_list(
+        &self,
+        base_entry: &mft::MftEntry,
+        attribute_type: u32,
+        name: &str,
+    ) -> Result<Vec<AttributeListItem>> {
+        let matching = |list: &AttributeListAttr<'_>| -> Vec<AttributeListItem> {
+            list.entries
+                .iter()
+                .filter(|e| e.attribute_type == attribute_type && e.name == name)
+                .map(AttributeListItem::from)
+                .collect()
+        };
+
+        for attr in base_entry
+            .iter_attributes_matching(Some(vec![MftAttributeType::AttributeList]))
+            .filter_map(std::result::Result::ok)
+        {
+            if let Some(list) = attr.data.as_attribute_list() {
+                return Ok(matching(list));
+            }
+
+            let ResidentialHeader::NonResident(nr) = &attr.header.residential_header else {
+                continue;
+            };
+            let runs = &attr
+                .data
+                .as_data_runs()
+                .ok_or_else(|| Error::InvalidData {
+                    message: "expected data runs for non-resident $ATTRIBUTE_LIST".to_string(),
+                })?
+                .data_runs;
+
+            if nr.file_size > MAX_ATTRIBUTE_LIST_SIZE {
+                return Err(Error::InvalidData {
+                    message: format!(
+                        "non-resident $ATTRIBUTE_LIST is too large: {} bytes (limit {MAX_ATTRIBUTE_LIST_SIZE})",
+                        nr.file_size
+                    ),
+                });
+            }
+            // Bytes past the valid data length are not part of the list.
+            let valid = nr.valid_data_length.min(nr.file_size) as usize;
+            let mut raw = vec![0u8; valid];
+            read_from_data_runs(&self.volume, runs, 0, &mut raw)?;
+
+            let list = AttributeListAttr::from_slice(&raw)?;
+            return Ok(matching(&list));
+        }
+        Ok(Vec::new())
+    }
+
+    /// Opens a compressed `$DATA` stream described by `extents` (sorted by VCN).
+    ///
+    /// A fragmented compressed file keeps its mapping pairs in several extents (one attribute
+    /// per MFT record, tied together by the attribute list). The runs of all extents are joined
+    /// into one run list, because a compression unit may start in one extent and end in the next.
+    fn open_compressed_stream(&self, extents: &[DataExtent]) -> Result<CompressedDataRunsStream> {
+        let first = extents.first().ok_or_else(|| Error::InvalidData {
+            message: "compressed stream has no extents".to_string(),
+        })?;
+        let unit_clusters = first
+            .compression_unit_clusters
+            .ok_or_else(|| Error::InvalidData {
+                message: "missing compression unit size".to_string(),
+            })?;
+
+        CompressedDataRunsStream::new(
+            self.volume.clone(),
+            join_extent_runs(extents)?,
+            first.file_size,
+            unit_clusters,
+        )
     }
 }
 
@@ -1795,14 +1798,63 @@ impl DataExtent {
     }
 }
 
-fn find_attribute_list(entry: &mft::MftEntry) -> Result<Option<AttributeListAttr<'_>>> {
-    for attr in entry
-        .iter_attributes_matching(Some(vec![MftAttributeType::AttributeList]))
-        .filter_map(std::result::Result::ok)
-    {
-        if let Some(list) = attr.data.as_attribute_list().cloned() {
-            return Ok(Some(list));
+/// Upper bound for a non-resident `$ATTRIBUTE_LIST`. NTFS itself limits the list to 256 KiB.
+const MAX_ATTRIBUTE_LIST_SIZE: u64 = 1024 * 1024;
+
+/// Where one `$ATTRIBUTE_LIST` entry points, detached from the buffer it was parsed from.
+#[derive(Debug, Clone)]
+struct AttributeListItem {
+    lowest_vcn: u64,
+    /// MFT entry number of the record that holds the attribute.
+    segment_entry: u64,
+    /// Attribute instance id inside that record.
+    instance: u16,
+}
+
+impl From<&AttributeListEntry<'_>> for AttributeListItem {
+    fn from(entry: &AttributeListEntry<'_>) -> Self {
+        Self {
+            lowest_vcn: entry.lowest_vcn,
+            segment_entry: entry.segment_reference.entry,
+            instance: entry.reserved,
         }
     }
-    Ok(None)
+}
+
+/// Joins the data runs of `extents` (sorted by VCN) into one run list that starts at VCN 0.
+///
+/// A hole between two extents becomes a sparse run. Extents that overlap are rejected.
+fn join_extent_runs(extents: &[DataExtent]) -> Result<Vec<DataRun>> {
+    let mut runs: Vec<DataRun> = Vec::new();
+    let mut next_vcn = 0u64;
+
+    for extent in extents {
+        if extent.vcn_first < next_vcn {
+            return Err(Error::InvalidData {
+                message: format!(
+                    "overlapping $DATA extents: extent starts at VCN {} but VCN {next_vcn} is already mapped",
+                    extent.vcn_first
+                ),
+            });
+        }
+        if extent.vcn_first > next_vcn {
+            runs.push(DataRun {
+                lcn_offset: 0,
+                lcn_length: extent.vcn_first - next_vcn,
+                run_type: RunType::Sparse,
+            });
+            next_vcn = extent.vcn_first;
+        }
+
+        for run in &extent.data_runs {
+            next_vcn = next_vcn
+                .checked_add(run.lcn_length)
+                .ok_or_else(|| Error::InvalidData {
+                    message: "data run length overflow".to_string(),
+                })?;
+            runs.push(*run);
+        }
+    }
+
+    Ok(runs)
 }
