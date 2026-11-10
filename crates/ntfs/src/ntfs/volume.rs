@@ -83,6 +83,27 @@ impl Volume {
         self.image.len().saturating_sub(self.volume_offset)
     }
 
+    /// Returns how many MFT records can really be read from this volume: what the `$MFT` runs
+    /// map, and no more than fits in the image. The size stored in `$MFT`'s record may claim
+    /// more.
+    pub fn mft_record_capacity(&self) -> u64 {
+        let record_size = u64::from(self.header.mft_entry_size).max(1);
+        let image_len = self.image_len();
+        let mft_bytes = if self.mft_data_runs.is_empty() {
+            // No mapping: records are read contiguously from the boot sector's `$MFT` offset.
+            image_len.saturating_sub(self.header.mft_offset_bytes())
+        } else {
+            self.mft_data_runs
+                .iter()
+                .fold(0u64, |clusters, run| {
+                    clusters.saturating_add(run.lcn_length)
+                })
+                .saturating_mul(u64::from(self.header.cluster_size))
+                .min(image_len)
+        };
+        mft_bytes / record_size
+    }
+
     pub fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
         let image_offset = self.volume_offset.checked_add(offset).ok_or_else(|| {
             std::io::Error::new(
