@@ -704,11 +704,7 @@ impl NtfsLogRecord {
         // The redo and undo data, or what of them fits in the client data.
         let part = |offset: usize, part_length: usize| {
             let end = (offset + part_length).min(length);
-            let fits = if offset < end {
-                read(offset..end)?
-            } else {
-                Vec::new()
-            };
+            let fits = read(offset.min(end)..end)?;
             let cut = fits.len() < part_length;
             Some((fits, cut))
         };
@@ -725,15 +721,13 @@ impl NtfsLogRecord {
         .map(|(offset, _)| offset)
         .fold(length, usize::min);
         let lcns_fit = (lcns_end.saturating_sub(NTFS_RECORD_HEADER_SIZE) / 8).min(MAX_LCNS);
-        let lcns = match lcns_to_follow.min(lcns_fit) {
-            0 => Vec::new(),
-            count => read(NTFS_RECORD_HEADER_SIZE..NTFS_RECORD_HEADER_SIZE + 8 * count)?
-                .as_chunks::<8>()
-                .0
-                .iter()
-                .map(|lcn| u64::from_le_bytes(*lcn))
-                .collect(),
-        };
+        let lcns_read = NTFS_RECORD_HEADER_SIZE + 8 * lcns_to_follow.min(lcns_fit);
+        let lcns = read(NTFS_RECORD_HEADER_SIZE..lcns_read)?
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|lcn| u64::from_le_bytes(*lcn))
+            .collect();
 
         // Adding an entry logs it to redo, removing one logs it to undo.
         let is_add =
@@ -912,8 +906,6 @@ impl LogFile {
             passed += n;
             offset = page_end;
         }
-        #[cfg(test)]
-        tests::BYTES_COPIED.with(|copied| copied.set(copied.get() + client_data.len()));
         Some(client_data)
     }
 
@@ -1011,9 +1003,20 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
-    thread_local! {
-        /// How many bytes of client data `LogFile::client_data` has copied on this thread.
-        pub(super) static BYTES_COPIED: Cell<usize> = const { Cell::new(0) };
+    /// How many bytes of client data [`NtfsLogRecord::parse`] asks for to parse `records`, as
+    /// [`LogFile::records`] parses them. Each must come out the same as `records` has it.
+    fn bytes_requested(log: &LogFile, records: &[LogRecord]) -> usize {
+        let requested = Cell::new(0);
+        for record in records {
+            let data_start = record.offset as usize + LOG_RECORD_HEADER_SIZE;
+            let length = record.client_data_length as usize;
+            let ntfs = NtfsLogRecord::parse(length, |range| {
+                requested.set(requested.get() + range.len());
+                log.client_data(data_start, range)
+            });
+            assert_eq!(ntfs, record.ntfs);
+        }
+        requested.get()
     }
 
     /// A restart page of 4 KiB, for record pages of 4 KiB with their data at 0x40 and 44
@@ -1084,10 +1087,13 @@ mod tests {
     }
 
     #[test]
-    fn records_that_each_claim_most_of_the_file_take_linear_time() {
+    fn records_that_each_claim_most_of_the_file_copy_only_their_ntfs_header() {
         // A record header every 0x30 bytes of every page, each with the most client data a
         // record can have, and every page continuing them. Copying all of each record's data
-        // would copy 4 MiB for each of them.
+        // would copy 4 MiB for each of them; only the parts the NTFS header points at are
+        // copied, so the bytes copied grow with the records, not with the data they claim.
+        // (Whether the data is all there is still a walk over its pages, bounded by
+        // MAX_CLIENT_DATA_LENGTH.)
         let size = 6 << 20;
         let mut data = empty_log(size);
         for page_start in (0x2000..size).step_by(0x1000) {
@@ -1100,7 +1106,6 @@ mod tests {
             );
         }
         let log = LogFile::from_buffer(data).unwrap();
-        BYTES_COPIED.set(0);
         let records: Vec<_> = log.records().collect();
         // Those whose data ends before the end of the file.
         assert!(records.len() > 30_000);
@@ -1111,7 +1116,10 @@ mod tests {
                 .iter()
                 .all(|r| r.ntfs.as_ref().unwrap().lcns.is_empty())
         );
-        assert_eq!(BYTES_COPIED.get(), records.len() * NTFS_RECORD_HEADER_SIZE);
+        assert_eq!(
+            bytes_requested(&log, &records),
+            records.len() * NTFS_RECORD_HEADER_SIZE
+        );
     }
 
     #[test]
@@ -1132,7 +1140,6 @@ mod tests {
             seal_record_page(page, pass | LAST_LSN_OF_PASS_0);
         }
         let log = LogFile::from_buffer(data).unwrap();
-        BYTES_COPIED.set(0);
         let records: Vec<_> = log.records().collect();
         let returned: usize = records
             .iter()
@@ -1142,7 +1149,7 @@ mod tests {
         assert!(records.len() > 10_000);
         assert!(returned > records.len() * 0x1FFFE);
         // Each byte is copied once, into the record that gives it.
-        assert_eq!(BYTES_COPIED.get(), returned);
+        assert_eq!(bytes_requested(&log, &records), returned);
     }
 
     #[test]
