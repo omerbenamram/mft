@@ -246,3 +246,81 @@ fn it_dumps_i30_entries_with_slack() {
         .collect();
     insta::assert_debug_snapshot!(deleted);
 }
+
+/// Runs `mft_dump -o jsonl` with `args`, and gives its records.
+fn usn_jsonl(args: &[&std::ffi::OsStr]) -> Vec<serde_json::Value> {
+    let mut cmd = cargo_bin_cmd!("mft_dump");
+    cmd.args(["-o", "jsonl"]).args(args);
+    let output = cmd.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn mft_option_reads_a_damaged_usn_journal() {
+    // Garbage in place of the first record, which auto-detection would take for an `$MFT`.
+    let mut j = fs::read(testdata_dir().join("usn").join("narcos-head.J")).unwrap();
+    j[8192..8200].fill(0xFF);
+    let d = tempdir().unwrap();
+    let path = d.path().join("damaged.J");
+    fs::write(&path, j).unwrap();
+
+    let mft = mft_sample();
+    let records = usn_jsonl(&["--mft".as_ref(), mft.as_os_str(), path.as_os_str()]);
+    assert_eq!(records.len(), 247);
+}
+
+#[test]
+fn usn_record_with_a_128_bit_file_id_has_no_full_path() {
+    // A v3 record with the high 64 bits of its file id set (ReFS), in the root directory.
+    let name: Vec<u8> = "x.txt".encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let length = 76 + name.len();
+    let mut r = vec![0u8; length.next_multiple_of(8)];
+    r[0..4].copy_from_slice(&(length as u32).to_le_bytes());
+    r[4..6].copy_from_slice(&3u16.to_le_bytes());
+    r[8..16].copy_from_slice(&0x0001_0000_0000_0041u64.to_le_bytes());
+    r[16..24].copy_from_slice(&1u64.to_le_bytes());
+    r[24..32].copy_from_slice(&0x0005_0000_0000_0005u64.to_le_bytes());
+    r[72..74].copy_from_slice(&(name.len() as u16).to_le_bytes());
+    r[74..76].copy_from_slice(&76u16.to_le_bytes());
+    r[76..76 + name.len()].copy_from_slice(&name);
+    let d = tempdir().unwrap();
+    let path = d.path().join("refs.J");
+    fs::write(&path, &r).unwrap();
+
+    let mft = mft_sample();
+    let records = usn_jsonl(&["--mft".as_ref(), mft.as_os_str(), path.as_os_str()]);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["name"], "x.txt");
+    assert!(records[0].get("full_path").is_none(), "{:?}", records[0]);
+
+    // Without the high bits, the same record resolves.
+    r[16..24].fill(0);
+    fs::write(&path, &r).unwrap();
+    let records = usn_jsonl(&["--mft".as_ref(), mft.as_os_str(), path.as_os_str()]);
+    assert_eq!(records[0]["full_path"], "x.txt");
+}
+
+#[test]
+fn mft_option_still_detects_an_i30() {
+    let sample = fs::read(testdata_dir().join("i30").join("narcos-windows.I30")).unwrap();
+    let d = tempdir().unwrap();
+    let mft = mft_sample();
+    // As is, and with its first index record allocated but never used: all zeros.
+    let mut zeroed = sample.clone();
+    zeroed[..4096].fill(0);
+    for (name, bytes) in [("as-is.I30", sample), ("zeroed.I30", zeroed)] {
+        let path = d.path().join(name);
+        fs::write(&path, bytes).unwrap();
+        let records = usn_jsonl(&["--mft".as_ref(), mft.as_os_str(), path.as_os_str()]);
+        assert!(!records.is_empty(), "{name}");
+        assert!(
+            records.iter().all(|r| r.get("record_vcn").is_some()),
+            "{name} wasn't read as an `$I30`"
+        );
+    }
+}

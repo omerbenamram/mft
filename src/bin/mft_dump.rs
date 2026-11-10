@@ -58,7 +58,19 @@ enum InputType {
     I30,
 }
 
-impl InputType {
+/// A `$J` input: its journal, and the first record when detecting the input already read it.
+/// Keeping both means the sparse start of the `$J`, which can run to gigabytes of zeros, is read
+/// only once.
+type UsnInput = (UsnJournal<File>, Option<UsnRecord>);
+
+/// What detecting `INPUT` found, with the open journal of a `$J`.
+enum Detected {
+    Mft,
+    Usn(UsnInput),
+    I30,
+}
+
+impl Detected {
     /// Tells an `$MFT` (which starts with a `FILE` or `BAAD` record) and an `$I30` (an `INDX`
     /// record) from a `$J` (whose first bytes that aren't zero are a USN record). The sparse
     /// start of a `$J` can run to gigabytes of zeros, so all of it is skipped. Anything else is
@@ -66,20 +78,22 @@ impl InputType {
     fn detect(path: &Path) -> Result<Self> {
         let mut f = File::open(path)?;
         match read_signature(&mut f, 0)?.as_ref() {
-            Some(b"FILE" | b"BAAD") => return Ok(InputType::Mft),
-            Some(b"INDX") => return Ok(InputType::I30),
+            Some(b"FILE" | b"BAAD") => return Ok(Detected::Mft),
+            Some(b"INDX") => return Ok(Detected::I30),
             _ => {}
         }
         f.rewind()?;
-        match UsnJournal::new(&mut f).next() {
-            Some(Ok(_)) => Ok(InputType::Usn),
+        let mut journal = UsnJournal::new(f);
+        match journal.next() {
+            Some(Ok(first)) => Ok(Detected::Usn((journal, Some(first)))),
             // An `$I30` can start with records that were allocated but never used, all zeros.
             Some(Err(mft::err::Error::InvalidUsnRecord { offset, .. }))
-                if offset % 512 == 0 && read_signature(&mut f, offset)? == Some(*b"INDX") =>
+                if offset % 512 == 0
+                    && read_signature(&mut File::open(path)?, offset)? == Some(*b"INDX") =>
             {
-                Ok(InputType::I30)
+                Ok(Detected::I30)
             }
-            Some(Err(mft::err::Error::InvalidUsnRecord { .. })) | None => Ok(InputType::Mft),
+            Some(Err(mft::err::Error::InvalidUsnRecord { .. })) | None => Ok(Detected::Mft),
             Some(Err(error)) => Err(error.into()),
         }
     }
@@ -232,11 +246,16 @@ impl MftDump {
             }
         };
 
-        let input_type = match matches.get_one::<String>("input-type").map(String::as_str) {
-            Some("mft") => Some(InputType::Mft),
-            Some("usn") => Some(InputType::Usn),
-            Some("i30") => Some(InputType::I30),
-            _ => None,
+        let input_type = match matches
+            .get_one::<String>("input-type")
+            .expect("has default")
+            .as_str()
+        {
+            "auto" => None,
+            "mft" => Some(InputType::Mft),
+            "usn" => Some(InputType::Usn),
+            "i30" => Some(InputType::I30),
+            other => unreachable!("clap only accepts the listed input types, not {other}"),
         };
         let paths_mft = matches.get_one::<String>("mft").map(PathBuf::from);
 
@@ -330,14 +349,25 @@ impl MftDump {
     pub fn run(&mut self) -> Result<()> {
         self.try_to_initialize_logging();
 
-        let input_type = match self.input_type {
-            Some(input_type) => input_type,
-            None => InputType::detect(&self.filepath)?,
+        let open_usn =
+            |path: &Path| -> Result<UsnInput> { Ok((UsnJournal::new(File::open(path)?), None)) };
+        let detected = match self.input_type {
+            Some(InputType::Mft) => Detected::Mft,
+            Some(InputType::Usn) => Detected::Usn(open_usn(&self.filepath)?),
+            Some(InputType::I30) => Detected::I30,
+            None => match Detected::detect(&self.filepath)? {
+                // `--mft` only applies to a `$J` or an `$I30`, so an input that isn't an `$I30`,
+                // such as a `$J` whose first records are damaged, is read as a `$J`.
+                Detected::Mft if self.paths_mft.is_some() => {
+                    Detected::Usn(open_usn(&self.filepath)?)
+                }
+                detected => detected,
+            },
         };
-        match input_type {
-            InputType::Usn => return self.run_usn(),
-            InputType::I30 => return self.run_i30(),
-            InputType::Mft => {}
+        match detected {
+            Detected::Usn((journal, first)) => return self.run_usn(journal, first),
+            Detected::I30 => return self.run_i30(),
+            Detected::Mft => {}
         }
         if self.paths_mft.is_some() {
             return Err(anyhow!("`--mft` only applies to a `$J` or `$I30` input"));
@@ -476,11 +506,15 @@ impl MftDump {
         Ok(())
     }
 
-    /// Dumps the records of a `$J` change journal.
-    fn run_usn(&mut self) -> Result<()> {
+    /// Dumps the records of a `$J` change journal, starting with `first` when detecting the
+    /// input already read it from `journal`.
+    fn run_usn(&mut self, journal: UsnJournal<File>, first: Option<UsnRecord>) -> Result<()> {
         let mut parser = self.open_for_other_input("$J")?;
-        let records =
-            UsnJournal::new(File::open(&self.filepath)?).filter_map(|record| match record {
+        let records = first
+            .map(Ok)
+            .into_iter()
+            .chain(journal)
+            .filter_map(|record| match record {
                 Ok(record) => Some(Ok(record)),
                 Err(error @ mft::err::Error::InvalidUsnRecord { .. }) => {
                     eprintln!("{error}");
@@ -489,6 +523,11 @@ impl MftDump {
                 Err(error) => Some(Err(error)),
             });
         let mut full_path = |record: &UsnRecord| {
+            // A 128-bit file id (ReFS) isn't an `$MFT` reference: its low 64 bits would name
+            // the wrong file.
+            if record.file_id_high.is_some() {
+                return None;
+            }
             let (parser, name) = (parser.as_mut()?, record.name()?);
             Some(parser.get_full_path_in_directory(
                 record.file_reference.entry,
@@ -502,7 +541,7 @@ impl MftDump {
             let full_path = full_path(&record);
             match &mut sink {
                 Sink::Csv(writer) => {
-                    writer.serialize(FlatUsnRecord::from_record(&record, full_path))?
+                    writer.serialize(FlatUsnRecord::from_record(record, full_path))?
                 }
                 Sink::Json(out) => {
                     let json_record = JsonWithPath {
