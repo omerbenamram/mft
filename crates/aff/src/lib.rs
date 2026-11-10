@@ -40,6 +40,8 @@
 #![forbid(unsafe_code)]
 #![deny(unused_must_use)]
 #![cfg_attr(not(debug_assertions), deny(clippy::dbg_macro))]
+// Makes the Rust examples of README.md doc tests of this crate.
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
 pub mod backends;
 #[cfg(feature = "crypto")]
@@ -53,8 +55,3 @@ pub use backends::AffOpenOptions;
 pub use backends::{ContainerKind, Segment};
 pub use error::{Error, Result};
 pub use verify::{SignatureStatus, Verifier};
-
-// Compiles the examples in README.md as doc tests.
-#[cfg(doctest)]
-#[doc = include_str!("../README.md")]
-struct ReadmeDoctests;

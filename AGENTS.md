@@ -1,10 +1,10 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-The crate root lives in `src/lib.rs` with supporting modules in `src/attribute`, `src/mft.rs`, and `src/utils.rs`. CLI code for the `mft_dump` binary sits in `src/bin/mft_dump.rs`. Reusable fixtures used by unit tests live in `src/tests`, while integration tests belong under `tests/`. Sample MFT images and large fixtures live in `samples/` and `testdata/`; keep new assets small and explain their origin in PR descriptions. The Rust examples in each `README.md` are doc tests of their crate (`ReadmeDoctests` at the end of `src/lib.rs`); `cargo test --doc` compiles them.
+The crate root lives in `src/lib.rs` with supporting modules in `src/attribute`, `src/mft.rs`, and `src/utils.rs`. CLI code for the `mft_dump` binary sits in `src/bin/mft_dump.rs`. Reusable fixtures used by unit tests live in `src/tests`, while integration tests belong under `tests/`. Sample MFT images and large fixtures live in `samples/` and `testdata/`; keep new assets small and explain their origin in PR descriptions. The Rust examples in each `README.md` are doc tests of their crate, through the `cfg_attr(doctest, ...)` line at the top of its `src/lib.rs`. Give a new crate with a `README.md` the same line.
 
 ## Build, Test, and Development Commands
-Run `cargo build --all-targets` for a full local compile, and `cargo test --all-features` before pushing to mirror CI. Use `cargo bench --bench benchmark` when touching performance-critical code paths. `cargo fmt` and `cargo clippy --all-targets --all-features` should produce a clean workspace; address new lints or explain why they cannot be resolved.
+Run `cargo build --all-targets` for a full local compile, and `cargo test --workspace --exclude ntfs-explorer-gui --all-features` before pushing to mirror CI. Use `cargo bench --bench benchmark` when touching performance-critical code paths. `cargo fmt` and `cargo clippy --all-targets --all-features` should produce a clean workspace; address new lints or explain why they cannot be resolved.
 To catch formatting issues before CI, install the repo's pre-commit hook (`pre-commit install`) after installing `pre-commit`.
 
 ## Coding Style & Naming Conventions
