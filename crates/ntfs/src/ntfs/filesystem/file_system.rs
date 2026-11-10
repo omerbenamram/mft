@@ -1,5 +1,8 @@
 use crate::image::ReadAt;
-use crate::ntfs::data_stream::{CompressedDataRunsStream, DataRunsStream, read_from_data_runs};
+use crate::ntfs::data_stream::{
+    CompressedDataRunsStream, DataRunsStream, StreamPiece, for_each_stream_piece,
+    read_from_data_runs,
+};
 use crate::ntfs::efs::{EfsFekDecryptor, EfsMetadataV1, EfsRsaKeyBag};
 use crate::ntfs::index::{IndexRoot, IndexValueFlags, apply_index_record_fixups};
 use crate::ntfs::name::{FileNameKey, UpcaseTable, eq_case_insensitive_ntfs, eq_case_sensitive};
@@ -13,7 +16,7 @@ use mft::attribute::non_resident_attr::NonResidentAttr;
 use mft::attribute::x20::{AttributeListAttr, AttributeListEntry};
 use std::collections::{HashSet, VecDeque};
 use std::fs::File;
-use std::io::Write as _;
+use std::io::{Seek as _, SeekFrom, Write as _};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -345,7 +348,7 @@ impl FileSystem {
         }
 
         // Use the logical file size from the first extent (should be identical across extents).
-        let file_size = data_extents[0].file_size;
+        let file_size = self.checked_stream_size(&data_extents)?;
 
         let cluster_size = self.volume.header.cluster_size as u64;
         if cluster_size == 0 {
@@ -389,7 +392,7 @@ impl FileSystem {
     ///
     /// This avoids allocating the entire file into memory and supports:
     /// - resident and non-resident data
-    /// - sparse regions (written as zeros)
+    /// - sparse regions (left as holes in the output file, which read back as zeros)
     /// - NTFS-compressed `$DATA`
     pub fn export_file_default_stream_to_path(&self, entry_id: u64, out: &Path) -> Result<()> {
         let entry = self.volume.read_mft_entry(entry_id)?;
@@ -443,7 +446,7 @@ impl FileSystem {
 
         let is_compressed = data_extents.iter().any(|e| e.is_compressed);
 
-        let file_size = data_extents[0].file_size;
+        let file_size = self.checked_stream_size(&data_extents)?;
 
         if is_compressed {
             let stream = self.open_compressed_stream(&data_extents)?;
@@ -451,57 +454,37 @@ impl FileSystem {
             let mut buf = vec![0u8; 1024 * 1024];
             let mut off = 0u64;
             while off < file_size {
+                // Compression units that are not stored at all become a hole in the output.
+                let hole = stream.sparse_len_at(off).min(file_size - off);
+                if hole > 0 {
+                    seek_forward(&mut f, hole)?;
+                    off += hole;
+                    continue;
+                }
+
                 let n = (file_size - off).min(buf.len() as u64) as usize;
                 stream
                     .read_exact_at(off, &mut buf[..n])
                     .map_err(Error::Io)?;
                 f.write_all(&buf[..n])?;
-                off = off.saturating_add(n as u64);
+                off += n as u64;
             }
+            f.set_len(file_size)?;
             return Ok(());
         }
 
-        // Uncompressed: read across extents, filling gaps with zeros (same overlap logic as md5).
-        let cluster_size = self.volume.header.cluster_size as u64;
-        if cluster_size == 0 {
-            return Err(Error::InvalidData {
-                message: "cluster_size is 0".to_string(),
-            });
-        }
-
-        let mut buf = vec![0u8; 1024 * 1024];
-        let mut off = 0u64;
-
-        while off < file_size {
-            let n = (file_size - off).min(buf.len() as u64) as usize;
-            buf[..n].fill(0);
-
-            for extent in &data_extents {
-                let extent_start = extent.vcn_first.saturating_mul(cluster_size);
-                let extent_end =
-                    extent_start.saturating_add(extent.vcn_len.saturating_mul(cluster_size));
-
-                let overlap_start = off.max(extent_start);
-                let overlap_end = (off + n as u64).min(extent_end);
-                if overlap_start >= overlap_end {
-                    continue;
-                }
-
-                let dst_off = (overlap_start - off) as usize;
-                let src_off = overlap_start.saturating_sub(extent_start);
-                let overlap_len = (overlap_end - overlap_start) as usize;
-
-                read_from_data_runs(
-                    &self.volume,
-                    &extent.data_runs,
-                    src_off,
-                    &mut buf[dst_off..dst_off + overlap_len],
-                )?;
+        // Uncompressed: walk the runs of all extents. Sparse runs are skipped in the output
+        // file instead of being written out as zeros, so the work is bounded by the clusters the
+        // image really stores, not by the sizes the mapping pairs claim.
+        let runs = join_extent_runs(&data_extents)?;
+        for_each_stream_piece(&self.volume, &runs, file_size, |piece| {
+            match piece {
+                StreamPiece::Data(bytes) => f.write_all(bytes)?,
+                StreamPiece::Hole(len) => seek_forward(&mut f, len)?,
             }
-
-            f.write_all(&buf[..n])?;
-            off = off.saturating_add(n as u64);
-        }
+            Ok(())
+        })?;
+        f.set_len(file_size)?;
 
         Ok(())
     }
@@ -611,7 +594,7 @@ impl FileSystem {
             });
         }
 
-        let file_size = data_extents[0].file_size;
+        let file_size = self.checked_stream_size(&data_extents)?;
         if file_size == 0 {
             return Ok(Arc::new(ResidentReadAt::new(Vec::new())));
         }
@@ -666,55 +649,42 @@ impl FileSystem {
 
         let is_compressed = data_extents.iter().any(|e| e.is_compressed);
 
-        let file_size = data_extents[0].file_size;
+        let file_size = self.checked_stream_size(&data_extents)?;
+
+        let mut h = Md5::new();
 
         if is_compressed {
             let stream = self.open_compressed_stream(&data_extents)?;
-            return md5_readat(&stream, file_size).map_err(Error::Io);
-        }
 
-        // Uncompressed: read across extents, filling gaps with zeros.
-        let cluster_size = self.volume.header.cluster_size as u64;
-        if cluster_size == 0 {
-            return Err(Error::InvalidData {
-                message: "cluster_size is 0".to_string(),
-            });
-        }
-
-        let mut h = Md5::new();
-        let mut chunk = vec![0u8; 1024 * 1024];
-        let mut off = 0u64;
-
-        while off < file_size {
-            let n = (file_size - off).min(chunk.len() as u64) as usize;
-            chunk[..n].fill(0);
-
-            for extent in &data_extents {
-                let extent_start = extent.vcn_first.saturating_mul(cluster_size);
-                let extent_end =
-                    extent_start.saturating_add(extent.vcn_len.saturating_mul(cluster_size));
-
-                let overlap_start = off.max(extent_start);
-                let overlap_end = (off + n as u64).min(extent_end);
-                if overlap_start >= overlap_end {
+            let mut buf = vec![0u8; 1024 * 1024];
+            let mut off = 0u64;
+            while off < file_size {
+                let hole = stream.sparse_len_at(off).min(file_size - off);
+                if hole > 0 {
+                    md5_update_zeros(&mut h, hole);
+                    off += hole;
                     continue;
                 }
 
-                let dst_off = (overlap_start - off) as usize;
-                let src_off = overlap_start.saturating_sub(extent_start);
-                let overlap_len = (overlap_end - overlap_start) as usize;
-
-                read_from_data_runs(
-                    &self.volume,
-                    &extent.data_runs,
-                    src_off,
-                    &mut chunk[dst_off..dst_off + overlap_len],
-                )?;
+                let n = (file_size - off).min(buf.len() as u64) as usize;
+                stream
+                    .read_exact_at(off, &mut buf[..n])
+                    .map_err(Error::Io)?;
+                h.update(&buf[..n]);
+                off += n as u64;
             }
-
-            h.update(&chunk[..n]);
-            off = off.saturating_add(n as u64);
+            return Ok(hex::encode(h.finalize()));
         }
+
+        // Uncompressed: walk the runs of all extents; holes hash as zeros.
+        let runs = join_extent_runs(&data_extents)?;
+        for_each_stream_piece(&self.volume, &runs, file_size, |piece| {
+            match piece {
+                StreamPiece::Data(bytes) => h.update(bytes),
+                StreamPiece::Hole(len) => md5_update_zeros(&mut h, len),
+            }
+            Ok(())
+        })?;
 
         Ok(hex::encode(h.finalize()))
     }
@@ -759,7 +729,7 @@ impl FileSystem {
             });
         }
 
-        let file_size = data_extents[0].file_size;
+        let file_size = self.checked_stream_size(&data_extents)?;
         let cipher_len = file_size.div_ceil(512).saturating_mul(512);
         let mut bytes = self.read_nonresident_data_extents_to_len(data_extents, cipher_len)?;
 
@@ -802,7 +772,7 @@ impl FileSystem {
 
         let is_compressed = data_extents.iter().any(|e| e.is_compressed);
 
-        let file_size = data_extents[0].file_size;
+        let file_size = self.checked_stream_size(&data_extents)?;
 
         if is_compressed {
             let mut out = vec![0u8; file_size as usize];
@@ -861,7 +831,7 @@ impl FileSystem {
 
         let is_compressed = data_extents.iter().any(|e| e.is_compressed);
 
-        let file_size = data_extents[0].file_size;
+        let file_size = self.checked_stream_size(&data_extents)?;
         let logical_len = len_override.unwrap_or(file_size);
 
         if is_compressed {
@@ -1336,6 +1306,39 @@ impl FileSystem {
         Ok(Vec::new())
     }
 
+    /// Returns the logical size of the stream described by `extents` (sorted by VCN), after
+    /// checking it against the mapping pairs.
+    ///
+    /// The size is an on-disk field. A non-resident stream cannot be larger than the clusters
+    /// its data runs map (stored or sparse), so a size beyond them is corrupt; without this check
+    /// a reader would treat everything past the runs as an endless hole.
+    fn checked_stream_size(&self, extents: &[DataExtent]) -> Result<u64> {
+        let first = extents.first().ok_or_else(|| Error::InvalidData {
+            message: "stream has no extents".to_string(),
+        })?;
+        let file_size = first.file_size;
+
+        let mapped_clusters = extents
+            .iter()
+            .map(|extent| {
+                extent.data_runs.iter().fold(extent.vcn_first, |end, run| {
+                    end.saturating_add(run.lcn_length)
+                })
+            })
+            .max()
+            .unwrap_or(0);
+        let mapped_bytes = mapped_clusters.saturating_mul(self.volume.header.cluster_size as u64);
+
+        if file_size > mapped_bytes {
+            return Err(Error::InvalidData {
+                message: format!(
+                    "stream size {file_size} is larger than the {mapped_bytes} bytes its data runs map"
+                ),
+            });
+        }
+        Ok(file_size)
+    }
+
     /// Opens a compressed `$DATA` stream described by `extents` (sorted by VCN).
     ///
     /// A fragmented compressed file keeps its mapping pairs in several extents (one attribute
@@ -1424,19 +1427,24 @@ fn md5_of_bytes_hex_lower(data: &[u8]) -> String {
     hex::encode(h.finalize())
 }
 
-fn md5_readat(src: &impl ReadAt, len: u64) -> std::io::Result<String> {
-    let mut h = Md5::new();
-    let mut buf = vec![0u8; 1024 * 1024];
-    let mut off = 0u64;
-
-    while off < len {
-        let n = (len - off).min(buf.len() as u64) as usize;
-        src.read_exact_at(off, &mut buf[..n])?;
-        h.update(&buf[..n]);
-        off = off.saturating_add(n as u64);
+/// Feeds `len` zero bytes to `hasher`.
+fn md5_update_zeros(hasher: &mut Md5, len: u64) {
+    static ZEROS: [u8; 64 * 1024] = [0u8; 64 * 1024];
+    let mut remaining = len;
+    while remaining > 0 {
+        let n = remaining.min(ZEROS.len() as u64) as usize;
+        hasher.update(&ZEROS[..n]);
+        remaining -= n as u64;
     }
+}
 
-    Ok(hex::encode(h.finalize()))
+/// Moves the write position of `file` forward by `len` bytes, leaving a hole.
+fn seek_forward(file: &mut File, len: u64) -> Result<()> {
+    let len = i64::try_from(len).map_err(|_| Error::InvalidData {
+        message: format!("hole of {len} bytes is too large to export"),
+    })?;
+    file.seek(SeekFrom::Current(len))?;
+    Ok(())
 }
 
 fn standard_info_indicates_case_sensitive(si: &mft::attribute::x10::StandardInfoAttr) -> bool {
