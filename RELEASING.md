@@ -10,8 +10,8 @@
 
 1. Pick the version. While on 0.x, a breaking change or a new feature bumps the minor version
    and fixes alone bump the patch version. `cargo semver-checks check-release` flags API breaks.
-2. Open a `chore(release): X.Y.Z` PR that bumps `version` in `Cargo.toml`, refreshes
-   `Cargo.lock`, and renames `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD`.
+2. Open a `chore(release): X.Y.Z` PR that bumps `version` in `Cargo.toml` and renames
+   `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD` (`Cargo.lock` is not tracked).
    That section becomes the GitHub release's notes, followed by GitHub's list of merged PRs,
    and CI fails the PR without it.
 3. Merge it.

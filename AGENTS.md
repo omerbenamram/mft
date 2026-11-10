@@ -20,8 +20,8 @@ A deliberate blocker is different. Examples are a safety check that refuses a co
 
 Two kinds of action wait for Omer. Nothing else in this repository needs his approval.
 
-1. **Publishing a release.** A version published to crates.io or PyPI cannot be replaced or removed, only yanked. Open a `chore(release): X.Y.Z` pull request only when Omer asks for a release. Merge it only when he tells you to, because that merge tags the commit and publishes it. When he has told you, that is the go-ahead: merge it without asking again. `RELEASING.md` has the steps.
-2. **Speaking to other people on GitHub.** This covers closing an issue, commenting on an issue, and commenting on, merging or closing a pull request that you did not open. These speak to Omer's users in his name. Write the draft, show it to Omer, and post it when he agrees. A closing keyword in a pull request, such as `Fixes #12`, closes the issue at merge. For an issue that someone else opened, write `Refs #12` and draft the closing comment for Omer.
+1. **Publishing a release.** A version published to crates.io or PyPI cannot be replaced or removed, only yanked. A merge to `master` that changes `version` in `Cargo.toml` tags the commit and publishes it, whatever the pull request is called. So change `version` only in a `chore(release): X.Y.Z` pull request, open one only when Omer asks for a release, and merge it only when he tells you to. When he has told you, that is the go-ahead: merge it without asking again. `RELEASING.md` has the steps.
+2. **Speaking to other people on GitHub.** This covers closing an issue, commenting on an issue, and commenting on, merging or closing a pull request that you did not open. These speak to Omer's users in his name. GitHub shows Omer's account as the author of your pull requests too; yours come from a `claude/` branch and say in their description that Claude made them. Write the draft, show it to Omer, and post it when he agrees. A closing keyword in a pull request, such as `Fixes #12`, closes the issue at merge. For an issue that someone else opened, write `Refs #12` and draft the closing comment for Omer.
 
 Take every other step without asking. These are the common ones:
 
@@ -74,19 +74,23 @@ Use plain words and full sentences: short ones, one idea each, in the active voi
 
 ## This repository
 
-`mft` is a Rust parser for the NTFS Master File Table (`$MFT`). The `mft` crate is in `src/`, and its command-line tool `mft_dump` is `src/bin/mft_dump.rs`. The crates under `crates/` (`forensic-image`, `aff`, `ewf`, `ntfs`, `dfxml`, `ntfs-explorer-gui`) are workspace members that are not published. Only the paths in `include` in `Cargo.toml` go to crates.io, which accepts at most 10 MB: keep `testdata/` out of that list. `Cargo.lock` is not tracked.
+`mft` is a Rust parser for the NTFS Master File Table (`$MFT`). The `mft` crate is in `src/`, and its command-line tool `mft_dump` is `src/bin/mft_dump.rs`. The crates under `crates/` (`forensic-image`, `aff`, `ewf`, `ntfs`, `dfxml`, `ntfs-explorer-gui`) are workspace members that are not published. `fuzz/` holds three cargo-fuzz targets, which no CI job builds. Only the paths in `include` in `Cargo.toml` go to crates.io, which accepts at most 10 MB. `samples/` is in that list and `testdata/` is not, so put a new fixture in `testdata/` unless a unit test in `src/` reads it. `Cargo.lock` is not tracked.
 
 ### Checks
 
-`.github/workflows/test.yml` runs these on every pull request and on `master`. Before you push, run the ones that match what you changed. A change to documentation alone needs none.
+`.github/workflows/test.yml` runs these on every pull request and on `master`, except the benchmark and the fuzz build. Before you push, run the ones that match what you changed. A change to these instruction files alone needs none.
 
-- `git lfs pull`, once in each checkout. The disk images (`*.E01`, `*.aff`, `*.dd`) are stored in Git LFS.
+- `git lfs pull`, once in each checkout. `.gitattributes` puts `*.E??`, `*.aff` and `*.dd` files, in either case, in Git LFS. Other image types, such as `.raw`, are not in LFS.
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --exclude ntfs-explorer-gui --all-targets --all-features -- -D warnings`
-- `cargo test --workspace --exclude ntfs-explorer-gui --all-targets --all-features`. This is the Linux job, and `--all-features` also builds the FUSE mount frontend. macOS and Windows run it without `--all-features`. CI sets `NTFS_TESTDATA_REQUIRED=1`, which turns a missing fixture into a failure and not a skip, and it downloads two AFFLIBv3 fixtures first (see the workflow).
+- `cargo test --workspace --exclude ntfs-explorer-gui --all-targets --all-features`. This is the Linux job, and `--all-features` also builds the FUSE mount frontend. macOS and Windows run it without `--all-features`. CI sets `NTFS_TESTDATA_REQUIRED=1` and downloads two AFFLIBv3 fixtures first, with the `curl` commands in the workflow. Without that variable, a test in `crates/` whose fixture is missing is skipped without a word, so set it to run the tests as CI does.
+- When you change `CHANGELOG.md` or `version` in `Cargo.toml`: `scripts/release-notes.sh <version in Cargo.toml>`. CI fails a pull request when the current version has no notes in `CHANGELOG.md`.
 - `cargo +1.90 check --workspace --exclude ntfs-explorer-gui --all-targets`. 1.90 is the minimum supported Rust version.
 - When you change `crates/ntfs-explorer-gui`: `cargo clippy -p ntfs-explorer-gui --all-targets -- -D warnings` and `cargo test -p ntfs-explorer-gui`. They need the webview packages that the `gui` job installs.
 - When you change a parsing hot path: `cargo bench --bench benchmark`, before and after.
+- When you change `MftEntry::from_buffer`, `decode_data_runs` or `MftParser`: check that the fuzz targets still build. `fuzz/README.md` has the commands.
+
+`.pre-commit-config.yaml` runs the format check before each commit, after `pre-commit install`.
 
 A `macos-latest` job sometimes never gets a runner: it has no steps and no logs. Omer said that such a job does not block a merge. A job that ran and failed does block it.
 
@@ -95,11 +99,11 @@ A `macos-latest` job sometimes never gets a runner: it has no steps and no logs.
 - No best-effort code. Implement a structure exactly as the specification or the reference implementation defines it. When you cannot, leave a `TODO` or an explicit unimplemented path. This is a forensic tool: output that is plausible and wrong misleads an investigation, and a visible gap does not.
 - The input is evidence, and it is often damaged or crafted. No file may make the parser panic, hang, overflow the stack or allocate without bound. Each fix of that kind adds a test with the input that showed it.
 - The `mft` crate has `#![forbid(unsafe_code)]`. Keep it.
-- Errors are explicit types made with `thiserror`. Return early with `?`. Log through the `log` macros.
+- In library code, errors are explicit types made with `thiserror`, and logging goes through the `log` macros. The command-line tools use `anyhow` or `miette`, and the GUI logs with `tracing`. Return early with `?`.
 - Timestamps use `jiff`. Do not add `chrono`: Omer prefers `jiff`, and `chrono` is out of the dependency tree since #186.
 - Public API additions have short doc comments. Say so in the pull request when a change breaks binary compatibility or raises the minimum supported Rust version.
-- Unit tests sit beside the code in `#[cfg(test)]` modules, and end-to-end tests are in `tests/`. Use the fixture builders in `src/tests/fixtures.rs` and the images in `testdata/`. Name a test after the behaviour that it checks. Snapshot tests use `insta`: review a changed snapshot with `cargo insta review` and accept only the changes that you intended.
-- `tests/readme.rs` compiles the code in `README.md`, so keep the README examples working.
+- Unit tests sit beside the code in `#[cfg(test)]` modules, and end-to-end tests are in `tests/`. A unit test in `src/` reads only `samples/` (`src/tests/fixtures.rs` has the path), because `testdata/` is not published. A test in `tests/` uses the helpers in `tests/fixtures.rs`. Name a test after the behaviour that it checks. Snapshot tests use `insta`: review a changed snapshot with `cargo insta review` and accept only the changes that you intended.
+- No test compiles the example in `README.md`: `tests/readme.rs` is meant to, but a doc test in an integration test never runs. Check the example by hand when you change the API that it uses.
 - Keep a new sample file small, and give its origin and licence in the pull request.
 - A pull request that changes behaviour adds an entry under `## [Unreleased]` in `CHANGELOG.md`, and marks a breaking change with **Breaking:**. Open pull requests therefore conflict in that file: merge `master` and keep both entries.
 - Commit subjects are short and imperative, and they describe the change that a user would see.
