@@ -355,6 +355,56 @@ fn test_oversized_compression_unit_is_refused() {
     );
 }
 
+/// The compression unit field is a shift count. 64 and above cannot be shifted: that was a panic
+/// in debug builds, and in release builds the shift wrapped around, so a field of 64 was read as
+/// units of one cluster.
+#[test]
+fn test_compression_unit_shift_out_of_range_is_an_error() {
+    for compression_unit in [64u16, 65, 200, 255] {
+        let mut vol = SynthVolume::new(256, 32);
+        let lcn = vol.first_free_lcn();
+        let content = text(4 * CLUSTER_SIZE, "shift");
+        vol.write_clusters(lcn, &content);
+        vol.set_record(
+            ENTRY,
+            Record::file().attr(
+                NonResident {
+                    flags: FLAG_COMPRESSED,
+                    compression_unit,
+                    ..NonResident::data(
+                        1,
+                        content.len() as u64,
+                        &[Run::Data {
+                            lcn: lcn as i64,
+                            len: 4,
+                        }],
+                    )
+                }
+                .build(),
+            ),
+        );
+        let fs = vol.into_fs();
+
+        let expect_shift_error = |what: &str, err: ntfs::ntfs::Error| {
+            assert!(
+                matches!(err, ntfs::ntfs::Error::InvalidData { .. })
+                    && err.to_string().contains(&format!(
+                        "compression unit shift {compression_unit} is out of range"
+                    )),
+                "{what} (unit field {compression_unit}): unexpected error: {err}"
+            );
+        };
+        expect_shift_error("read", fs.read_file_default_stream(ENTRY).unwrap_err());
+        expect_shift_error("md5", fs.md5_file_stream(ENTRY, "").unwrap_err());
+        expect_shift_error(
+            "open",
+            fs.open_file_default_stream_read_at(ENTRY)
+                .map(|_| ())
+                .unwrap_err(),
+        );
+    }
+}
+
 /// The boot sector can claim MFT records of up to 1 GiB. Every record read allocates one record,
 /// so a record size beyond the image is refused when the volume is opened.
 #[test]

@@ -1689,7 +1689,10 @@ impl DataExtent {
         let compression_unit_clusters = if is_compressed {
             // Interpret as a shift count (common NTFS behavior): unit_clusters = 1 << shift.
             let shift = (nr.unit_compression_size & 0x00ff) as u32;
-            Some(1u64 << shift)
+            let unit_clusters = 1u64.checked_shl(shift).ok_or_else(|| Error::InvalidData {
+                message: format!("compression unit shift {shift} is out of range"),
+            })?;
+            Some(unit_clusters)
         } else {
             None
         };
