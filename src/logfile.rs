@@ -189,18 +189,7 @@ impl LogFile {
     pub fn from_buffer(mut data: Vec<u8>) -> Result<Self> {
         let mut restart_pages = Vec::new();
         let mut first_error = None;
-        // The second restart page follows the first, which is a system page long. When the first
-        // page's size is damaged, the second page is looked for at each page size it could be.
-        let is_restart_page = |at: usize| matches!(data.get(at..at + 4), Some(b"RSTR" | b"CHKD"));
-        let second = read_u32(&data, 0x10)
-            .map(|size| size as usize)
-            .filter(|&size| is_valid_page_size(size))
-            .or_else(|| {
-                (9..=16)
-                    .map(|bits| 1usize << bits)
-                    .find(|&size| is_restart_page(size))
-            })
-            .unwrap_or(DEFAULT_PAGE_SIZE);
+        let second = second_restart_page(&data);
         // Neither restart page may reach into the record pages that follow them.
         let restart_end = (2 * second).min(data.len());
         for offset in [0, second] {
@@ -255,6 +244,16 @@ impl LogFile {
         log.tail_copies = log.find_tail_copies();
         log.next_other_page = log.find_other_pages();
         Ok(log)
+    }
+
+    /// How many of a file's first bytes [`LogFile::looks_like`] looks at: up to the signature of
+    /// a second restart page after a first one of 64 KiB, the largest there is.
+    pub const LOOKS_LIKE_PREFIX: usize = 0x10000 + 4;
+
+    /// Whether a file that starts with `start` has a restart page where [`LogFile::from_buffer`]
+    /// looks for one: at its start or, with that page damaged, a page on.
+    pub fn looks_like(start: &[u8]) -> bool {
+        is_restart_page_at(start, 0) || is_restart_page_at(start, second_restart_page(start))
     }
 
     /// The newer of the restart pages that parse: the one with the higher current LSN.
@@ -404,6 +403,32 @@ impl LogFile {
     pub fn record_pages(&self) -> &[Result<RecordPage>] {
         &self.record_pages
     }
+}
+
+/// Whether `data` has the signature of a restart page at `at`. `chkdsk` marks the restart pages
+/// it has worked on `CHKD`.
+fn is_restart_page_at(data: &[u8], at: usize) -> bool {
+    matches!(data.get(at..at + 4), Some(b"RSTR" | b"CHKD"))
+}
+
+/// Where the second restart page of the log in `data` starts: after the first, which is a system
+/// page long. The first page's size is taken from it when it is a restart page. When it isn't,
+/// or its size is damaged, the second page is looked for at each page size there could be.
+fn second_restart_page(data: &[u8]) -> usize {
+    let stated = read_u32(data, 0x10)
+        .map(|size| size as usize)
+        .filter(|&size| is_valid_page_size(size));
+    let found = || {
+        (9..=16)
+            .map(|bits| 1usize << bits)
+            .find(|&size| is_restart_page_at(data, size))
+    };
+    let second = if is_restart_page_at(data, 0) {
+        stated.or_else(found)
+    } else {
+        found().or(stated)
+    };
+    second.unwrap_or(DEFAULT_PAGE_SIZE)
 }
 
 /// Whether `size` can be a `$LogFile` page size: a power of two from 512 bytes to 64 KiB.
@@ -1096,6 +1121,40 @@ mod tests {
             LogFile::from_buffer(data).unwrap().restart_page().offset,
             0x2000
         );
+    }
+
+    #[test]
+    fn what_looks_like_a_log_is_what_can_be_opened() {
+        let intact = || {
+            let mut data = restart_page(0x1000, 10);
+            data.extend(restart_page(0x1000, 20));
+            data.resize(0x4000, 0);
+            data
+        };
+        let agree = |data: Vec<u8>, is_log: bool| {
+            let start = &data[..data.len().min(LogFile::LOOKS_LIKE_PREFIX)];
+            assert_eq!(LogFile::looks_like(start), is_log);
+            assert_eq!(LogFile::from_buffer(data).is_ok(), is_log);
+        };
+        agree(intact(), true);
+
+        // The first page is no restart page, but has what reads as a page size where a restart
+        // page has its own: the second page is still found, a real page on.
+        let mut data = intact();
+        data[..0x1000].fill(0xA5);
+        data[0x10..0x14].copy_from_slice(&512u32.to_le_bytes());
+        agree(data, true);
+
+        // The second page is damaged.
+        let mut data = intact();
+        data[0x1000..0x2000].fill(0);
+        agree(data, true);
+
+        // Neither is a restart page.
+        let mut data = intact();
+        data[..0x2000].fill(0);
+        data[0x2000..0x2004].copy_from_slice(b"RCRD");
+        agree(data, false);
     }
 
     #[test]
