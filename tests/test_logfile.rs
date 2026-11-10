@@ -266,16 +266,19 @@ fn lsn_offsets_drop_the_sequence_number() {
 }
 
 #[test]
-fn lsns_outside_the_current_log_have_no_offset() {
+fn lsn_offsets_ignore_the_pass() {
     let lsn = |sequence: u64, units: u64| (sequence << 20) | units;
     let mut data = two_restart_pages(lsn(7, 0x100), lsn(7, 0x100));
     data.resize(0x10_0000, 0);
     let log = LogFile::from_buffer(data).unwrap();
     assert_eq!(log.lsn_offset(0), None);
-    assert_eq!(log.lsn_offset(lsn(6, 0x1234)), Some(0x1234 * 8));
-    assert_eq!(log.lsn_offset(lsn(8, 0x1234)), Some(0x1234 * 8));
-    assert_eq!(log.lsn_offset(lsn(5, 0x1234)), None);
-    assert_eq!(log.lsn_offset(lsn(9, 0x1234)), None);
+    // Pages that weren't reached again still hold records of passes long before the current one.
+    for sequence in [1, 5, 6, 8, 9] {
+        assert_eq!(log.lsn_offset(lsn(sequence, 0x1234)), Some(0x1234 * 8));
+    }
+    // An offset in the restart pages, or past the end of the file, is no record.
+    assert_eq!(log.lsn_offset(lsn(7, 0x100)), None);
+    assert_eq!(log.lsn_offset(lsn(7, 0x2_0000)), None);
 }
 
 #[test]

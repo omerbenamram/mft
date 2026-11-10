@@ -266,27 +266,32 @@ impl LogFile {
         &self.data
     }
 
-    /// Where in the file the record with this LSN starts: its low bits (the ones that aren't
+    /// Where in the file the record with this LSN would be: its low bits (the ones that aren't
     /// the sequence number) count 8-byte units from the start of the file.
     ///
-    /// `None` for LSN 0, which is no record; when the LSN's sequence number (how often the log
-    /// had wrapped around when it was written) isn't within one of the current LSN's, since
-    /// the file holds at most the pass the checkpoint is in and the ones either side of it; and
-    /// when the offset is past the end of the file.
+    /// `None` for LSN 0, which is no record, and when the offset falls outside the record pages
+    /// (in the restart pages or past the end of the file).
+    ///
+    /// The sequence number (how often the log had wrapped around when the record was written)
+    /// isn't checked. A page is only rewritten when the log reaches it again, so the file can
+    /// hold records from passes long before the checkpoint's: in the Narcos sample the
+    /// checkpoint is in pass 24, but most records still in its pages are from pass 2. That also
+    /// means the page at this offset may now hold a record of another pass, so callers must
+    /// compare the LSN in the record header there with the one they asked for.
     ///
     /// This is the record's place in the circular log. The two pages after the restart pages
     /// hold copies of the log's tail, which can be newer than the page at that offset when
     /// Windows stopped before writing it back; they aren't consulted.
     pub fn lsn_offset(&self, lsn: u64) -> Option<u64> {
-        let area = &self.restart_page().restart_area;
-        // A restart area that parses has its sequence number bits in `SEQ_NUMBER_BITS`.
-        let bits = area.seq_number_bits;
-        let sequence = |lsn: u64| lsn >> (64 - bits);
-        let current = sequence(area.current_lsn);
-        if lsn == 0 || sequence(lsn) + 1 < current || sequence(lsn) > current + 1 {
+        if lsn == 0 {
             return None;
         }
-        self.lsn_file_offset(lsn)
+        // A restart area that parses has its sequence number bits in `SEQ_NUMBER_BITS`.
+        let page = self.restart_page();
+        let bits = page.restart_area.seq_number_bits;
+        let offset = (lsn << bits) >> (bits - 3);
+        let record_pages = 2 * u64::from(page.system_page_size)..self.data.len() as u64;
+        record_pages.contains(&offset).then_some(offset)
     }
 
     /// Where the record with this LSN would start, from its low bits alone, whatever its
