@@ -1879,9 +1879,27 @@ fn parse_table_section_v1(
     let mut entries_data = vec![0u8; entries_bytes];
     read_exact_at(file, entries_offset, &mut entries_data)?;
 
-    // Optional entries checksum (footer): immediately follows entries.
-    let footer_size_ok = data_end.saturating_sub(entries_end).saturating_sub(0); // keep the computation explicit
-    if footer_size_ok >= 4 {
+    let mut out = Vec::with_capacity(entries_len);
+    for chunk in entries_data.as_chunks::<4>().0 {
+        out.push(u32::from_le_bytes(*chunk));
+    }
+
+    // Entries checksum (footer): immediately follows the entries.
+    //
+    // EnCase-style tables (EnCase 2 and later, FTK, linen, EWFX) end with it. The original EWF
+    // and SMART (EWF-S01) formats have no footer: there the chunk data is stored inside the table
+    // section and starts right after the entries. Tell the two apart by layout: the footer is
+    // present when at least 4 bytes separate the entries from the first chunk stored in this
+    // section, or from the end of the section when it stores no chunks.
+    let first_chunk_in_section = out
+        .iter()
+        .map(|entry| base_offset.saturating_add(u64::from(entry & 0x7fff_ffff)))
+        .filter(|offset| (entries_end..data_end).contains(offset))
+        .min();
+    let footer_room = first_chunk_in_section
+        .unwrap_or(data_end)
+        .saturating_sub(entries_end);
+    if footer_room >= 4 {
         let mut footer = [0u8; 4];
         read_exact_at(file, entries_end, &mut footer)?;
         let stored_entries_checksum = u32::from_le_bytes(footer);
@@ -1891,11 +1909,6 @@ fn parse_table_section_v1(
                 "table entries checksum mismatch".to_string(),
             ));
         }
-    }
-
-    let mut out = Vec::with_capacity(entries_len);
-    for chunk in entries_data.as_chunks::<4>().0 {
-        out.push(u32::from_le_bytes(*chunk));
     }
 
     Ok(TableV1 {
