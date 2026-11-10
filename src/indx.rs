@@ -33,7 +33,7 @@ pub const DEFAULT_INDX_RECORD_SIZE: usize = 4096;
 /// Where the index node header starts in a record.
 const NODE_HEADER_OFFSET: usize = 0x18;
 /// The size of an index entry's header, before its `$FILE_NAME`.
-const ENTRY_HEADER_SIZE: usize = 0x10;
+pub(crate) const ENTRY_HEADER_SIZE: usize = 0x10;
 /// The size of a `$FILE_NAME` with an empty name.
 const FILE_NAME_HEADER_SIZE: usize = 0x42;
 

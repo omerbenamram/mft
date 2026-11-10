@@ -15,8 +15,11 @@ use bitflags::bitflags;
 use byteorder::{ByteOrder, LittleEndian};
 use serde::Serialize;
 
+use crate::MftReference;
+use crate::attribute::x30::NameInParent;
 use crate::err::{Error, Result};
 use crate::impl_serialize_for_bitflags;
+use crate::indx::ENTRY_HEADER_SIZE;
 use crate::ntfs::{UPDATE_SEQUENCE_STRIDE_BYTES, is_valid_page_size};
 use crate::utf16::Utf16LeStr;
 use crate::utils::{read_u16, read_u32, read_u64};
@@ -250,6 +253,12 @@ impl LogFile {
     /// The size of a record page, from the restart page in use.
     pub fn page_size(&self) -> usize {
         self.restart_page().log_page_size as usize
+    }
+
+    /// Where the first record page starts: after the two restart pages, each a system page
+    /// long, of the restart page in use.
+    fn record_pages_start(&self) -> usize {
+        (2 * self.restart_page().system_page_size as usize).min(self.data.len())
     }
 
     /// The file, with the fixups of its pages applied.
@@ -498,5 +507,446 @@ impl RecordPage {
             last_end_lsn: LittleEndian::read_u64(&header[0x20..]),
             valid_fixup,
         })
+    }
+}
+
+/// The size of a log record's header (`LFS_RECORD_HEADER`), before its client data.
+pub const LOG_RECORD_HEADER_SIZE: usize = 0x30;
+/// The size of the NTFS client data header (`NTFS_LOG_RECORD_HEADER`), before its LCNs.
+const NTFS_RECORD_HEADER_SIZE: usize = 0x20;
+/// The most client data a record is taken to have. NTFS's largest records, the table dumps
+/// that go with a checkpoint, are tens of KiB on a busy volume; a length beyond this is damage,
+/// not a record, and isn't worth assembling from the pages that follow.
+pub const MAX_CLIENT_DATA_LENGTH: usize = 4 << 20;
+/// The most LCNs an NTFS record lists: the clusters of the record or index buffer it changes,
+/// which is at most 64 KiB, over clusters of at least 512 bytes.
+const MAX_LCNS: usize = 128;
+
+bitflags! {
+    /// Log record flags.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct LogRecordFlags: u16 {
+        /// The record continues in the next page.
+        const MULTI_PAGE = 0x0001;
+        const _ = !0;
+    }
+}
+
+impl_serialize_for_bitflags! {LogRecordFlags}
+
+/// One log record.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct LogRecord {
+    /// Where the record starts in the file.
+    pub offset: u64,
+    pub lsn: u64,
+    /// The client's previous record in the same transaction.
+    pub client_previous_lsn: u64,
+    /// The next record to undo, when the transaction is rolled back.
+    pub client_undo_next_lsn: u64,
+    pub client_data_length: u32,
+    pub client_seq_number: u16,
+    pub client_index: u16,
+    /// [`CLIENT_RECORD`] for a client record, [`CLIENT_RESTART_RECORD`] for a client restart
+    /// record (a checkpoint).
+    pub record_type: u32,
+    pub transaction_id: u32,
+    pub flags: LogRecordFlags,
+    /// What NTFS logged, for a client record.
+    pub ntfs: Option<NtfsLogRecord>,
+}
+
+/// The NTFS part of a client record (`NTFS_LOG_RECORD_HEADER`): how to redo the change, how to
+/// undo it, and where it applies.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct NtfsLogRecord {
+    pub redo_operation: u16,
+    /// The name of the redo operation (for example `InitializeFileRecordSegment`).
+    pub redo_operation_name: Option<&'static str>,
+    pub undo_operation: u16,
+    pub undo_operation_name: Option<&'static str>,
+    /// The attribute the change applies to, as an index in the open attribute table.
+    pub target_attribute: u16,
+    /// The offset of the change in the target record (an MFT record or index buffer).
+    pub record_offset: u16,
+    /// The offset of the changed attribute in its MFT record, or of the changed entry in its
+    /// index.
+    pub attribute_offset: u16,
+    /// Which 512-byte block of the target cluster the record starts at.
+    pub cluster_block_offset: u16,
+    pub target_vcn: u64,
+    /// The clusters the change applies to.
+    pub lcns: Vec<u64>,
+    #[serde(serialize_with = "crate::attribute::raw::data_as_hex")]
+    pub redo_data: Vec<u8>,
+    #[serde(serialize_with = "crate::attribute::raw::data_as_hex")]
+    pub undo_data: Vec<u8>,
+    /// Whether the LCNs, the redo data or the undo data run past where they can end (the LCNs
+    /// into the redo or undo data, the data past the end of the client data). They then hold
+    /// only what fits, which tells a damaged record from one with nothing to redo or undo.
+    pub truncated: bool,
+    /// For an operation on an index entry (adding one to a directory, or removing one), the
+    /// file the entry names.
+    ///
+    /// The record doesn't say which index the entry is in, and only a `$FILE_NAME` key is
+    /// read: an entry of another index (`$O`, `$Q`, `$R`, `$SII`, `$SDH`) is left out unless
+    /// its key happens to parse as one.
+    pub index_entry: Option<LoggedIndexEntry>,
+}
+
+/// The `$FILE_NAME` index entry that an index operation adds or removes.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct LoggedIndexEntry {
+    pub file_reference: MftReference,
+    pub parent: MftReference,
+    pub name: String,
+}
+
+/// The record type of a client record, one that logs a change.
+pub const CLIENT_RECORD: u32 = 1;
+/// The record type of a client restart record, a checkpoint.
+pub const CLIENT_RESTART_RECORD: u32 = 2;
+
+/// The operation that adds an entry to an index root (`$INDEX_ROOT`).
+pub const ADD_INDEX_ENTRY_ROOT: u16 = 0x0C;
+/// The operation that adds an entry to an index buffer (`$INDEX_ALLOCATION`).
+pub const ADD_INDEX_ENTRY_ALLOCATION: u16 = 0x0E;
+
+/// The operation that zeroes the end of an MFT record. Its redo length is how many bytes to
+/// zero, with no data logged.
+pub const ZERO_END_OF_FILE_RECORD: u16 = 0x25;
+
+/// The names of the NTFS log operations.
+/// <https://github.com/libyal/libfsntfs/blob/main/documentation/New%20Technologies%20File%20System%20(NTFS).asciidoc#log-operation-types>
+pub fn operation_name(operation: u16) -> Option<&'static str> {
+    Some(match operation {
+        0x00 => "Noop",
+        0x01 => "CompensationLogRecord",
+        0x02 => "InitializeFileRecordSegment",
+        0x03 => "DeallocateFileRecordSegment",
+        0x04 => "WriteEndOfFileRecordSegment",
+        0x05 => "CreateAttribute",
+        0x06 => "DeleteAttribute",
+        0x07 => "UpdateResidentValue",
+        0x08 => "UpdateNonresidentValue",
+        0x09 => "UpdateMappingPairs",
+        0x0A => "DeleteDirtyClusters",
+        0x0B => "SetNewAttributeSizes",
+        ADD_INDEX_ENTRY_ROOT => "AddIndexEntryRoot",
+        0x0D => "DeleteIndexEntryRoot",
+        ADD_INDEX_ENTRY_ALLOCATION => "AddIndexEntryAllocation",
+        0x0F => "DeleteIndexEntryAllocation",
+        0x10 => "WriteEndOfIndexBuffer",
+        0x11 => "SetIndexEntryVcnRoot",
+        0x12 => "SetIndexEntryVcnAllocation",
+        0x13 => "UpdateFileNameRoot",
+        0x14 => "UpdateFileNameAllocation",
+        0x15 => "SetBitsInNonresidentBitMap",
+        0x16 => "ClearBitsInNonresidentBitMap",
+        0x17 => "HotFix",
+        0x18 => "EndTopLevelAction",
+        0x19 => "PrepareTransaction",
+        0x1A => "CommitTransaction",
+        0x1B => "ForgetTransaction",
+        0x1C => "OpenNonresidentAttribute",
+        0x1D => "OpenAttributeTableDump",
+        0x1E => "AttributeNamesDump",
+        0x1F => "DirtyPageTableDump",
+        0x20 => "TransactionTableDump",
+        0x21 => "UpdateRecordDataRoot",
+        0x22 => "UpdateRecordDataAllocation",
+        0x23 => "UpdateRelativeDataInIndex",
+        0x24 => "UpdateRelativeDataInIndex2",
+        ZERO_END_OF_FILE_RECORD => "ZeroEndOfFileRecord",
+        _ => return None,
+    })
+}
+
+impl NtfsLogRecord {
+    /// Parses the client data of an NTFS client record.
+    pub fn from_slice(data: &[u8]) -> Option<Self> {
+        let field = |at| read_u16(data, at);
+        let (redo_operation, undo_operation) = (field(0)?, field(2)?);
+        let (redo_offset, redo_length) = (usize::from(field(4)?), usize::from(field(6)?));
+        let (undo_offset, undo_length) = (usize::from(field(8)?), usize::from(field(0x0A)?));
+        let lcns_to_follow = usize::from(field(0x0E)?);
+        let target_vcn = read_u64(data, 0x18)?;
+
+        // The redo and undo data, or what of them fits in the client data.
+        let part = |offset: usize, length: usize| {
+            let end = (offset + length).min(data.len());
+            let fits = data.get(offset..end).unwrap_or_default();
+            (fits.to_vec(), fits.len() < length)
+        };
+        let (redo_data, redo_cut) = part(redo_offset, redo_length);
+        let (undo_data, undo_cut) = part(undo_offset, undo_length);
+
+        // The LCNs follow the header and end before the redo and undo data.
+        let lcns_end = [
+            (redo_offset, redo_data.len()),
+            (undo_offset, undo_data.len()),
+        ]
+        .into_iter()
+        .filter(|&(_, length)| length > 0)
+        .map(|(offset, _)| offset)
+        .fold(data.len(), usize::min);
+        let lcns_fit = (lcns_end.saturating_sub(NTFS_RECORD_HEADER_SIZE) / 8).min(MAX_LCNS);
+        let lcns = (0..lcns_to_follow.min(lcns_fit))
+            .map_while(|i| read_u64(data, NTFS_RECORD_HEADER_SIZE + 8 * i))
+            .collect();
+
+        // Adding an entry logs it to redo, removing one logs it to undo.
+        let is_add =
+            |operation| matches!(operation, ADD_INDEX_ENTRY_ROOT | ADD_INDEX_ENTRY_ALLOCATION);
+        let index_entry = if is_add(redo_operation) {
+            LoggedIndexEntry::from_slice(&redo_data)
+        } else if is_add(undo_operation) {
+            LoggedIndexEntry::from_slice(&undo_data)
+        } else {
+            None
+        };
+
+        Some(NtfsLogRecord {
+            redo_operation,
+            redo_operation_name: operation_name(redo_operation),
+            undo_operation,
+            undo_operation_name: operation_name(undo_operation),
+            target_attribute: field(0x0C)?,
+            record_offset: field(0x10)?,
+            attribute_offset: field(0x12)?,
+            cluster_block_offset: field(0x14)?,
+            target_vcn,
+            lcns,
+            redo_data,
+            undo_data,
+            truncated: (redo_cut && redo_operation != ZERO_END_OF_FILE_RECORD)
+                || undo_cut
+                || lcns_to_follow > lcns_fit,
+            index_entry,
+        })
+    }
+}
+
+impl LoggedIndexEntry {
+    /// Parses a `$FILE_NAME` index entry: the file reference, the entry's and the key's
+    /// lengths, flags, then the key.
+    fn from_slice(entry: &[u8]) -> Option<Self> {
+        let file_reference = MftReference::from(read_u64(entry, 0)?);
+        let key_length = usize::from(read_u16(entry, 0x0A)?);
+        let key = entry.get(ENTRY_HEADER_SIZE..ENTRY_HEADER_SIZE + key_length)?;
+        let name = NameInParent::from_slice(key)?;
+        Some(LoggedIndexEntry {
+            file_reference,
+            parent: name.parent,
+            name: name.name.to_utf8_string(),
+        })
+    }
+}
+
+impl LogFile {
+    /// The log records in the record pages, in file order. That is LSN order from the oldest
+    /// page to the newest one, then the older records that the newest pages haven't written
+    /// over yet.
+    ///
+    /// Each page is scanned on every 8-byte boundary for a record header whose LSN gives its own
+    /// offset ([`LogFile::lsn_offset`], whatever its pass: pages from passes long before the
+    /// checkpoint's survive where the log hasn't reached since), so a record is found even when
+    /// the records before it are damaged, and the copies of the log's tail in the buffer pages
+    /// (whose LSNs give the offset of the original) aren't found twice.
+    ///
+    /// A record that continues into the next page is left out unless that page is a record
+    /// page whose fixups all matched and that was written in the same pass of the log, no
+    /// earlier than the record; and so is one with more than [`MAX_CLIENT_DATA_LENGTH`] bytes
+    /// of client data.
+    ///
+    /// Not handled: a record found only in the buffer pages (the tail Windows hadn't written
+    /// back), and a record that continues past the end of the file into the first record page,
+    /// where the log wraps around.
+    pub fn records(&self) -> impl Iterator<Item = LogRecord> + '_ {
+        let page_size = self.page_size();
+        let data_offset = self.log_page_data_offset();
+        self.record_pages
+            .iter()
+            .flatten()
+            .flat_map(move |page| {
+                let start = page.offset as usize;
+                // LSNs count 8-byte units, so a record starts on an 8-byte boundary.
+                ((start + data_offset).next_multiple_of(8)
+                    ..start + page_size - LOG_RECORD_HEADER_SIZE + 1)
+                    .step_by(8)
+            })
+            .filter_map(move |offset| self.record_at(offset))
+    }
+
+    /// Where log records start in a record page, from the restart page in use.
+    fn log_page_data_offset(&self) -> usize {
+        // A restart area that parses has it after the page header and inside the page.
+        usize::from(self.restart_page().restart_area.log_page_data_offset)
+    }
+
+    /// The record whose header starts at `offset`, if there is one.
+    fn record_at(&self, offset: usize) -> Option<LogRecord> {
+        let header = self.data.get(offset..offset + LOG_RECORD_HEADER_SIZE)?;
+        let lsn = read_u64(header, 0)?;
+        let record_type = read_u32(header, 0x20)?;
+        let client_data_length = read_u32(header, 0x18)?;
+        let length = client_data_length as usize;
+        if self.lsn_offset(lsn) != Some(offset as u64)
+            || !matches!(record_type, CLIENT_RECORD | CLIENT_RESTART_RECORD)
+            || length > MAX_CLIENT_DATA_LENGTH
+            || length > self.data.len() - offset - LOG_RECORD_HEADER_SIZE
+        {
+            return None;
+        }
+        let pieces = self.client_data(lsn, offset + LOG_RECORD_HEADER_SIZE, length)?;
+        // Only a client record's data is read, and it is copied together only when it spans
+        // pages.
+        let ntfs = match (record_type, pieces.as_slice()) {
+            (CLIENT_RECORD, [data]) => NtfsLogRecord::from_slice(data),
+            (CLIENT_RECORD, _) => NtfsLogRecord::from_slice(&pieces.concat()),
+            _ => None,
+        };
+        Some(LogRecord {
+            offset: offset as u64,
+            lsn,
+            client_previous_lsn: read_u64(header, 8)?,
+            client_undo_next_lsn: read_u64(header, 0x10)?,
+            client_data_length,
+            client_seq_number: read_u16(header, 0x1C)?,
+            client_index: read_u16(header, 0x1E)?,
+            record_type,
+            transaction_id: read_u32(header, 0x24)?,
+            flags: LogRecordFlags::from_bits_retain(read_u16(header, 0x28)?),
+            ntfs,
+        })
+    }
+
+    /// The pieces of the `length` bytes of client data of the record `lsn`, from `offset` on:
+    /// the rest of the page the header is in, then the data of each page the record continues
+    /// into. `None` when the record continues into a page that isn't the rest of it.
+    fn client_data(&self, lsn: u64, offset: usize, length: usize) -> Option<Vec<&[u8]>> {
+        let page_size = self.page_size();
+        let data_offset = self.log_page_data_offset();
+        // The end of the page the header ends in. Record pages follow the restart pages,
+        // which needn't be a record page long.
+        let pages_start = self.record_pages_start();
+        let mut page = pages_start + ((offset - 1 - pages_start) / page_size + 1) * page_size;
+        let first = (page - offset).min(length);
+        let mut pieces = vec![self.data.get(offset..offset + first)?];
+        let mut left = length - first;
+        while left > 0 {
+            if !self.continues_record(page, lsn) {
+                return None;
+            }
+            let n = (page_size - data_offset).min(left);
+            pieces.push(self.data.get(page + data_offset..page + data_offset + n)?);
+            left -= n;
+            page += page_size;
+        }
+        Some(pieces)
+    }
+
+    /// Whether the page at `offset` can hold the rest of the record `lsn`: a record page whose
+    /// fixups all matched, written in the same pass of the log as the record and no earlier.
+    /// A page that was never written, holds something else, or was written over in a later
+    /// pass isn't the rest of this record.
+    fn continues_record(&self, offset: usize, lsn: u64) -> bool {
+        let Some(page) = self.record_page_at(offset as u64) else {
+            return false;
+        };
+        let bits = self.restart_page().restart_area.seq_number_bits;
+        let sequence = |lsn: u64| lsn >> (64 - bits);
+        // The page's last LSN is the newest record that starts in it, and its last end LSN the
+        // newest that ends in it: the record or one after it does one or the other.
+        page.valid_fixup
+            && [page.last_lsn, page.last_end_lsn]
+                .into_iter()
+                .any(|page_lsn| page_lsn >= lsn && sequence(page_lsn) == sequence(lsn))
+    }
+
+    /// The record page that starts at `offset`, if it parsed.
+    fn record_page_at(&self, offset: u64) -> Option<&RecordPage> {
+        // The record pages are in file order, and `from_buffer` only makes `InvalidLogFile`
+        // errors, which carry the page's offset.
+        let page_offset = |page: &Result<RecordPage>| match page {
+            Ok(page) => page.offset,
+            Err(Error::InvalidLogFile { offset, .. }) => *offset,
+            Err(_) => u64::MAX,
+        };
+        let index = self
+            .record_pages
+            .binary_search_by_key(&offset, page_offset)
+            .ok()?;
+        self.record_pages[index].as_ref().ok()
+    }
+}
+
+/// A [`LogRecord`] flattened to one CSV row.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "PascalCase")]
+pub struct FlatLogRecord {
+    pub offset: u64,
+    pub lsn: u64,
+    pub previous_lsn: u64,
+    pub undo_next_lsn: u64,
+    pub transaction_id: u32,
+    pub record_type: u32,
+    pub redo_operation: Option<String>,
+    pub undo_operation: Option<String>,
+    pub target_attribute: Option<u16>,
+    pub target_vcn: Option<u64>,
+    pub cluster_block_offset: Option<u16>,
+    pub record_offset: Option<u16>,
+    pub attribute_offset: Option<u16>,
+    /// `|`-separated.
+    pub lcns: Option<String>,
+    pub redo_length: Option<usize>,
+    pub undo_length: Option<usize>,
+    pub truncated: Option<bool>,
+    pub file_reference: Option<u64>,
+    pub file_sequence: Option<u16>,
+    pub parent_reference: Option<u64>,
+    pub parent_sequence: Option<u16>,
+    pub file_name: Option<String>,
+}
+
+impl FlatLogRecord {
+    pub fn from_record(record: &LogRecord) -> Self {
+        let ntfs = record.ntfs.as_ref();
+        let name = |operation: u16, name: Option<&str>| match name {
+            Some(name) => name.to_string(),
+            None => format!("0x{operation:02x}"),
+        };
+        let entry = ntfs.and_then(|ntfs| ntfs.index_entry.as_ref());
+        FlatLogRecord {
+            offset: record.offset,
+            lsn: record.lsn,
+            previous_lsn: record.client_previous_lsn,
+            undo_next_lsn: record.client_undo_next_lsn,
+            transaction_id: record.transaction_id,
+            record_type: record.record_type,
+            redo_operation: ntfs.map(|n| name(n.redo_operation, n.redo_operation_name)),
+            undo_operation: ntfs.map(|n| name(n.undo_operation, n.undo_operation_name)),
+            target_attribute: ntfs.map(|n| n.target_attribute),
+            target_vcn: ntfs.map(|n| n.target_vcn),
+            cluster_block_offset: ntfs.map(|n| n.cluster_block_offset),
+            record_offset: ntfs.map(|n| n.record_offset),
+            attribute_offset: ntfs.map(|n| n.attribute_offset),
+            lcns: ntfs.map(|n| {
+                n.lcns
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join("|")
+            }),
+            redo_length: ntfs.map(|n| n.redo_data.len()),
+            undo_length: ntfs.map(|n| n.undo_data.len()),
+            truncated: ntfs.map(|n| n.truncated),
+            file_reference: entry.map(|e| e.file_reference.entry),
+            file_sequence: entry.map(|e| e.file_reference.sequence),
+            parent_reference: entry.map(|e| e.parent.entry),
+            parent_sequence: entry.map(|e| e.parent.sequence),
+            file_name: entry.map(|e| e.name.clone()),
+        }
     }
 }

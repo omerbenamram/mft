@@ -1,7 +1,7 @@
 mod fixtures;
 
 use fixtures::*;
-use mft::logfile::{LogFile, RestartAreaFlags};
+use mft::logfile::{LogFile, MAX_CLIENT_DATA_LENGTH, NtfsLogRecord, RestartAreaFlags};
 
 fn sample() -> LogFile {
     let path = testdata_dir()
@@ -46,6 +46,47 @@ fn it_reads_the_record_pages() {
     // Two buffer pages with copies of the log's tail, then the log itself.
     assert_eq!(pages[0].offset, 0x2000);
     assert_eq!(pages[2].offset, 0x4000);
+}
+
+#[test]
+fn it_reads_the_log_records() {
+    let log = sample();
+    let records: Vec<_> = log.records().collect();
+    assert_eq!(records.len(), 422);
+    // 15 checkpoints, the rest NTFS client records.
+    assert_eq!(records.iter().filter(|r| r.record_type == 2).count(), 15);
+    assert!(
+        records
+            .iter()
+            .all(|r| (r.record_type == 1) == r.ntfs.is_some())
+    );
+    // The checkpoint the restart area names is one of them.
+    let current = log.restart_page().restart_area.current_lsn;
+    assert!(
+        records
+            .iter()
+            .any(|r| r.lsn == current && r.record_type == 2)
+    );
+
+    // Each transaction's records chain back through records that were found.
+    let lsns: std::collections::HashSet<u64> = records.iter().map(|r| r.lsn).collect();
+    let previous: Vec<u64> = records
+        .iter()
+        .map(|r| r.client_previous_lsn)
+        .filter(|&lsn| lsn != 0)
+        .collect();
+    let found = previous.iter().filter(|lsn| lsns.contains(lsn)).count();
+    assert!(found + 2 >= previous.len(), "{found} of {}", previous.len());
+
+    // Formatting the volume created the files of `$Extend` in its index.
+    let names: Vec<&str> = records
+        .iter()
+        .filter_map(|r| r.ntfs.as_ref()?.index_entry.as_ref())
+        .map(|entry| entry.name.as_str())
+        .collect();
+    for name in ["$Extend", "$Quota", "$ObjId", "$Reparse"] {
+        assert!(names.contains(&name), "{names:?}");
+    }
 }
 
 // Synthetic logs.
@@ -326,4 +367,159 @@ fn a_cut_short_last_page_is_reported_even_if_blank() {
     assert_eq!(pages.len(), 2);
     assert!(pages[0].is_ok());
     assert!(pages[1].is_err());
+}
+
+// Synthetic log records, in record pages from 0x2000 on, with log page data at 0x40 and 44
+// sequence number bits.
+
+/// The LSN of a record at `offset` in pass `sequence` of the log.
+fn lsn(sequence: u64, offset: usize) -> u64 {
+    (sequence << 20) | (offset as u64 / 8)
+}
+
+/// Writes the header of a record of `record_type` at `offset` of `data`, with `client_data_length`
+/// bytes of client data, and returns its LSN (in pass 1).
+fn put_record(data: &mut [u8], offset: usize, record_type: u32, client_data_length: u32) -> u64 {
+    let lsn = lsn(1, offset);
+    let header = &mut data[offset..offset + 0x30];
+    header[..8].copy_from_slice(&lsn.to_le_bytes());
+    header[0x18..0x1C].copy_from_slice(&client_data_length.to_le_bytes());
+    header[0x20..0x24].copy_from_slice(&record_type.to_le_bytes());
+    lsn
+}
+
+/// An NTFS client data header: `InitializeFileRecordSegment`, with its redo data at
+/// `redo_offset`, `redo_length` long, and `lcns` LCNs to follow.
+fn ntfs_header(redo_offset: u16, redo_length: u16, lcns: u16) -> [u8; 0x20] {
+    let mut header = [0u8; 0x20];
+    header[..2].copy_from_slice(&2u16.to_le_bytes());
+    header[4..6].copy_from_slice(&redo_offset.to_le_bytes());
+    header[6..8].copy_from_slice(&redo_length.to_le_bytes());
+    header[0x0E..0x10].copy_from_slice(&lcns.to_le_bytes());
+    header
+}
+
+/// A log whose client record starts at the end of the record page at 0x2000 and continues
+/// into the one at 0x3000, whose header gets `continuation_lsn` as its last end LSN. Returns
+/// the log and the record's LSN.
+fn spanning_record(continuation_lsn: impl Fn(u64) -> u64, tear: bool) -> (Vec<u8>, u64) {
+    let mut data = two_restart_pages(10, 20);
+    data.extend(record_page());
+    data.extend(record_page());
+    // The header ends 0x10 bytes before the end of the page: the first 0x10 bytes of the client
+    // data are there, the other 0x30 after the next page's header.
+    let lsn = put_record(&mut data, 0x2FC0, 1, 0x40);
+    let header = ntfs_header(0x20, 0x20, 0);
+    data[0x2FF0..0x2FFE].copy_from_slice(&header[..0x0E]);
+    data[0x3040..0x3050].copy_from_slice(&header[0x10..]);
+    data[0x3050..0x3070].fill(0xAB);
+    data[0x3020..0x3028].copy_from_slice(&continuation_lsn(lsn).to_le_bytes());
+    if tear {
+        data[0x33FE] = 7;
+    }
+    (data, lsn)
+}
+
+#[test]
+fn a_record_continues_into_the_next_page() {
+    let (data, lsn) = spanning_record(|lsn| lsn, false);
+    let log = LogFile::from_buffer(data).unwrap();
+    let records: Vec<_> = log.records().collect();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].lsn, lsn);
+    let ntfs = records[0].ntfs.as_ref().unwrap();
+    assert_eq!(
+        ntfs.redo_operation_name,
+        Some("InitializeFileRecordSegment")
+    );
+    assert_eq!(ntfs.redo_data, [0xAB; 0x20]);
+    assert!(!ntfs.truncated);
+}
+
+#[test]
+fn a_record_does_not_continue_into_a_page_that_is_not_its_rest() {
+    let older = |lsn: u64| lsn - 1;
+    let later_pass = |lsn: u64| lsn + (1 << 20);
+    for (what, continuation_lsn, tear) in [
+        ("torn", (|lsn| lsn) as fn(u64) -> u64, true),
+        ("older", older, false),
+        ("from a later pass", later_pass, false),
+    ] {
+        let (data, _) = spanning_record(continuation_lsn, tear);
+        let log = LogFile::from_buffer(data).unwrap();
+        assert_eq!(log.records().count(), 0, "{what}");
+    }
+
+    // A page that was never written isn't the rest of the record either.
+    let (mut data, _) = spanning_record(|lsn| lsn, false);
+    data[0x3000..].fill(0);
+    assert_eq!(LogFile::from_buffer(data).unwrap().records().count(), 0);
+}
+
+#[test]
+fn client_data_is_capped() {
+    // Enough record pages, each continuing the record, for the longest client data and more.
+    let mut data = two_restart_pages(10, 20);
+    let pages = MAX_CLIENT_DATA_LENGTH / (0x1000 - 0x40) + 2;
+    let first = lsn(1, 0x2040);
+    for _ in 0..pages {
+        let mut page = record_page();
+        page[0x20..0x28].copy_from_slice(&first.to_le_bytes());
+        data.extend(page);
+    }
+    let length = MAX_CLIENT_DATA_LENGTH as u32;
+    put_record(&mut data, 0x2040, 2, length);
+    assert_eq!(
+        LogFile::from_buffer(data.clone())
+            .unwrap()
+            .records()
+            .count(),
+        1
+    );
+    put_record(&mut data, 0x2040, 2, length + 8);
+    assert_eq!(LogFile::from_buffer(data).unwrap().records().count(), 0);
+}
+
+/// A log with one client record in its first record page, with this client data.
+fn one_record(client_data: &[u8]) -> NtfsLogRecord {
+    let mut data = two_restart_pages(10, 20);
+    data.extend(record_page());
+    put_record(&mut data, 0x2040, 1, client_data.len() as u32);
+    data[0x2070..0x2070 + client_data.len()].copy_from_slice(client_data);
+    let log = LogFile::from_buffer(data).unwrap();
+    let mut records: Vec<_> = log.records().collect();
+    assert_eq!(records.len(), 1);
+    records.remove(0).ntfs.unwrap()
+}
+
+#[test]
+fn lcns_end_before_the_redo_data() {
+    let mut client_data = ntfs_header(0x28, 8, 0xFFFF).to_vec();
+    client_data.extend(7u64.to_le_bytes());
+    client_data.extend([0xAB; 8]);
+    let ntfs = one_record(&client_data);
+    assert_eq!(ntfs.lcns, [7]);
+    assert_eq!(ntfs.redo_data, [0xAB; 8]);
+    assert!(ntfs.truncated);
+
+    let mut client_data = ntfs_header(0x28, 8, 1).to_vec();
+    client_data.extend(7u64.to_le_bytes());
+    client_data.extend([0xAB; 8]);
+    let ntfs = one_record(&client_data);
+    assert_eq!(ntfs.lcns, [7]);
+    assert!(!ntfs.truncated);
+}
+
+#[test]
+fn redo_data_past_the_client_data_is_truncated() {
+    let mut client_data = ntfs_header(0x20, 0x100, 0).to_vec();
+    client_data.extend([0xAB; 0x10]);
+    let ntfs = one_record(&client_data);
+    assert_eq!(ntfs.redo_data, [0xAB; 0x10]);
+    assert!(ntfs.truncated);
+
+    // No redo data is not damage.
+    let ntfs = one_record(&ntfs_header(0x20, 0, 0));
+    assert!(ntfs.redo_data.is_empty());
+    assert!(!ntfs.truncated);
 }
