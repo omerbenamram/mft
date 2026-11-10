@@ -33,24 +33,24 @@ impl Volume {
     pub fn open(image: Arc<dyn ReadAt>, volume_offset: u64) -> Result<Self> {
         let header = VolumeHeader::read_from_image(image.as_ref(), volume_offset)?;
 
-        // The cluster and record sizes size the buffers of every later read. They come from the
-        // boot sector, so measure them against the image before trusting them.
-        let image_len = image.len().saturating_sub(volume_offset);
-        if u64::from(header.cluster_size) > image_len
-            || u64::from(header.mft_entry_size) > image_len
-            || u64::from(header.index_entry_size) > image_len
-        {
-            return Err(Error::InvalidBootSector {
-                message: "cluster or record size is larger than the image",
-            });
-        }
-
         let mut volume = Self {
             image,
             volume_offset,
             header,
             mft_data_runs: Vec::new(),
         };
+
+        // The cluster and record sizes size the buffers of every later read. They come from the
+        // boot sector, so measure them against the image before trusting them.
+        let image_len = volume.image_len();
+        if u64::from(volume.header.cluster_size) > image_len
+            || u64::from(volume.header.mft_entry_size) > image_len
+            || u64::from(volume.header.index_entry_size) > image_len
+        {
+            return Err(Error::InvalidBootSector {
+                message: "cluster or record size is larger than the image",
+            });
+        }
 
         // Bootstrap: read MFT entry 0 using the boot-sector-provided MFT location, and use its
         // `$DATA` mapping pairs to read arbitrary entries.

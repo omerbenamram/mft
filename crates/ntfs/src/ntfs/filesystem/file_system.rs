@@ -347,25 +347,10 @@ impl FileSystem {
             });
         }
 
-        // Use the logical file size from the first extent (should be identical across extents).
-        let file_size = self.checked_stream_size(&data_extents)?;
-
-        let cluster_size = self.volume.header.cluster_size as u64;
-        if cluster_size == 0 {
-            return Err(Error::InvalidData {
-                message: "cluster_size is 0".to_string(),
-            });
-        }
-
-        let valid_len = valid_data_len(&data_extents, file_size);
+        let sizes = stream_sizes(&data_extents)?;
         let stream = zero_past_valid_data(
-            Arc::new(DataExtentsReadAt {
-                volume: self.volume.clone(),
-                cluster_size,
-                file_size,
-                extents: data_extents,
-            }),
-            valid_len,
+            Arc::new(self.open_uncompressed_stream(&data_extents, sizes.file)?),
+            sizes.valid,
         );
 
         Ok(Some(crate::ntfs::usn::UsnChangeJournal::new(
@@ -448,50 +433,20 @@ impl FileSystem {
             });
         }
 
-        let is_compressed = data_extents.iter().any(|e| e.is_compressed);
+        let sizes = stream_sizes(&data_extents)?;
 
-        let file_size = self.checked_stream_size(&data_extents)?;
-        // Bytes past the valid data length were never written; they read as zeros whatever
-        // the clusters hold. The export stops there and leaves the rest of the file a hole.
-        let valid_len = valid_data_len(&data_extents, file_size);
-
-        if is_compressed {
-            let stream = self.open_compressed_stream(&data_extents)?;
-
-            let mut buf = vec![0u8; 1024 * 1024];
-            let mut off = 0u64;
-            while off < valid_len {
-                // Compression units that are not stored at all become a hole in the output.
-                let hole = stream.sparse_len_at(off).min(valid_len - off);
-                if hole > 0 {
-                    seek_forward(&mut f, hole)?;
-                    off += hole;
-                    continue;
-                }
-
-                let n = (valid_len - off).min(buf.len() as u64) as usize;
-                stream
-                    .read_exact_at(off, &mut buf[..n])
-                    .map_err(Error::Io)?;
-                f.write_all(&buf[..n])?;
-                off += n as u64;
-            }
-            f.set_len(file_size)?;
-            return Ok(());
-        }
-
-        // Uncompressed: walk the runs of all extents. Sparse runs are skipped in the output
-        // file instead of being written out as zeros, so the work is bounded by the clusters the
-        // image really stores, not by the sizes the mapping pairs claim.
-        let runs = join_extent_runs(&data_extents)?;
-        for_each_stream_piece(&self.volume, &runs, valid_len, |piece| {
+        // Holes (sparse runs, compression units that are not stored, anything past the valid
+        // data length or the end of the mapping pairs) are skipped in the output file instead
+        // of being written out as zeros, so the work is bounded by the clusters the image
+        // really stores, not by the sizes the attribute claims.
+        self.for_each_piece(&data_extents, sizes, |piece| {
             match piece {
                 StreamPiece::Data(bytes) => f.write_all(bytes)?,
                 StreamPiece::Hole(len) => seek_forward(&mut f, len)?,
             }
             Ok(())
         })?;
-        f.set_len(file_size)?;
+        f.set_len(sizes.file)?;
 
         Ok(())
     }
@@ -532,7 +487,7 @@ impl FileSystem {
                 message: format!("entry {entry_id} is a directory"),
             });
         }
-        self.open_data_stream_from_entry_read_at(&entry, stream_name, None)
+        self.open_data_stream_from_entry_read_at(&entry, stream_name)
     }
 
     /// Opens the default unnamed `$DATA` stream as a random-access reader.
@@ -560,7 +515,7 @@ impl FileSystem {
         }
 
         if !is_entry_efs_encrypted(&entry) {
-            return self.open_data_stream_from_entry_read_at(&entry, "", None);
+            return self.open_data_stream_from_entry_read_at(&entry, "");
         }
 
         // Detect resident $DATA early: EFS decryption is sector-based and requires reading full
@@ -601,18 +556,20 @@ impl FileSystem {
             });
         }
 
-        let file_size = self.checked_stream_size(&data_extents)?;
-        if file_size == 0 {
+        let sizes = stream_sizes(&data_extents)?;
+        if sizes.file == 0 {
             return Ok(Arc::new(ResidentReadAt::new(Vec::new())));
         }
 
-        let valid_len = valid_data_len(&data_extents, file_size);
-        let cipher_len = file_size.div_ceil(512).saturating_mul(512);
-        let cipher = self.open_data_stream_from_entry_read_at(&entry, "", Some(cipher_len))?;
+        // The ciphertext is read in whole sectors and as the clusters hold it; the valid data
+        // length applies to the plaintext.
+        let cipher_len = sizes.file.div_ceil(512).saturating_mul(512);
+        let cipher: Arc<dyn ReadAt> =
+            Arc::new(self.open_uncompressed_stream(&data_extents, cipher_len)?);
 
         Ok(zero_past_valid_data(
-            Arc::new(EfsDecryptingReadAt::new(cipher, fek, file_size)),
-            valid_len,
+            Arc::new(EfsDecryptingReadAt::new(cipher, fek, sizes.file)),
+            sizes.valid,
         ))
     }
 
@@ -658,47 +615,29 @@ impl FileSystem {
             });
         }
 
-        let is_compressed = data_extents.iter().any(|e| e.is_compressed);
+        let sizes = stream_sizes(&data_extents)?;
+        let file_size = sizes.file;
 
-        let file_size = self.checked_stream_size(&data_extents)?;
-        // Bytes past the valid data length read as zeros, whatever the clusters hold.
-        let valid_len = valid_data_len(&data_extents, file_size);
-
-        let mut h = Md5::new();
-
-        if is_compressed {
-            let stream = self.open_compressed_stream(&data_extents)?;
-
-            let mut buf = vec![0u8; 1024 * 1024];
-            let mut off = 0u64;
-            while off < valid_len {
-                let hole = stream.sparse_len_at(off).min(valid_len - off);
-                if hole > 0 {
-                    md5_update_zeros(&mut h, hole);
-                    off += hole;
-                    continue;
-                }
-
-                let n = (valid_len - off).min(buf.len() as u64) as usize;
-                stream
-                    .read_exact_at(off, &mut buf[..n])
-                    .map_err(Error::Io)?;
-                h.update(&buf[..n]);
-                off += n as u64;
-            }
-        } else {
-            // Uncompressed: walk the runs of all extents; holes hash as zeros.
-            let runs = join_extent_runs(&data_extents)?;
-            for_each_stream_piece(&self.volume, &runs, valid_len, |piece| {
-                match piece {
-                    StreamPiece::Data(bytes) => h.update(bytes),
-                    StreamPiece::Hole(len) => md5_update_zeros(&mut h, len),
-                }
-                Ok(())
-            })?;
+        // Hashing takes time in proportion to the size, holes included, and the size is an
+        // on-disk field. Refuse one that no file on this volume can have.
+        let max_size = MAX_FILE_CLUSTERS.saturating_mul(self.volume.header.cluster_size as u64);
+        if file_size > max_size {
+            return Err(Error::InvalidData {
+                message: format!(
+                    "stream size {file_size} is larger than the {max_size} bytes a file on this volume can have; not hashing it"
+                ),
+            });
         }
 
-        md5_update_zeros(&mut h, file_size - valid_len);
+        let mut h = Md5::new();
+        self.for_each_piece(&data_extents, sizes, |piece| {
+            match piece {
+                StreamPiece::Data(bytes) => h.update(bytes),
+                StreamPiece::Hole(len) => md5_update_zeros(&mut h, len),
+            }
+            Ok(())
+        })?;
+
         Ok(hex::encode(h.finalize()))
     }
 
@@ -742,17 +681,18 @@ impl FileSystem {
             });
         }
 
-        let file_size = self.checked_stream_size(&data_extents)?;
-        let valid_len = valid_data_len(&data_extents, file_size);
-        let cipher_len = file_size.div_ceil(512).saturating_mul(512);
-        // The ciphertext is read in whole sectors, so the valid data length is applied to the
-        // plaintext below, not to this read.
-        let mut bytes =
-            self.read_nonresident_data_extents_to_len(data_extents, cipher_len, cipher_len)?;
+        let sizes = stream_sizes(&data_extents)?;
+        // The ciphertext is read in whole sectors and as the clusters hold it; the valid data
+        // length is applied to the plaintext below, not to this read.
+        let cipher_len = sizes.file.div_ceil(512).saturating_mul(512);
+        let mut bytes = alloc_stream_buffer(cipher_len, "$DATA stream")?;
+        self.open_uncompressed_stream(&data_extents, cipher_len)?
+            .read_exact_at(0, &mut bytes)
+            .map_err(Error::Io)?;
 
         fek.decrypt_in_place(&mut bytes, 0)?;
-        bytes.truncate(file_size as usize);
-        bytes[valid_len as usize..].fill(0);
+        bytes.truncate(sizes.file as usize);
+        bytes[sizes.valid as usize..].fill(0);
         Ok(bytes)
     }
 
@@ -788,30 +728,19 @@ impl FileSystem {
             });
         }
 
-        let is_compressed = data_extents.iter().any(|e| e.is_compressed);
-
-        let file_size = self.checked_stream_size(&data_extents)?;
-
+        let sizes = stream_sizes(&data_extents)?;
+        let mut out = alloc_stream_buffer(sizes.file, "$DATA stream")?;
         // Bytes past the valid data length stay zero: they are not read from the volume.
-        let valid_len = valid_data_len(&data_extents, file_size);
-
-        if is_compressed {
-            let mut out = alloc_stream_buffer(&self.volume, file_size, "compressed $DATA stream")?;
-            let stream = self.open_compressed_stream(&data_extents)?;
-            stream
-                .read_exact_at(0, &mut out[..valid_len as usize])
-                .map_err(Error::Io)?;
-            return Ok(out);
-        }
-
-        self.read_nonresident_data_extents_to_len(data_extents, file_size, valid_len)
+        self.open_stream(&data_extents, sizes.file)?
+            .read_exact_at(0, &mut out[..sizes.valid as usize])
+            .map_err(Error::Io)?;
+        Ok(out)
     }
 
     fn open_data_stream_from_entry_read_at(
         &self,
         entry: &mft::MftEntry,
         stream_name: &str,
-        len_override: Option<u64>,
     ) -> Result<Arc<dyn ReadAt>> {
         // Resident fast-path: the stream content lives inside the MFT record.
         for attr in entry
@@ -829,18 +758,7 @@ impl FileSystem {
                         message: "resident data out of bounds".to_string(),
                     })?;
 
-                let bytes = data.to_vec();
-                if let Some(want) = len_override
-                    && want != bytes.len() as u64
-                {
-                    return Err(Error::InvalidData {
-                        message: format!(
-                            "resident stream length mismatch: len_override={want} resident_len={}",
-                            bytes.len()
-                        ),
-                    });
-                }
-                return Ok(Arc::new(ResidentReadAt::new(bytes)));
+                return Ok(Arc::new(ResidentReadAt::new(data.to_vec())));
             }
         }
 
@@ -852,93 +770,74 @@ impl FileSystem {
             });
         }
 
-        let is_compressed = data_extents.iter().any(|e| e.is_compressed);
-
-        let file_size = self.checked_stream_size(&data_extents)?;
-        let logical_len = len_override.unwrap_or(file_size);
-        // A caller that overrides the length (EFS, which reads whole ciphertext sectors) gets the
-        // raw clusters and applies the valid data length itself.
-        let valid_len = match len_override {
-            Some(len) => len,
-            None => valid_data_len(&data_extents, file_size),
-        };
-
-        if is_compressed {
-            // For compressed streams, the logical length must match the NTFS file size.
-            if logical_len != file_size {
-                return Err(Error::InvalidData {
-                    message: format!(
-                        "compressed stream length mismatch: len_override={logical_len} file_size={file_size}"
-                    ),
-                });
-            }
-
-            let stream = self.open_compressed_stream(&data_extents)?;
-            return Ok(zero_past_valid_data(Arc::new(stream), valid_len));
-        }
-
-        // Uncompressed: either a single extent (fast), or a multi-extent view.
-        if data_extents.len() == 1 {
-            let extent = &data_extents[0];
-            return Ok(zero_past_valid_data(
-                Arc::new(DataRunsStream::new(
-                    self.volume.clone(),
-                    extent.data_runs.clone(),
-                    logical_len,
-                )),
-                valid_len,
-            ));
-        }
-
-        let cluster_size = self.volume.header.cluster_size as u64;
-        if cluster_size == 0 {
-            return Err(Error::InvalidData {
-                message: "cluster_size is 0".to_string(),
-            });
-        }
-
+        let sizes = stream_sizes(&data_extents)?;
         Ok(zero_past_valid_data(
-            Arc::new(DataExtentsReadAt {
-                volume: self.volume.clone(),
-                cluster_size,
-                file_size: logical_len,
-                extents: data_extents,
-            }),
-            valid_len,
+            self.open_stream(&data_extents, sizes.file)?,
+            sizes.valid,
         ))
     }
 
-    /// Returns a buffer of `out_len` bytes whose first `read_len` bytes are read from the
-    /// extents; the rest stays zero.
-    fn read_nonresident_data_extents_to_len(
+    /// Opens the stream described by `extents` (sorted by VCN), compressed or not, as the
+    /// clusters hold it: the valid data length is not applied.
+    fn open_stream(&self, extents: &[DataExtent], len: u64) -> Result<Arc<dyn ReadAt>> {
+        if extents.iter().any(|e| e.is_compressed) {
+            return Ok(Arc::new(self.open_compressed_stream(extents)?));
+        }
+        Ok(Arc::new(self.open_uncompressed_stream(extents, len)?))
+    }
+
+    /// Opens the uncompressed stream described by `extents` (sorted by VCN) with a logical
+    /// length of `len` bytes, as the clusters hold it: the valid data length is not applied.
+    ///
+    /// Every uncompressed read goes through this one view, so that reading, hashing and
+    /// exporting a file agree on its content whatever state its mapping pairs are in.
+    fn open_uncompressed_stream(&self, extents: &[DataExtent], len: u64) -> Result<DataRunsStream> {
+        Ok(DataRunsStream::new(
+            self.volume.clone(),
+            join_extent_runs(extents)?,
+            len,
+        ))
+    }
+
+    /// Walks the stream described by `extents` (sorted by VCN) in order, handing stored bytes
+    /// and holes to `sink`. Works for compressed and uncompressed streams alike. Everything
+    /// past the valid data length is one last hole.
+    fn for_each_piece(
         &self,
-        data_extents: Vec<DataExtent>,
-        out_len: u64,
-        read_len: u64,
-    ) -> Result<Vec<u8>> {
-        let mut out = alloc_stream_buffer(&self.volume, out_len, "$DATA stream")?;
-        let read_len = read_len.min(out_len);
+        extents: &[DataExtent],
+        sizes: StreamSizes,
+        mut sink: impl FnMut(StreamPiece<'_>) -> Result<()>,
+    ) -> Result<()> {
+        let len = sizes.valid;
+        if extents.iter().any(|e| e.is_compressed) {
+            let stream = self.open_compressed_stream(extents)?;
+            let mut buf = vec![0u8; 1024 * 1024];
+            let mut off = 0u64;
+            while off < len {
+                // Compression units that are not stored at all are one hole, however many.
+                let hole = stream.sparse_len_at(off).min(len - off);
+                if hole > 0 {
+                    sink(StreamPiece::Hole(hole))?;
+                    off += hole;
+                    continue;
+                }
 
-        for extent in data_extents {
-            let start_byte = extent
-                .vcn_first
-                .saturating_mul(self.volume.header.cluster_size as u64);
-            if start_byte >= read_len {
-                continue;
+                let n = (len - off).min(buf.len() as u64) as usize;
+                stream
+                    .read_exact_at(off, &mut buf[..n])
+                    .map_err(Error::Io)?;
+                sink(StreamPiece::Data(&buf[..n]))?;
+                off += n as u64;
             }
-
-            let max_len = read_len - start_byte;
-            let extent_len = (extent
-                .vcn_len
-                .saturating_mul(self.volume.header.cluster_size as u64))
-            .min(max_len);
-
-            // `start_byte + extent_len <= out_len`, which fits in memory.
-            let dst = &mut out[start_byte as usize..(start_byte + extent_len) as usize];
-            read_from_data_runs(&self.volume, &extent.data_runs, 0, dst)?;
+        } else {
+            let runs = join_extent_runs(extents)?;
+            for_each_stream_piece(&self.volume, &runs, len, &mut sink)?;
         }
 
-        Ok(out)
+        if sizes.file > sizes.valid {
+            sink(StreamPiece::Hole(sizes.file - sizes.valid))?;
+        }
+        Ok(())
     }
 
     /// Resolves a path (e.g. `\\Raw\\file.txt`) into an MFT entry id.
@@ -1241,10 +1140,9 @@ impl FileSystem {
         }
 
         // Attribute list extents.
-        for al in self.read_attribute_list(&base_entry)? {
-            if al.attribute_type != MftAttributeType::DATA as u32 || al.name != stream_name {
-                continue;
-            }
+        for al in
+            self.read_attribute_list(&base_entry, MftAttributeType::DATA as u32, stream_name)?
+        {
             // The list also names the attributes held in the base record; those are collected
             // above.
             if al.segment_entry == base_entry_id {
@@ -1293,19 +1191,32 @@ impl FileSystem {
         Ok(extents)
     }
 
-    /// Returns the entries of the `$ATTRIBUTE_LIST` of `base_entry`, or nothing when the record
-    /// has no attribute list.
+    /// Returns the entries of the `$ATTRIBUTE_LIST` of `base_entry` that describe the attribute
+    /// of type `attribute_type` named `name`, or nothing when the record has no attribute list.
     ///
     /// The list is resident in most records. When a file has so many extents that the list no
     /// longer fits in the record, NTFS makes the list itself non-resident; it is then read from
     /// its data runs (which always live in the base record).
-    fn read_attribute_list(&self, base_entry: &mft::MftEntry) -> Result<Vec<AttributeListItem>> {
+    fn read_attribute_list(
+        &self,
+        base_entry: &mft::MftEntry,
+        attribute_type: u32,
+        name: &str,
+    ) -> Result<Vec<AttributeListItem>> {
+        let matching = |list: &AttributeListAttr<'_>| -> Vec<AttributeListItem> {
+            list.entries
+                .iter()
+                .filter(|e| e.attribute_type == attribute_type && e.name == name)
+                .map(AttributeListItem::from)
+                .collect()
+        };
+
         for attr in base_entry
             .iter_attributes_matching(Some(vec![MftAttributeType::AttributeList]))
             .filter_map(std::result::Result::ok)
         {
             if let Some(list) = attr.data.as_attribute_list() {
-                return Ok(list.entries.iter().map(AttributeListItem::from).collect());
+                return Ok(matching(list));
             }
 
             let ResidentialHeader::NonResident(nr) = &attr.header.residential_header else {
@@ -1327,49 +1238,15 @@ impl FileSystem {
                     ),
                 });
             }
-            let mut raw = vec![0u8; nr.file_size as usize];
-            read_from_data_runs(&self.volume, runs, 0, &mut raw)?;
             // Bytes past the valid data length are not part of the list.
-            let valid =
-                usize::try_from(nr.valid_data_length).map_or(raw.len(), |v| v.min(raw.len()));
+            let valid = nr.valid_data_length.min(nr.file_size) as usize;
+            let mut raw = vec![0u8; valid];
+            read_from_data_runs(&self.volume, runs, 0, &mut raw)?;
 
-            let list = AttributeListAttr::from_slice(&raw[..valid])?;
-            return Ok(list.entries.iter().map(AttributeListItem::from).collect());
+            let list = AttributeListAttr::from_slice(&raw)?;
+            return Ok(matching(&list));
         }
         Ok(Vec::new())
-    }
-
-    /// Returns the logical size of the stream described by `extents` (sorted by VCN), after
-    /// checking it against the mapping pairs.
-    ///
-    /// The size is an on-disk field. A non-resident stream cannot be larger than the clusters
-    /// its data runs map (stored or sparse), so a size beyond them is corrupt; without this check
-    /// a reader would treat everything past the runs as an endless hole.
-    fn checked_stream_size(&self, extents: &[DataExtent]) -> Result<u64> {
-        let first = extents.first().ok_or_else(|| Error::InvalidData {
-            message: "stream has no extents".to_string(),
-        })?;
-        let file_size = first.file_size;
-
-        let mapped_clusters = extents
-            .iter()
-            .map(|extent| {
-                extent.data_runs.iter().fold(extent.vcn_first, |end, run| {
-                    end.saturating_add(run.lcn_length)
-                })
-            })
-            .max()
-            .unwrap_or(0);
-        let mapped_bytes = mapped_clusters.saturating_mul(self.volume.header.cluster_size as u64);
-
-        if file_size > mapped_bytes {
-            return Err(Error::InvalidData {
-                message: format!(
-                    "stream size {file_size} is larger than the {mapped_bytes} bytes its data runs map"
-                ),
-            });
-        }
-        Ok(file_size)
     }
 
     /// Opens a compressed `$DATA` stream described by `extents` (sorted by VCN).
@@ -1394,6 +1271,41 @@ impl FileSystem {
             unit_clusters,
         )
     }
+}
+
+/// Largest number of clusters a file can span: NTFS addresses at most 2^32 clusters per volume,
+/// and documents the same limit for one file.
+const MAX_FILE_CLUSTERS: u64 = 1 << 32;
+
+/// The two sizes of a non-resident stream, as its first extent states them.
+#[derive(Debug, Clone, Copy)]
+struct StreamSizes {
+    /// Logical size of the stream.
+    ///
+    /// It is an on-disk field and is not required to fit the mapping pairs. On an intact volume
+    /// the runs cover it. When they don't (a deleted or partly overwritten record whose mapping
+    /// pairs were cut short while the size survived), the part of the stream past the runs is
+    /// treated as a hole: it reads as zeros, so the clusters that are still mapped stay
+    /// readable.
+    file: u64,
+    /// Valid data length, capped at `file`.
+    ///
+    /// NTFS keeps a high-water mark of the bytes that were really written to a non-resident
+    /// stream. A file can be longer than that (it was extended without writing, for example
+    /// with `SetEndOfFile`), and the clusters past the mark then still hold whatever was on the
+    /// disk before. NTFS returns zeros for that range, and so do the readers here.
+    valid: u64,
+}
+
+/// Returns the sizes of the stream described by `extents` (sorted by VCN).
+fn stream_sizes(extents: &[DataExtent]) -> Result<StreamSizes> {
+    let first = extents.first().ok_or_else(|| Error::InvalidData {
+        message: "stream has no extents".to_string(),
+    })?;
+    Ok(StreamSizes {
+        file: first.file_size,
+        valid: first.valid_data_length.min(first.file_size),
+    })
 }
 
 fn is_entry_efs_encrypted(entry: &mft::MftEntry) -> bool {
@@ -1442,26 +1354,33 @@ fn read_efs_attribute_blob(volume: &Volume, entry: &mft::MftEntry) -> Result<Vec
                     message: "expected data runs for $EFS".to_string(),
                 })?
                 .data_runs;
-            let mut buf = alloc_stream_buffer(volume, nr.file_size, "$EFS attribute")?;
+            let mut buf = alloc_stream_buffer(nr.file_size, "$EFS attribute")?;
             read_from_data_runs(volume, &runs, 0, &mut buf)?;
             Ok(buf)
         }
     }
 }
 
+/// Largest stream the in-memory readers ([`FileSystem::read_file_stream`] and its relatives)
+/// load: 1 GiB.
+///
+/// A stream's size is an on-disk field, and nothing on the volume bounds it: a sparse or
+/// compressed file can be far larger than the image it sits in, and so can a corrupt size. The
+/// in-memory readers therefore stop at this fixed size, whatever the image. A larger stream is
+/// read piece by piece through [`FileSystem::open_file_stream_read_at`], hashed with
+/// [`FileSystem::md5_file_stream`] or exported with
+/// [`FileSystem::export_file_default_stream_to_path`].
+pub const MAX_IN_MEMORY_STREAM_BYTES: u64 = 1024 * 1024 * 1024;
+
 /// Allocates a zeroed buffer to read `len` bytes of a stream into memory.
 ///
-/// `len` comes from an on-disk size field, so it is measured against the image first: a stream
-/// that is larger than the whole image (possible for a sparse or compressed stream, and for a
-/// corrupt size) is not loaded into memory. Such a stream can still be read piece by piece
-/// through [`FileSystem::open_file_stream_read_at`], hashed or exported. An allocation the
-/// system refuses is an error, not an abort.
-fn alloc_stream_buffer(volume: &Volume, len: u64, what: &str) -> Result<Vec<u8>> {
-    let image_len = volume.image_len();
-    if len > image_len {
+/// `len` comes from an on-disk size field, so it is held to [`MAX_IN_MEMORY_STREAM_BYTES`]. An
+/// allocation the system refuses is an error, not an abort.
+fn alloc_stream_buffer(len: u64, what: &str) -> Result<Vec<u8>> {
+    if len > MAX_IN_MEMORY_STREAM_BYTES {
         return Err(Error::Unsupported {
             what: format!(
-                "reading a {what} of {len} bytes into memory: it is larger than the image ({image_len} bytes)"
+                "reading a {what} of {len} bytes into memory: the limit is {MAX_IN_MEMORY_STREAM_BYTES} bytes"
             ),
         });
     }
@@ -1656,7 +1575,6 @@ mod path_resolution_tests {
 #[derive(Debug, Clone)]
 struct DataExtent {
     vcn_first: u64,
-    vcn_len: u64,
     file_size: u64,
     /// The valid data length. Like the file size, it only means something in the extent that
     /// starts at VCN 0.
@@ -1664,76 +1582,6 @@ struct DataExtent {
     is_compressed: bool,
     compression_unit_clusters: Option<u64>,
     data_runs: Vec<mft::attribute::data_run::DataRun>,
-}
-
-/// A `ReadAt` view over a non-resident `$DATA` stream represented as multiple extents.
-///
-/// This is used for `$UsnJrnl:$J` to support fragmentation / attribute list scenarios while keeping
-/// the USN journal reader generic over `ReadAt`.
-#[derive(Debug, Clone)]
-struct DataExtentsReadAt {
-    volume: Volume,
-    cluster_size: u64,
-    file_size: u64,
-    extents: Vec<DataExtent>,
-}
-
-impl ReadAt for DataExtentsReadAt {
-    fn len(&self) -> u64 {
-        self.file_size
-    }
-
-    fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
-        use std::io;
-
-        let end = offset
-            .checked_add(buf.len() as u64)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "offset overflow"))?;
-        if end > self.file_size {
-            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
-        }
-
-        buf.fill(0);
-
-        for extent in &self.extents {
-            let extent_start = extent.vcn_first.saturating_mul(self.cluster_size);
-            let extent_end =
-                extent_start.saturating_add(extent.vcn_len.saturating_mul(self.cluster_size));
-
-            let overlap_start = offset.max(extent_start);
-            let overlap_end = end.min(extent_end);
-            if overlap_start >= overlap_end {
-                continue;
-            }
-
-            let dst_off = (overlap_start - offset) as usize;
-            let src_off = overlap_start.saturating_sub(extent_start);
-            let overlap_len = (overlap_end - overlap_start) as usize;
-
-            read_from_data_runs(
-                &self.volume,
-                &extent.data_runs,
-                src_off,
-                &mut buf[dst_off..dst_off + overlap_len],
-            )
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        }
-
-        Ok(())
-    }
-}
-
-/// Returns the valid data length of the stream described by `extents` (sorted by VCN), capped at
-/// its size.
-///
-/// NTFS keeps a high-water mark of the bytes that were really written to a non-resident stream.
-/// A file can be longer than that (it was extended without writing, for example with
-/// `SetEndOfFile`), and the clusters past the mark then still hold whatever was on the disk
-/// before. NTFS returns zeros for that range, and so do the readers here.
-fn valid_data_len(extents: &[DataExtent], file_size: u64) -> u64 {
-    extents
-        .first()
-        .map_or(file_size, |first| first.valid_data_length.min(file_size))
 }
 
 /// Wraps `inner` so that bytes from `valid_len` on read as zeros without touching `inner`.
@@ -1744,7 +1592,7 @@ fn zero_past_valid_data(inner: Arc<dyn ReadAt>, valid_len: u64) -> Arc<dyn ReadA
     Arc::new(ValidDataReadAt { inner, valid_len })
 }
 
-/// A [`ReadAt`] view that applies a stream's valid data length, see [`valid_data_len`].
+/// A [`ReadAt`] view that applies a stream's valid data length, see [`StreamSizes::valid`].
 struct ValidDataReadAt {
     inner: Arc<dyn ReadAt>,
     valid_len: u64,
@@ -1878,7 +1726,6 @@ impl DataExtent {
     ) -> Result<Self> {
         let file_size = nr.file_size;
         let vcn_first = nr.vnc_first;
-        let vcn_len = nr.vnc_last.saturating_sub(nr.vnc_first).saturating_add(1);
 
         let is_compressed = attr
             .header
@@ -1899,7 +1746,6 @@ impl DataExtent {
 
         Ok(Self {
             vcn_first,
-            vcn_len,
             file_size,
             valid_data_length: nr.valid_data_length,
             is_compressed,
@@ -1912,11 +1758,9 @@ impl DataExtent {
 /// Upper bound for a non-resident `$ATTRIBUTE_LIST`. NTFS itself limits the list to 256 KiB.
 const MAX_ATTRIBUTE_LIST_SIZE: u64 = 1024 * 1024;
 
-/// One `$ATTRIBUTE_LIST` entry, detached from the buffer it was parsed from.
+/// Where one `$ATTRIBUTE_LIST` entry points, detached from the buffer it was parsed from.
 #[derive(Debug, Clone)]
 struct AttributeListItem {
-    attribute_type: u32,
-    name: String,
     lowest_vcn: u64,
     /// MFT entry number of the record that holds the attribute.
     segment_entry: u64,
@@ -1927,8 +1771,6 @@ struct AttributeListItem {
 impl From<&AttributeListEntry<'_>> for AttributeListItem {
     fn from(entry: &AttributeListEntry<'_>) -> Self {
         Self {
-            attribute_type: entry.attribute_type,
-            name: entry.name.to_string(),
             lowest_vcn: entry.lowest_vcn,
             segment_entry: entry.segment_reference.entry,
             instance: entry.reserved,

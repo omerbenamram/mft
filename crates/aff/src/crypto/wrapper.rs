@@ -1,12 +1,11 @@
 use crate::backends::AffOpenOptions;
 use crate::backends::backend::Backend;
-use crate::backends::page::{copy_page_bytes, decode_compressed_page};
+use crate::backends::page::{PageCache, copy_page_bytes, decode_compressed_page};
 use crate::format;
 use crate::format::AF_AFFKEY;
 use crate::{ContainerKind, Segment};
 use crate::{Error, Result};
 use forensic_image::ReadAt;
-use lru::LruCache;
 use openssl::hash::{MessageDigest, hash};
 use openssl::pkey::PKey;
 use openssl::rsa::Rsa;
@@ -14,7 +13,7 @@ use openssl::symm::{Cipher, Crypter, Mode};
 use std::io;
 use std::num::NonZeroUsize;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub(crate) fn wrap_backend(
     inner: Arc<dyn Backend>,
@@ -37,10 +36,8 @@ pub(crate) fn wrap_backend(
     }))
 }
 
-fn new_page_cache(pages: usize) -> Mutex<LruCache<u64, Arc<Vec<u8>>>> {
-    Mutex::new(LruCache::new(
-        NonZeroUsize::new(pages).unwrap_or(NonZeroUsize::MIN),
-    ))
+fn new_page_cache(pages: usize) -> PageCache {
+    PageCache::new(NonZeroUsize::new(pages).unwrap_or(NonZeroUsize::MIN))
 }
 
 #[derive(Debug, Clone)]
@@ -244,7 +241,7 @@ struct CryptoBackend {
     state: CryptoState,
     auto_decrypt: bool,
     /// Decoded pages, each holding only the bytes its segment decodes to.
-    cache: Mutex<LruCache<u64, Arc<Vec<u8>>>>,
+    cache: PageCache,
 }
 
 impl std::fmt::Debug for CryptoBackend {
@@ -279,8 +276,11 @@ impl ReadAt for CryptoBackend {
             let within = (cur % page_size as u64) as usize;
             let take = remaining.min(page_size - within);
 
-            let page = self.read_page(page_index)?;
-            copy_page_bytes(&page, within, &mut buf[out_pos..out_pos + take]);
+            let dst = &mut buf[out_pos..out_pos + take];
+            match self.read_page(page_index)? {
+                Some(page) => copy_page_bytes(&page, within, dst),
+                None => dst.fill(0),
+            }
 
             out_pos += take;
             remaining -= take;
@@ -364,27 +364,21 @@ impl Backend for CryptoBackend {
 
 impl CryptoBackend {
     /// Returns the decoded bytes of page `page_index`: what its (possibly decrypted) segment
-    /// holds, at most one page. The rest of the page, or all of a page that is not stored, is
-    /// zeros.
+    /// holds, at most one page; the rest of the page is zeros. Returns `None` for a page the
+    /// container does not store, which is all zeros.
     ///
     /// Decoded pages are cached and shared, so a run of small reads decodes a page once and
     /// never copies it as a whole.
-    fn read_page(&self, page_index: u64) -> io::Result<Arc<Vec<u8>>> {
-        if let Some(hit) = self.cache.lock().expect("poisoned").get(&page_index) {
-            return Ok(Arc::clone(hit));
+    fn read_page(&self, page_index: u64) -> io::Result<Option<Arc<Vec<u8>>>> {
+        if let Some(hit) = self.cache.get(page_index) {
+            return Ok(Some(hit));
         }
 
         // A page that is not stored costs nothing to "decode"; keep it out of the cache so it
         // does not push out a page that does.
-        let Some(page) = self.decode_page(page_index)? else {
-            return Ok(Arc::new(Vec::new()));
-        };
-        let page = Arc::new(page);
-        self.cache
-            .lock()
-            .expect("poisoned")
-            .put(page_index, Arc::clone(&page));
-        Ok(page)
+        Ok(self
+            .decode_page(page_index)?
+            .map(|page| self.cache.insert(page_index, page)))
     }
 
     /// Decodes page `page_index`, or returns `None` when the container does not store it.

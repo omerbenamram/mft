@@ -2,76 +2,14 @@
 //! being written. The clusters past that mark hold whatever was on the disk before, and NTFS
 //! returns zeros for them. So must every reader here.
 
-use md5::{Digest as _, Md5};
-
 mod common;
 
 use common::synth::{
-    ATTR_DATA, CLUSTER_SIZE, FLAG_COMPRESSED, NonResident, Record, Run, SynthVolume, lznt1_compress,
+    ATTR_DATA, CLUSTER_SIZE, FLAG_COMPRESSED, NonResident, Record, Run, SynthVolume,
+    assert_all_readers_return, lznt1_compress, text,
 };
 
 const ENTRY: u64 = 20;
-
-fn text(len: usize, tag: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(len + 64);
-    let mut line = 0usize;
-    while out.len() < len {
-        out.extend_from_slice(
-            format!("{tag} line {line:06} at byte {:08}\r\n", out.len()).as_bytes(),
-        );
-        line += 1;
-    }
-    out.truncate(len);
-    out
-}
-
-/// Checks every way of reading the unnamed stream of `ENTRY` against `expected`.
-fn assert_all_readers_return(fs: &ntfs::ntfs::FileSystem, expected: &[u8], what: &str) {
-    let bytes = fs.read_file_default_stream(ENTRY).unwrap();
-    assert!(
-        bytes == expected,
-        "{what}: read_file_default_stream differs"
-    );
-
-    assert_eq!(
-        fs.md5_file_stream(ENTRY, "").unwrap(),
-        hex::encode(Md5::digest(expected)),
-        "{what}: md5_file_stream"
-    );
-
-    let stream = fs.open_file_default_stream_read_at(ENTRY).unwrap();
-    assert_eq!(stream.len(), expected.len() as u64, "{what}: stream length");
-    let mut all = vec![0xAAu8; expected.len()];
-    stream.read_exact_at(0, &mut all).unwrap();
-    assert!(all == expected, "{what}: read_at (whole stream) differs");
-    // Small reads at odd offsets, including ones that straddle the valid data length.
-    let mut offset = 0usize;
-    while offset < expected.len() {
-        let n = 333.min(expected.len() - offset);
-        let mut buf = vec![0xAAu8; n];
-        stream.read_exact_at(offset as u64, &mut buf).unwrap();
-        assert!(
-            buf == expected[offset..offset + n],
-            "{what}: read_at at {offset} differs"
-        );
-        offset += n;
-    }
-    let mut past = [0u8; 2];
-    assert!(
-        stream
-            .read_exact_at(expected.len() as u64 - 1, &mut past)
-            .is_err(),
-        "{what}: a read past the end must fail"
-    );
-
-    let dir = tempfile::tempdir().unwrap();
-    let out = dir.path().join("out.bin");
-    fs.export_file_default_stream_to_path(ENTRY, &out).unwrap();
-    assert!(
-        std::fs::read(&out).unwrap() == expected,
-        "{what}: export differs"
-    );
-}
 
 #[test]
 fn test_uncompressed_stream_reads_zeros_past_valid_data_length() {
@@ -120,7 +58,7 @@ fn test_uncompressed_stream_reads_zeros_past_valid_data_length() {
 
         let mut expected = written[..kept].to_vec();
         expected.resize(FILE_SIZE, 0);
-        assert_all_readers_return(&fs, &expected, &format!("valid_len={valid_len}"));
+        assert_all_readers_return(&fs, ENTRY, &expected, &format!("valid_len={valid_len}"));
     }
 }
 
@@ -192,7 +130,7 @@ fn test_multi_extent_stream_reads_zeros_past_valid_data_length() {
 
     let mut expected = written[..VALID_LEN].to_vec();
     expected.resize(FILE_SIZE, 0);
-    assert_all_readers_return(&fs, &expected, "two extents");
+    assert_all_readers_return(&fs, ENTRY, &expected, "two extents");
 }
 
 #[test]
@@ -241,6 +179,11 @@ fn test_compressed_stream_reads_zeros_past_valid_data_length() {
 
         let mut expected = content[..valid_len].to_vec();
         expected.resize(FILE_SIZE, 0);
-        assert_all_readers_return(&fs, &expected, &format!("compressed valid_len={valid_len}"));
+        assert_all_readers_return(
+            &fs,
+            ENTRY,
+            &expected,
+            &format!("compressed valid_len={valid_len}"),
+        );
     }
 }

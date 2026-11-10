@@ -6,21 +6,9 @@ mod common;
 
 use common::synth::{
     ATTR_ATTRIBUTE_LIST, ATTR_DATA, CLUSTER_SIZE, FLAG_COMPRESSED, NonResident, Record, Run,
-    SynthVolume, attribute_list_entry, encode_runs, lznt1_compress, resident_attr,
+    SynthVolume, attribute_list_entry, encode_runs, lznt1_compress, pad_to_cluster, resident_attr,
+    text,
 };
-
-fn text(len: usize, tag: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(len + 64);
-    let mut line = 0usize;
-    while out.len() < len {
-        out.extend_from_slice(
-            format!("{tag} line {line:06} at byte {:08}\r\n", out.len()).as_bytes(),
-        );
-        line += 1;
-    }
-    out.truncate(len);
-    out
-}
 
 fn noise(len: usize) -> Vec<u8> {
     let mut state = 0x2545_f491_4f6c_dd1du64;
@@ -32,12 +20,6 @@ fn noise(len: usize) -> Vec<u8> {
             (state >> 24) as u8
         })
         .collect()
-}
-
-fn pad_to_cluster(mut bytes: Vec<u8>) -> Vec<u8> {
-    let padded = bytes.len().div_ceil(CLUSTER_SIZE) * CLUSTER_SIZE;
-    bytes.resize(padded, 0);
-    bytes
 }
 
 /// The layout of entry 48 of `ntfs1-gen2.E01`: the base record holds nothing but a non-resident
