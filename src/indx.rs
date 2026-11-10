@@ -159,7 +159,7 @@ impl IndxRecord {
     /// Like [`IndxRecord::entries`], but on a damaged entry gives the entries before it along
     /// with the error, rather than only the error.
     pub fn entries_until_error(&self) -> (Vec<IndxEntry<'_>>, Option<Error>) {
-        let (entries, mut errors) = self.walk_entries(false);
+        let (entries, mut errors, _) = self.walk_entries(false);
         (entries, errors.pop())
     }
 
@@ -168,44 +168,26 @@ impl IndxRecord {
     /// walk carries on at the next 8-byte boundary where a whole entry with a name that looks
     /// real starts, so one damaged entry doesn't hide the entries after it.
     pub fn entries_and_errors(&self) -> (Vec<IndxEntry<'_>>, Vec<Error>) {
-        self.walk_entries(true)
+        let (entries, errors, _) = self.walk_entries(true);
+        (entries, errors)
     }
 
     /// Walks the node's entries up to its end entry, stopping at the first damaged one or, with
-    /// `past_errors`, carrying on at the next entry found after it.
-    fn walk_entries(&self, past_errors: bool) -> (Vec<IndxEntry<'_>>, Vec<Error>) {
+    /// `past_errors`, carrying on at the next entry found after it. Also gives where the end
+    /// entry is, when the walk reached it.
+    fn walk_entries(&self, past_errors: bool) -> (Vec<IndxEntry<'_>>, Vec<Error>, Option<usize>) {
         let mut entries = Vec::new();
         let mut errors = Vec::new();
         let node = &self.data[..self.entries_end];
         let mut at = self.entries_start;
         while at + ENTRY_HEADER_SIZE <= self.entries_end {
-            let length = usize::from(read_u16(&self.data, at + 8).expect("in the node"));
-            let flags = IndexEntryFlags::from_bits_retain(u32::from(
-                read_u16(&self.data, at + 12).expect("in the node"),
-            ));
-            if flags.contains(IndexEntryFlags::INDEX_ENTRY_END) {
-                break;
+            if self.is_end_entry(at) {
+                return (entries, errors, Some(at));
             }
-            let file_name = if length < ENTRY_HEADER_SIZE + FILE_NAME_HEADER_SIZE
-                || at + length > self.entries_end
-            {
-                Err(format!("entry at {at} has length {length}"))
-            } else {
-                FileNameAttr::from_slice(&self.data[at + ENTRY_HEADER_SIZE..at + length])
-                    .map_err(|e| format!("entry at {at}: {e}"))
-            };
-            match file_name {
-                Ok(file_name) => {
-                    entries.push(IndxEntry {
-                        offset: self.offset + at as u64,
-                        from_slack: false,
-                        mft_reference: Some(MftReference::from(
-                            read_u64(&self.data, at).expect("in the node"),
-                        )),
-                        flags: Some(flags),
-                        file_name,
-                    });
-                    at += length;
+            match self.live_entry_at(at) {
+                Ok((entry, next)) => {
+                    entries.push(entry);
+                    at = next;
                 }
                 Err(detail) => {
                     errors.push(Error::InvalidIndexRecord {
@@ -215,9 +197,24 @@ impl IndxRecord {
                     if !past_errors {
                         break;
                     }
-                    let next = (at.next_multiple_of(8) + 8..self.entries_end)
-                        .step_by(8)
-                        .find(|&next| whole_entry_at(node, next, true).is_some());
+                    // The damaged entry's length may still be right: then the next entry, or
+                    // the end entry, is where it says. Otherwise the next entry is looked for,
+                    // and only one with a name that looks real is taken for one.
+                    let length = usize::from(read_u16(node, at + 8).expect("in the node"));
+                    let by_length = Some(at + length).filter(|&next| {
+                        length >= ENTRY_HEADER_SIZE
+                            && length.is_multiple_of(8)
+                            && next + ENTRY_HEADER_SIZE <= self.entries_end
+                            && (self.is_end_entry(next) || self.live_entry_at(next).is_ok())
+                    });
+                    let next = by_length.or_else(|| {
+                        ((at + 1).next_multiple_of(8)..self.entries_end)
+                            .step_by(8)
+                            .find(|&next| {
+                                whole_entry_at(node, next)
+                                    .is_some_and(|(_, _, length, _)| next + length <= node.len())
+                            })
+                    });
                     match next {
                         Some(next) => at = next,
                         None => break,
@@ -225,7 +222,44 @@ impl IndxRecord {
                 }
             }
         }
-        (entries, errors)
+        (entries, errors, None)
+    }
+
+    /// Whether the entry at `at` of the node is its end entry: the end flag alone can be damage,
+    /// so the entry must also have no key and be as long as an end entry is, with or without a
+    /// child node.
+    fn is_end_entry(&self, at: usize) -> bool {
+        let field = |offset| read_u16(&self.data, at + offset).map(u32::from);
+        let (Some(length), Some(key_length), Some(flags)) = (field(8), field(10), field(12)) else {
+            return false;
+        };
+        let has_child = flags & IndexEntryFlags::INDEX_ENTRY_NODE.bits() != 0;
+        flags & IndexEntryFlags::INDEX_ENTRY_END.bits() != 0
+            && key_length == 0
+            && length as usize == ENTRY_HEADER_SIZE + if has_child { 8 } else { 0 }
+            && at + length as usize <= self.entries_end
+    }
+
+    /// The entry in use at `at` of the node, and where the entry after it starts.
+    fn live_entry_at(&self, at: usize) -> std::result::Result<(IndxEntry<'_>, usize), String> {
+        let field = |offset| read_u16(&self.data, at + offset).expect("in the node");
+        let length = usize::from(field(8));
+        if length < ENTRY_HEADER_SIZE + FILE_NAME_HEADER_SIZE || at + length > self.entries_end {
+            return Err(format!("entry at {at} has length {length}"));
+        }
+        let file_name = FileNameAttr::from_slice(&self.data[at + ENTRY_HEADER_SIZE..at + length])
+            .map_err(|e| format!("entry at {at}: {e}"))?;
+        let entry = IndxEntry {
+            offset: self.offset + at as u64,
+            from_slack: false,
+            mft_reference: Some(MftReference::from(
+                read_u64(&self.data, at).expect("in the node"),
+            )),
+            flags: Some(IndexEntryFlags::from_bits_retain(u32::from(field(12)))),
+            file_name,
+        };
+        // Entries start on 8-byte boundaries, whatever a damaged length says.
+        Ok((entry, (at + length).next_multiple_of(8)))
     }
 
     /// The entries found in the node's slack space: the bytes after its end entry, up to the end
@@ -252,26 +286,19 @@ impl IndxRecord {
         entries
     }
 
-    /// Where the node's end entry ends: the start of its slack space.
+    /// Where the node's end entry ends: the start of its slack space. The end entry is the one
+    /// the walk over the entries in use ends at, so that no entry is both in use and in slack.
     fn end_entry_end(&self) -> Option<usize> {
-        let mut at = self.entries_start;
-        while at + ENTRY_HEADER_SIZE <= self.entries_end {
-            let length = usize::from(read_u16(&self.data, at + 8)?);
-            let flags = read_u16(&self.data, at + 12)?;
-            if u32::from(flags) & IndexEntryFlags::INDEX_ENTRY_END.bits() != 0 {
-                return Some(at + length.max(ENTRY_HEADER_SIZE));
-            }
-            if length == 0 {
-                return None;
-            }
-            at += length;
-        }
-        None
+        let (_, _, end_entry) = self.walk_entries(true);
+        let length = usize::from(read_u16(&self.data, end_entry? + 8)?);
+        Some(end_entry? + length)
     }
 
     fn slack_entry_at<'a>(&'a self, slack: &'a [u8], at: usize) -> Option<(IndxEntry<'a>, usize)> {
         // A whole entry: its header, then its `$FILE_NAME`.
-        if let Some((reference, flags, length, file_name)) = whole_entry_at(slack, at, false) {
+        if let Some((reference, flags, length, file_name)) =
+            whole_entry_at(slack, at).filter(|(reference, ..)| reference.entry != 0)
+        {
             return Some((
                 IndxEntry {
                     offset: self.offset + at as u64,
@@ -300,31 +327,28 @@ impl IndxRecord {
 }
 
 /// The index entry at `at` of `buf`, if a whole one that looks real starts there: its file
-/// reference, flags, length and `$FILE_NAME`. An entry in use (`live`) may name `$MFT`, which is
-/// entry 0, and must end in `buf`. One left in slack space mustn't name it, since zeros are what
-/// most overwritten headers hold, and may be cut off by the end of `buf`.
-fn whole_entry_at(
-    buf: &[u8],
-    at: usize,
-    live: bool,
-) -> Option<(MftReference, u16, usize, FileNameAttr<'_>)> {
-    let file_name = buf
-        .get(at + ENTRY_HEADER_SIZE..)
-        .and_then(plausible_file_name)?;
+/// reference, flags, length and `$FILE_NAME`. The entry may be longer than what is left of
+/// `buf`, and may name `$MFT`, which is entry 0: zeros are also what most overwritten headers
+/// hold.
+fn whole_entry_at(buf: &[u8], at: usize) -> Option<(MftReference, u16, usize, FileNameAttr<'_>)> {
+    // The header's numbers first: they cost less to check than the name.
+    let reference = MftReference::from(read_u64(buf, at)?);
     let length = usize::from(read_u16(buf, at + 8)?);
     let file_name_length = usize::from(read_u16(buf, at + 10)?);
     let flags = read_u16(buf, at + 12)?;
-    let needed = FILE_NAME_HEADER_SIZE + 2 * usize::from(file_name.name_length);
-    let reference = MftReference::from(read_u64(buf, at)?);
-    (file_name_length == needed
-        && length >= ENTRY_HEADER_SIZE + needed
-        && length.is_multiple_of(8)
-        && flags & !0x3 == 0
-        && (live || reference.entry != 0)
-        && (!live || at + length <= buf.len())
-        && reference.entry < 1 << 32
-        && reference.sequence != 0)
-        .then_some((reference, flags, length, file_name))
+    let name_length = usize::from(*buf.get(at + ENTRY_HEADER_SIZE + 0x40)?);
+    let needed = FILE_NAME_HEADER_SIZE + 2 * name_length;
+    if file_name_length != needed
+        || length < ENTRY_HEADER_SIZE + needed
+        || !length.is_multiple_of(8)
+        || flags & !0x3 != 0
+        || reference.entry >= 1 << 32
+        || reference.sequence == 0
+    {
+        return None;
+    }
+    let file_name = plausible_file_name(&buf[at + ENTRY_HEADER_SIZE..])?;
+    Some((reference, flags, length, file_name))
 }
 
 /// Parses a `$FILE_NAME` at the start of `buf` if it looks like a real one.
@@ -659,6 +683,95 @@ mod tests {
         let (entries, errors) = record.entries_and_errors();
         assert_eq!(names_of(&entries), names);
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn the_end_flag_alone_does_not_end_the_entries() {
+        let live: Vec<_> = (0x40..)
+            .zip(["a.txt", "b.txt", "c.txt"])
+            .map(|(entry_id, name)| entry(0x0001_0000_0000_0000 | entry_id, name, 0))
+            .collect();
+        let names = |entries: &[IndxEntry]| -> Vec<String> {
+            entries
+                .iter()
+                .map(|e| e.file_name.name.to_utf8_string())
+                .collect()
+        };
+        let end = IndexEntryFlags::INDEX_ENTRY_END.bits() as u8;
+
+        // An end entry has no key, so an entry with the flag and a name is still an entry.
+        let mut flagged = live.clone();
+        flagged[1][12] |= end;
+        let flagged = IndxRecord::from_buffer(record(&flagged, &[]), 0).unwrap();
+        let (entries, errors) = flagged.entries_and_errors();
+        assert_eq!(names(&entries), ["a.txt", "b.txt", "c.txt"]);
+        assert!(errors.is_empty());
+        let flags = entries[1].flags.as_ref().unwrap();
+        assert!(flags.contains(IndexEntryFlags::INDEX_ENTRY_END));
+        // The entries after it aren't taken for slack.
+        assert!(flagged.slack_entries().is_empty());
+
+        // With a damaged name too, it is a damaged entry, and the walk goes on after it.
+        let mut damaged = live.clone();
+        damaged[1][12] |= end;
+        damaged[1][ENTRY_HEADER_SIZE + 0x40] = 200;
+        damaged[1][8..10].fill(0);
+        let damaged = IndxRecord::from_buffer(record(&damaged, &[]), 0).unwrap();
+        let (entries, errors) = damaged.entries_and_errors();
+        assert_eq!(names(&entries), ["a.txt", "c.txt"]);
+        assert_eq!(errors.len(), 1);
+        assert!(damaged.entries().is_err());
+        assert!(damaged.slack_entries().is_empty());
+    }
+
+    #[test]
+    fn an_entry_after_a_damaged_one_needs_no_plausible_times_when_the_length_holds() {
+        let mut live: Vec<_> = (0x40..)
+            .zip(["a.txt", "b.txt", "c.txt", "d.txt"])
+            .map(|(entry_id, name)| entry(0x0001_0000_0000_0000 | entry_id, name, 0))
+            .collect();
+        // The second entry's name is longer than the entry, but its length is intact. The
+        // third has the times of 1601, which a name carved from slack may not have.
+        live[1][ENTRY_HEADER_SIZE + 0x40] = 200;
+        live[2][ENTRY_HEADER_SIZE + 8..ENTRY_HEADER_SIZE + 40].fill(0);
+        let names = |record: &IndxRecord| -> Vec<String> {
+            let (entries, errors) = record.entries_and_errors();
+            assert_eq!(errors.len(), 1);
+            entries
+                .iter()
+                .map(|e| e.file_name.name.to_utf8_string())
+                .collect()
+        };
+        let intact_length = IndxRecord::from_buffer(record(&live, &[]), 0).unwrap();
+        assert_eq!(names(&intact_length), ["a.txt", "c.txt", "d.txt"]);
+
+        // With the length damaged too, only an entry that looks real is taken for the next.
+        live[1][8..10].fill(0);
+        let damaged_length = IndxRecord::from_buffer(record(&live, &[]), 0).unwrap();
+        assert_eq!(names(&damaged_length), ["a.txt", "d.txt"]);
+    }
+
+    #[test]
+    fn a_length_that_is_not_a_multiple_of_8_is_rounded_up() {
+        let mut live: Vec<_> = (0x40..)
+            .zip(["a.txt", "b.txt", "c.txt"])
+            .map(|(entry_id, name)| entry(0x0001_0000_0000_0000 | entry_id, name, 0))
+            .collect();
+        // 0x60 became 0x5C, which still holds the name. The next entry is where it was.
+        assert_eq!(live[1][8], 0x60);
+        live[1][8] = 0x5C;
+        let rounded = IndxRecord::from_buffer(record(&live, &[]), 0).unwrap();
+        assert_eq!(rounded.entries().unwrap().len(), 3);
+
+        // A walk that is off the 8-byte boundaries, 4 bytes before the second entry: the
+        // search for the next entry starts at the boundary right after, where that entry is.
+        live[1][8] = 0x60;
+        let mut unaligned = IndxRecord::from_buffer(record(&live, &[]), 0).unwrap();
+        unaligned.entries_start = 0x40 + 0x60 - 4;
+        let (entries, errors) = unaligned.entries_and_errors();
+        assert_eq!(errors.len(), 1);
+        let offsets: Vec<_> = entries.iter().map(|e| e.offset).collect();
+        assert_eq!(offsets, [0x40 + 0x60, 0x40 + 0xC0]);
     }
 
     #[test]
