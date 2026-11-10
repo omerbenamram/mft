@@ -19,3 +19,9 @@ ewfacquire -u -q -f <format> -c <compression> -b 16 -S 1048576 -t libewf_<format
 |------|------|------|
 | `libewf_encase6_fast.E01.bin` | `encase6` | `fast` |
 | `libewf_encase6_none.E01.bin` | `encase6` | `none` |
+| `libewf_smart_fast.s01.bin` | `smart` | `fast` |
+| `libewf_smart_none.s01.bin` | `smart` | `none` |
+| `libewf_ewf_fast.e01.bin` | `ewf` | `fast` |
+
+The `smart` and `ewf` images store the chunk data inside the `table` section, right after the
+table entries, with no checksum after the entries.

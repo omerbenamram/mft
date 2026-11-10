@@ -87,3 +87,70 @@ fn test_libewf_encase6_uncompressed_short_last_chunk_reads_media() {
         "image.E01",
     );
 }
+
+#[test]
+fn test_libewf_smart_compressed_table_without_entries_checksum_reads_media() {
+    assert_reads_fixture_media(
+        include_bytes!("fixtures/libewf_smart_fast.s01.bin"),
+        "image.s01",
+    );
+}
+
+#[test]
+fn test_libewf_smart_uncompressed_table_without_entries_checksum_reads_media() {
+    assert_reads_fixture_media(
+        include_bytes!("fixtures/libewf_smart_none.s01.bin"),
+        "image.s01",
+    );
+}
+
+#[test]
+fn test_libewf_original_ewf_table_without_entries_checksum_reads_media() {
+    assert_reads_fixture_media(
+        include_bytes!("fixtures/libewf_ewf_fast.e01.bin"),
+        "image.e01",
+    );
+}
+
+/// The entries checksum of an EnCase-style table is still checked: flipping a bit in it, or in the
+/// entries it covers, must fail the open. (The reader takes the chunk offsets from `table2` when
+/// an image has one, so that is the table to damage.)
+#[test]
+fn test_encase_table_entries_checksum_is_still_checked() {
+    let good: &[u8] = include_bytes!("fixtures/libewf_encase6_fast.E01.bin");
+
+    // Walk the section descriptors (type[16], next[8], size[8], padding[40], checksum[4]) to the
+    // `table2` section.
+    let mut tables = Vec::new();
+    let mut offset = 13usize;
+    loop {
+        let section_type = &good[offset..offset + 16];
+        let next = u64::from_le_bytes(good[offset + 16..offset + 24].try_into().unwrap()) as usize;
+        let size = u64::from_le_bytes(good[offset + 24..offset + 32].try_into().unwrap()) as usize;
+        if section_type.starts_with(b"table2\0") {
+            tables.push((offset, size));
+        }
+        if next == offset || next == 0 {
+            break;
+        }
+        offset = next;
+    }
+    assert_eq!(tables.len(), 1, "expected one `table2`");
+
+    for (start, size) in tables {
+        // The footer is the last 4 bytes of the section; the last entry sits just before it.
+        for corrupt_at in [start + size - 1, start + size - 5] {
+            let mut bad = good.to_vec();
+            bad[corrupt_at] ^= 0x01;
+
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("image.E01");
+            std::fs::write(&path, &bad).unwrap();
+            let err = EwfReader::open(&path).unwrap_err();
+            assert!(
+                err.to_string().contains("table entries checksum mismatch"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+}
