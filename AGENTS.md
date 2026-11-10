@@ -23,7 +23,7 @@ A deliberate blocker is different. Examples are a safety check that refuses a co
 Two kinds of action wait for Omer. Nothing else in this repository needs his approval.
 
 1. **Publishing a release.** A version published to crates.io or PyPI cannot be replaced or removed, only yanked. Open a `chore(release): X.Y.Z` pull request only when Omer asks for a release. Merge it only when he tells you to, because that merge tags the commit and publishes it. When he has told you, that is the go-ahead: merge it without asking again. `RELEASING.md` has the steps.
-2. **Speaking to other people on GitHub.** This covers closing an issue, commenting on an issue, and commenting on, merging or closing a pull request that you did not open. These speak to Omer's users in his name. Write the draft, show it to Omer, and post it when he agrees.
+2. **Speaking to other people on GitHub.** This covers closing an issue, commenting on an issue, and commenting on, merging or closing a pull request that you did not open. These speak to Omer's users in his name. Write the draft, show it to Omer, and post it when he agrees. A closing keyword in a pull request, such as `Fixes #12`, closes the issue at merge. For an issue that someone else opened, write `Refs #12` and draft the closing comment for Omer.
 
 These steps need no approval, so take them without asking:
 
@@ -32,7 +32,7 @@ These steps need no approval, so take them without asking:
 - Merge `master` into the branch of your pull request.
 - Retry a build, a test run, a download, a fetch or a push that failed.
 - Reply to a review comment on your own pull request and resolve its thread. This includes the comments of Cursor Bugbot.
-- Merge your own pull request when it has passed every step in "How a change ships".
+- Merge your own pull request when it has passed every step in "How a change ships". A release pull request is the exception: see rule 1.
 - Edit these instructions.
 
 ## How a change ships
@@ -44,13 +44,15 @@ Each fix or feature gets its own pull request, so that it can be reviewed, descr
 3. **Review on Fable.** From the orchestrating session, run `/code-review` at medium effort or higher, then `/simplify`, and apply what they find. Both must run on Claude Fable: if the session is on another model, switch it to Fable first. Your own reading of the diff does not replace either review, and low effort is not enough for `/code-review`.
 4. **Bugbot.** If Cursor Bugbot commented on the pull request, fix every comment and resolve its thread. If Bugbot could not run, for example because of its usage limit, carry on: `/code-review` is the main review.
 5. **CI.** Every check is green. Fix the cause of a red check. Do not skip, disable or loosen a test to get there.
-6. **Merge.** Merge the pull request yourself. Do not wait for Omer.
+6. **Merge.** Merge the pull request yourself. Do not wait for Omer. The exception is a `chore(release)` pull request, which merges only when he tells you to.
 
 Omer set the models in steps 2 and 3: the reviews on Fable, the building on Opus. The two reviews stand in for his own reading of the diff, which is why neither one is optional.
 
 The pull request description is what Omer reads, and he reads it instead of the diff. List every change in behaviour, including the small ones and the ones that nobody asked for. Name the reviews that ran, with the effort level and the model, and say what each one found. If a review did not run, say so and leave the pull request open.
 
-Do not force-push. Cloud sessions refuse it, even `--force-with-lease` on your own branch. Correct a pushed commit with a new commit, and bring a branch up to date by merging `master` into it.
+A cloud session cannot re-run or dispatch a GitHub Actions job: the API answers 403. When a job failed for a reason outside the change, such as a runner or a network fault, check whether `master` has moved since. If it has, merging it into the branch starts a new run. If it has not, tell Omer which job needs a re-run, and carry on with other work while you wait.
+
+Do not force-push unless a person in the session asks you to. Cloud sessions refuse it in any case, even `--force-with-lease` on your own branch. Correct a pushed commit with a new commit, and bring a branch up to date by merging `master` into it.
 
 When one change depends on another, stack the pull requests (`gh stack` does this where `gh` is available). GitHub does not move a stacked pull request to `master` when the one under it merges, because merged branches are kept. So after each merge, change the base of every pull request that was stacked on it to `master`. Then check that the merged commits reached `master`: `git merge-base --is-ancestor <head> origin/master`. A pull request that merged into a branch whose own pull request had already merged is stranded. Merge that branch into the next open pull request of the stack, or open a new pull request for it.
 
@@ -58,7 +60,7 @@ When one change depends on another, stack the pull requests (`gh stack` does thi
 
 A subagent starts with none of your context. It knows only what you put in its brief, and you see only the report that it sends back. Each one also spends tokens as a full session does, and every session on the account shares one usage limit. Start a subagent when the work repays that cost.
 
-- Use `builder` (`.claude/agents/builder.md`, Claude Opus) to implement a change: one builder for a pull request, or one for a stack of dependent pull requests. Run builders in parallel only when their changes do not touch the same files.
+- Use `builder` (`.claude/agents/builder.md`, Claude Opus) to implement a change: one builder for a pull request, or one for a stack of dependent pull requests. Run builders in parallel only for changes that do not depend on each other, and give each one its own git worktree (`isolation: worktree` on the Agent call). Two builders in one checkout switch branches under each other.
 - Make a change of a few lines yourself when you already know what it is.
 - Do not start a subagent to review a change. `/code-review` and `/simplify` do that from your own session.
 - Do not start a subagent for a lookup that takes you a few tool calls.
@@ -108,10 +110,6 @@ A `macos-latest` job sometimes never gets a runner: it has no steps and no logs.
 ### Releases
 
 `RELEASING.md` has the steps. `pymft-rs` builds on the published crate, so it releases after `mft` is on crates.io.
-
-### Cloud sessions
-
-A cloud session cannot re-run or dispatch a GitHub Actions job: the API answers 403. When a job needs a re-run and not a fix, say so to Omer.
 
 ## Editing these instructions
 
