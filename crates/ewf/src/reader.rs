@@ -30,7 +30,7 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 // --- EWF signatures (file header; first 8 bytes) ---
 const ADCRYPT_SIGNATURE: [u8; 8] = *b"ADCRYPT\0";
@@ -122,7 +122,7 @@ struct Ewf1Reader {
     segments: Vec<Ewf1Segment>,
 
     /// In-memory LRU cache of decoded chunks (keyed by global chunk index).
-    cache: Mutex<LruCache<u64, Vec<u8>>>,
+    cache: Mutex<LruCache<u64, Chunk>>,
 }
 
 #[derive(Debug)]
@@ -146,7 +146,7 @@ struct Ewf2Reader {
     groups: Vec<Ewf2ChunkGroup>,
 
     /// In-memory LRU cache of decoded chunks (keyed by global chunk index).
-    cache: Mutex<LruCache<u64, Vec<u8>>>,
+    cache: Mutex<LruCache<u64, Chunk>>,
 }
 
 #[derive(Debug)]
@@ -821,7 +821,7 @@ impl Ewf2Reader {
 
             let chunk = self.read_chunk(chunk_index)?;
             let take = remaining.min(self.chunk_size - within);
-            buf[out_pos..out_pos + take].copy_from_slice(&chunk[within..within + take]);
+            chunk.copy_to(within, &mut buf[out_pos..out_pos + take]);
 
             out_pos += take;
             remaining -= take;
@@ -831,7 +831,7 @@ impl Ewf2Reader {
         Ok(())
     }
 
-    fn read_chunk(&self, chunk_index: u64) -> Result<Vec<u8>> {
+    fn read_chunk(&self, chunk_index: u64) -> Result<Chunk> {
         if let Some(hit) = self.cache.lock().expect("poisoned").get(&chunk_index) {
             return Ok(hit.clone());
         }
@@ -849,48 +849,58 @@ impl Ewf2Reader {
         let is_pattern_fill =
             is_compressed && entry.flags.contains(Ewf2ChunkDataFlags::PATTERNFILL);
 
-        if is_pattern_fill {
-            let mut out = alloc_chunk(self.chunk_size)?;
+        let chunk = if is_pattern_fill {
             // Pattern fill: the "offset" field stores an 8-byte fill pattern.
-            for (i, b) in out.iter_mut().enumerate() {
-                *b = entry.offset_raw[i % 8];
+            Chunk::Pattern(entry.offset_raw)
+        } else {
+            let data_offset = u64::from_le_bytes(entry.offset_raw);
+            let data_size = usize::try_from(entry.size)
+                .map_err(|_| Error::Invalid("chunk data size overflow".to_string()))?;
+            if data_size == 0 {
+                return Err(Error::Invalid("chunk data size is 0".to_string()));
             }
-            self.cache
-                .lock()
-                .expect("poisoned")
-                .put(chunk_index, out.clone());
-            return Ok(out);
-        }
 
-        let data_offset = u64::from_le_bytes(entry.offset_raw);
-        let data_size = usize::try_from(entry.size)
-            .map_err(|_| Error::Invalid("chunk data size overflow".to_string()))?;
-        if data_size == 0 {
-            return Err(Error::Invalid("chunk data size is 0".to_string()));
-        }
+            let slice = read_file_range(
+                &segment.file,
+                segment.file_len,
+                data_offset,
+                data_offset.saturating_add(data_size as u64),
+            )?;
+            let expected_len = expected_chunk_len(self.media_size, self.chunk_size, chunk_index);
+            Chunk::Data(
+                self.decode_chunk(&slice, is_compressed, is_checksumed, expected_len)?
+                    .into(),
+            )
+        };
 
-        let slice = read_file_range(
-            &segment.file,
-            segment.file_len,
-            data_offset,
-            data_offset.saturating_add(data_size as u64),
-        )?;
+        self.cache
+            .lock()
+            .expect("poisoned")
+            .put(chunk_index, chunk.clone());
+        Ok(chunk)
+    }
 
-        let expected_len = expected_chunk_len(self.media_size, self.chunk_size, chunk_index);
-        if is_compressed && self.compression_method == EWF2_COMPRESSION_LZ {
-            check_compressed_chunk_len(slice.len(), expected_len)?;
-        } else if !is_compressed {
-            // Stored chunks hold their media bytes as they are (plus a checksum when flagged).
-            let stored_len = slice
-                .len()
-                .saturating_sub(if is_checksumed { 4 } else { 0 });
-            if stored_len < expected_len {
+    /// Decodes the stored bytes of one chunk into the media bytes it holds: at least
+    /// `expected_len` of them, at most one chunk.
+    fn decode_chunk(
+        &self,
+        stored: &[u8],
+        is_compressed: bool,
+        is_checksumed: bool,
+        expected_len: usize,
+    ) -> Result<Vec<u8>> {
+        // Stored chunks hold their media bytes as they are.
+        let stored_chunk = |data: &[u8]| -> Result<Vec<u8>> {
+            if data.len() > self.chunk_size {
+                return Err(Error::Invalid("EWF2 chunk data too large".to_string()));
+            }
+            if data.len() < expected_len {
                 return Err(
                     io::Error::new(io::ErrorKind::UnexpectedEof, "short stored chunk").into(),
                 );
             }
-        }
-        let mut out = alloc_chunk(self.chunk_size)?;
+            Ok(data.to_vec())
+        };
 
         if is_compressed {
             if is_checksumed {
@@ -900,56 +910,33 @@ impl Ewf2Reader {
             }
 
             match self.compression_method {
-                EWF2_COMPRESSION_LZ => {
-                    inflate_chunk(&slice, &mut out, expected_len)?;
-                }
-                EWF2_COMPRESSION_NONE => {
-                    return Err(Error::Invalid(
-                        "chunk marked compressed but compression method is NONE".to_string(),
-                    ));
-                }
-                EWF2_COMPRESSION_BZIP2 => {
-                    return Err(Error::Unsupported(
-                        "EWF2 bzip2 compression is not implemented yet".to_string(),
-                    ));
-                }
-                other => {
-                    return Err(Error::Unsupported(format!(
-                        "unsupported EWF2 compression method: {other}"
-                    )));
-                }
+                EWF2_COMPRESSION_LZ => inflate_chunk(stored, self.chunk_size, expected_len),
+                EWF2_COMPRESSION_NONE => Err(Error::Invalid(
+                    "chunk marked compressed but compression method is NONE".to_string(),
+                )),
+                EWF2_COMPRESSION_BZIP2 => Err(Error::Unsupported(
+                    "EWF2 bzip2 compression is not implemented yet".to_string(),
+                )),
+                other => Err(Error::Unsupported(format!(
+                    "unsupported EWF2 compression method: {other}"
+                ))),
             }
         } else if is_checksumed {
-            if slice.len() < 4 {
+            if stored.len() < 4 {
                 return Err(
                     io::Error::new(io::ErrorKind::UnexpectedEof, "short checksumed chunk").into(),
                 );
             }
-            let data_part = &slice[..slice.len() - 4];
-            let checksum_part = &slice[slice.len() - 4..];
-            let stored = u32::from_le_bytes(checksum_part.try_into().expect("len=4"));
-            let calculated = adler32_rfc1950(data_part);
-
-            if stored != calculated {
+            let (data_part, checksum_part) = stored.split_at(stored.len() - 4);
+            let stored_checksum = u32::from_le_bytes(checksum_part.try_into().expect("len=4"));
+            if stored_checksum != adler32_rfc1950(data_part) {
                 return Err(Error::Corrupt("EWF2 chunk checksum mismatch".to_string()));
             }
-            if data_part.len() > out.len() {
-                return Err(Error::Invalid("EWF2 chunk data too large".to_string()));
-            }
-            out[..data_part.len()].copy_from_slice(data_part);
+            stored_chunk(data_part)
         } else {
             // Uncompressed chunk without checksum (uncommon but allowed by the spec).
-            if slice.len() > out.len() {
-                return Err(Error::Invalid("EWF2 chunk data too large".to_string()));
-            }
-            out[..slice.len()].copy_from_slice(&slice);
+            stored_chunk(stored)
         }
-
-        self.cache
-            .lock()
-            .expect("poisoned")
-            .put(chunk_index, out.clone());
-        Ok(out)
     }
 
     fn group_for_chunk(&self, chunk_index: u64) -> Result<(&Ewf2Segment, &Ewf2ChunkGroup, usize)> {
@@ -1521,7 +1508,7 @@ impl Ewf1Reader {
 
             let chunk = self.read_chunk(chunk_index)?;
             let take = remaining.min(self.chunk_size - within);
-            buf[out_pos..out_pos + take].copy_from_slice(&chunk[within..within + take]);
+            chunk.copy_to(within, &mut buf[out_pos..out_pos + take]);
 
             out_pos += take;
             remaining -= take;
@@ -1659,7 +1646,7 @@ impl Ewf1Reader {
         })
     }
 
-    fn read_chunk(&self, chunk_index: u64) -> Result<Vec<u8>> {
+    fn read_chunk(&self, chunk_index: u64) -> Result<Chunk> {
         if let Some(hit) = self.cache.lock().expect("poisoned").get(&chunk_index) {
             return Ok(hit.clone());
         }
@@ -1672,7 +1659,9 @@ impl Ewf1Reader {
 
         let slice = read_file_range(&segment.file, segment.file_len, start, end)?;
         let expected_len = expected_chunk_len(self.media_size, self.chunk_size, chunk_index);
-        let out = decode_chunk_v1(&slice, is_compressed, self.chunk_size, expected_len)?;
+        let out = Chunk::Data(
+            decode_chunk_v1(&slice, is_compressed, self.chunk_size, expected_len)?.into(),
+        );
 
         self.cache
             .lock()
@@ -2006,34 +1995,37 @@ pub(crate) fn expected_chunk_len(media_size: u64, chunk_size: usize, chunk_index
     }
 }
 
-/// Deflate cannot expand its input by more than about 1032:1, so a compressed chunk that is
-/// smaller than this fraction of the bytes it must produce is short whatever it contains.
-const MAX_DEFLATE_EXPANSION: usize = 1040;
-
-/// Rejects a compressed chunk that cannot hold `expected_len` bytes, before a buffer for the
-/// chunk is allocated. The chunk size comes from the volume section and is not otherwise tied to
-/// the amount of data that is really in the file.
-pub(crate) fn check_compressed_chunk_len(stored_len: usize, expected_len: usize) -> Result<()> {
-    let max_out = stored_len
-        .saturating_mul(MAX_DEFLATE_EXPANSION)
-        .saturating_add(MAX_DEFLATE_EXPANSION);
-    if expected_len > max_out {
-        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "short compressed chunk").into());
-    }
-    Ok(())
+/// A decoded chunk, shared between the cache and the reads that use it.
+///
+/// A chunk is kept as the media bytes it decodes to, which may be fewer than the chunk size (a
+/// short last chunk); the rest of the chunk reads as zeros. Nothing allocates by the chunk size:
+/// that number comes from the volume section and is not tied to the data that is really in the
+/// file.
+#[derive(Debug, Clone)]
+enum Chunk {
+    /// The leading bytes of the chunk.
+    Data(Arc<[u8]>),
+    /// A chunk that repeats an 8-byte pattern (EWF2 pattern fill).
+    Pattern([u8; 8]),
 }
 
-/// Allocates a zeroed chunk buffer, reporting a chunk size the allocator refuses as an error
-/// instead of aborting the process.
-pub(crate) fn alloc_chunk(chunk_size: usize) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
-    out.try_reserve_exact(chunk_size).map_err(|_| {
-        Error::Invalid(format!(
-            "chunk size {chunk_size} is too large to hold in memory"
-        ))
-    })?;
-    out.resize(chunk_size, 0);
-    Ok(out)
+impl Chunk {
+    /// Copies `buf.len()` bytes of the chunk into `buf`, starting `within` bytes into it.
+    fn copy_to(&self, within: usize, buf: &mut [u8]) {
+        match self {
+            Chunk::Data(data) => {
+                let available = data.get(within..).unwrap_or(&[]);
+                let take = available.len().min(buf.len());
+                buf[..take].copy_from_slice(&available[..take]);
+                buf[take..].fill(0);
+            }
+            Chunk::Pattern(pattern) => {
+                for (i, b) in buf.iter_mut().enumerate() {
+                    *b = pattern[(within + i) % 8];
+                }
+            }
+        }
+    }
 }
 
 /// How many decoded chunks a reader keeps: up to 256, less when the chunks are so large that
@@ -2046,30 +2038,27 @@ fn chunk_cache_capacity(chunk_size: usize) -> NonZeroUsize {
 /// Memory budget of a reader's decoded chunk cache.
 const CHUNK_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
-/// Inflates a zlib stream into `out`, which is one chunk long.
+/// Inflates the zlib stream of a compressed chunk.
 ///
-/// The stream must hold at least `expected_len` bytes. Bytes of `out` past the end of the stream
-/// are left as they were (zeros for a fresh chunk buffer).
-pub(crate) fn inflate_chunk(compressed: &[u8], out: &mut [u8], expected_len: usize) -> Result<()> {
-    let mut decoder = ZlibDecoder::new(compressed);
-    let mut filled = 0usize;
-    while filled < out.len() {
-        let n = decoder.read(&mut out[filled..])?;
-        if n == 0 {
-            break;
-        }
-        filled += n;
-    }
-    if filled < expected_len {
+/// Returns the bytes the stream decodes to, at most `chunk_size` and at least `expected_len`.
+/// The buffer grows with the decoded data, so its size is bounded by what the stored bytes can
+/// expand to, whatever the chunk size says.
+fn inflate_chunk(compressed: &[u8], chunk_size: usize, expected_len: usize) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    ZlibDecoder::new(compressed)
+        .take(chunk_size as u64)
+        .read_to_end(&mut out)?;
+    if out.len() < expected_len {
         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "short compressed chunk").into());
     }
-    Ok(())
+    Ok(out)
 }
 
-/// Decodes one stored EWF1 chunk into a `chunk_size` buffer.
+/// Decodes one stored EWF1 chunk into the media bytes it holds.
 ///
 /// `expected_len` is the number of media bytes the chunk must hold, see [`expected_chunk_len`].
-/// A last chunk that holds fewer than `chunk_size` bytes is zero-padded.
+/// The result is at least that long and at most `chunk_size`; whatever a short last chunk does
+/// not hold reads as zeros.
 pub(crate) fn decode_chunk_v1(
     stored: &[u8],
     is_compressed: bool,
@@ -2079,10 +2068,7 @@ pub(crate) fn decode_chunk_v1(
     if is_compressed {
         // Compressed chunks contain a zlib stream that expands to the chunk's media bytes.
         // (EWF1 uses zlib/deflate for chunk compression.)
-        check_compressed_chunk_len(stored.len(), expected_len)?;
-        let mut out = alloc_chunk(chunk_size)?;
-        inflate_chunk(stored, &mut out, expected_len)?;
-        return Ok(out);
+        return inflate_chunk(stored, chunk_size, expected_len);
     }
 
     // Uncompressed chunks are stored as: [chunk bytes][u32 adler32 checksum]. The chunk bytes are
@@ -2106,9 +2092,7 @@ pub(crate) fn decode_chunk_v1(
             "uncompressed chunk checksum mismatch".to_string(),
         ));
     }
-    let mut out = alloc_chunk(chunk_size)?;
-    out[..data_len].copy_from_slice(data_part);
-    Ok(out)
+    Ok(data_part.to_vec())
 }
 
 fn chunk_range_v1(group: &Ewf1ChunkGroup, idx: usize) -> Result<(u64, u64, bool)> {
@@ -4274,13 +4258,13 @@ mod tests {
         Ok(())
     }
 
-    /// The chunk size is an on-disk field. A chunk that does not hold that much data must be
-    /// refused before a buffer of that size is asked for (which aborts the process when the
-    /// allocator says no).
+    /// The chunk size is an on-disk field and must never size a buffer by itself: a decoded
+    /// chunk is as long as what its stored bytes decode to.
     #[test]
-    fn test_chunk_size_is_checked_against_stored_data_before_allocating() {
+    fn test_chunk_size_never_sizes_a_buffer() -> Result<()> {
         let huge = 1usize << 60;
 
+        // A chunk that should be full but isn't is refused.
         let stored = [0u8; 64];
         let err = decode_chunk_v1(&stored, false, huge, huge).unwrap_err();
         assert!(
@@ -4288,15 +4272,45 @@ mod tests {
             "{err}"
         );
 
-        let compressed = zlib_compress(&[0u8; 4096]);
+        let compressed = zlib_compress(&[7u8; 4096]);
         let err = decode_chunk_v1(&compressed, true, huge, huge).unwrap_err();
         assert!(err.to_string().contains("short compressed chunk"), "{err}");
 
-        // A short last chunk of such a volume still needs a whole chunk buffer: an error, not
-        // an abort.
-        let err = decode_chunk_v1(&compressed, true, huge, 4096).unwrap_err();
-        assert!(err.to_string().contains("too large"), "{err}");
-        assert!(alloc_chunk(huge).is_err());
+        // A short last chunk of such a volume decodes to the bytes it holds, not to a buffer of
+        // the chunk size (asking for 2^60 bytes aborted the process).
+        let out = decode_chunk_v1(&compressed, true, huge, 4096)?;
+        assert_eq!(out, vec![7u8; 4096]);
+
+        let mut stored = vec![9u8; 1000];
+        stored.extend_from_slice(&adler32_rfc1950(&[9u8; 1000]).to_le_bytes());
+        let out = decode_chunk_v1(&stored, false, huge, 1000)?;
+        assert_eq!(out, vec![9u8; 1000]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_chunk_copy_reads_zeros_past_the_decoded_bytes() {
+        let chunk = Chunk::Data(vec![1u8, 2, 3, 4].into());
+        let mut buf = [0xAAu8; 6];
+        chunk.copy_to(2, &mut buf);
+        assert_eq!(buf, [3, 4, 0, 0, 0, 0]);
+        let mut buf = [0xAAu8; 3];
+        chunk.copy_to(1 << 40, &mut buf);
+        assert_eq!(buf, [0, 0, 0]);
+
+        // A pattern-fill chunk needs no buffer at all, however large the chunk size is.
+        let chunk = Chunk::Pattern([0, 1, 2, 3, 4, 5, 6, 7]);
+        let mut buf = [0xAAu8; 10];
+        chunk.copy_to(13, &mut buf);
+        assert_eq!(buf, [5, 6, 7, 0, 1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn test_compressed_chunk_is_cut_at_the_chunk_size() -> Result<()> {
+        let compressed = zlib_compress(&vec![3u8; 10_000]);
+        let out = decode_chunk_v1(&compressed, true, 4096, 4096)?;
+        assert_eq!(out, vec![3u8; 4096]);
+        Ok(())
     }
 
     #[test]

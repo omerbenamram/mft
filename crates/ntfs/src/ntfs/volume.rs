@@ -1,5 +1,5 @@
 use crate::image::ReadAt;
-use crate::ntfs::data_stream::read_from_data_runs;
+use crate::ntfs::data_stream::{mapped_clusters, read_from_data_runs};
 use crate::ntfs::volume_header::VolumeHeader;
 use crate::ntfs::{Error, Result};
 use mft::attribute::MftAttributeType;
@@ -93,11 +93,7 @@ impl Volume {
             // No mapping: records are read contiguously from the boot sector's `$MFT` offset.
             image_len.saturating_sub(self.header.mft_offset_bytes())
         } else {
-            self.mft_data_runs
-                .iter()
-                .fold(0u64, |clusters, run| {
-                    clusters.saturating_add(run.lcn_length)
-                })
+            mapped_clusters(&self.mft_data_runs)
                 .saturating_mul(u64::from(self.header.cluster_size))
                 .min(image_len)
         };

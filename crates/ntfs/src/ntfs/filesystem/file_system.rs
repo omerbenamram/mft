@@ -94,13 +94,15 @@ impl FileSystem {
         let mut seen: HashSet<(u64, Vec<u16>)> = HashSet::new();
         let mut sub_nodes: VecDeque<u64> = VecDeque::new();
 
-        // Every intact index node ends with an entry flagged as the last one. A node without
-        // it, or an index record that can't be read, means names may be missing.
-        let mut index_damaged = !index_root
-            .node
-            .values
-            .iter()
-            .any(|v| v.flags.contains(IndexValueFlags::IS_LAST));
+        // Every intact index node, the root and each index record, ends with an entry flagged
+        // as the last one. A node without it, an index record that can't be read, or a branch
+        // that can't be followed means names may be missing.
+        let ends_properly = |node: &crate::ntfs::index::IndexNode| {
+            node.values
+                .iter()
+                .any(|v| v.flags.contains(IndexValueFlags::IS_LAST))
+        };
+        let mut index_damaged = !ends_properly(&index_root.node);
 
         for v in &index_root.node.values {
             if let Some(fname) = &v.file_name
@@ -123,6 +125,12 @@ impl FileSystem {
             {
                 sub_nodes.push_back(vcn);
             }
+        }
+
+        if !has_allocation && !sub_nodes.is_empty() {
+            // The root points at index records, but says there is no `$INDEX_ALLOCATION` to
+            // find them in.
+            index_damaged = true;
         }
 
         if has_allocation {
@@ -157,6 +165,10 @@ impl FileSystem {
                     self.volume.volume_offset() + offset,
                     node_start,
                 )?;
+
+                if !ends_properly(&node) {
+                    index_damaged = true;
+                }
 
                 for v in &node.values {
                     if let Some(fname) = &v.file_name

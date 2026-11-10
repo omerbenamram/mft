@@ -1306,10 +1306,11 @@ fn hash_prefix_from_parsed_segments(
                 chunk_index += 1;
                 let out = decode_chunk_v1(&slice, is_compressed, chunk_size, expected_len)?;
 
-                let take = (remaining as usize).min(out.len());
-                md5.update(&out[..take]);
-                sha1.update(&out[..take]);
-                remaining = remaining.saturating_sub(take as u64);
+                // The decoded chunk holds at least the `expected_len` bytes that belong to the
+                // prefix.
+                md5.update(&out[..expected_len]);
+                sha1.update(&out[..expected_len]);
+                remaining = remaining.saturating_sub(expected_len as u64);
             }
         }
     }
