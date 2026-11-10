@@ -30,17 +30,19 @@ fn pad_to_cluster(mut bytes: Vec<u8>) -> Vec<u8> {
     bytes
 }
 
-/// A `$DATA` attribute whose size field says almost 8 EiB while its runs map 4 clusters. Every
-/// reader has to refuse it; before, hashing and exporting treated the missing part as a hole and
-/// went on for 2^63 bytes.
+/// A `$DATA` attribute whose size field says almost 8 EiB while its runs map 4 clusters. What the
+/// runs don't map is a hole. Nothing may do work in proportion to the claimed size: a positioned
+/// read answers at once, and hashing, whose cost can't be anything but proportional, refuses a
+/// size no file on the volume can have.
 #[test]
-fn test_stream_size_beyond_data_runs_is_an_error() {
+fn test_absurd_stream_size_costs_nothing() {
     const HUGE: u64 = 0x7fff_ffff_ffff_0000;
 
     for compressed in [false, true] {
         let mut vol = SynthVolume::new(256, 32);
         let lcn = vol.first_free_lcn();
-        vol.write_clusters(lcn, &text(4 * CLUSTER_SIZE, "small"));
+        let stored = text(4 * CLUSTER_SIZE, "small");
+        vol.write_clusters(lcn, &stored);
 
         let runs = [Run::Data {
             lcn: lcn as i64,
@@ -51,7 +53,7 @@ fn test_stream_size_beyond_data_runs_is_an_error() {
             Record::file().attr(
                 NonResident {
                     flags: if compressed { FLAG_COMPRESSED } else { 0 },
-                    compression_unit: if compressed { 4 } else { 0 },
+                    compression_unit: if compressed { 2 } else { 0 },
                     allocated_size: HUGE,
                     valid_data_length: HUGE,
                     ..NonResident::data(1, HUGE, &runs)
@@ -61,31 +63,83 @@ fn test_stream_size_beyond_data_runs_is_an_error() {
         );
         let fs = vol.into_fs();
 
-        let expect_size_error = |what: &str, err: ntfs::ntfs::Error| {
-            let message = err.to_string();
-            assert!(
-                message.contains("is larger than the 2048 bytes its data runs map"),
-                "{what} (compressed={compressed}): unexpected error: {message}"
-            );
-        };
-
-        expect_size_error("md5", fs.md5_file_stream(ENTRY, "").unwrap_err());
-        expect_size_error("read", fs.read_file_default_stream(ENTRY).unwrap_err());
-        expect_size_error(
-            "open",
-            fs.open_file_default_stream_read_at(ENTRY)
-                .map(|_| ())
-                .unwrap_err(),
+        let message = fs.md5_file_stream(ENTRY, "").unwrap_err().to_string();
+        assert!(
+            message.contains("is larger than the 2199023255552 bytes a file on this volume"),
+            "md5 (compressed={compressed}): unexpected error: {message}"
         );
+
+        let stream = fs.open_file_default_stream_read_at(ENTRY).unwrap();
+        assert_eq!(stream.len(), HUGE);
+        let mut buf = vec![0xAAu8; 4 * CLUSTER_SIZE + 100];
+        stream.read_exact_at(0, &mut buf).unwrap();
+        assert_eq!(&buf[..stored.len()], &stored[..], "compressed={compressed}");
+        assert!(buf[stored.len()..].iter().all(|&b| b == 0));
+        let mut buf = vec![0xAAu8; 4096];
+        stream.read_exact_at(HUGE - 4096, &mut buf).unwrap();
+        assert!(buf.iter().all(|&b| b == 0));
+    }
+}
+
+/// The recovery case: a record whose mapping pairs were cut short while its size survived (a
+/// deleted or partly overwritten file). The clusters that are still mapped must stay readable on
+/// every path; the rest of the stream is a hole.
+#[test]
+fn test_stream_longer_than_its_data_runs_reads_the_tail_as_zeros() {
+    const MAPPED_CLUSTERS: usize = 16;
+    const FILE_SIZE: usize = 40 * CLUSTER_SIZE + 123;
+
+    for compressed in [false, true] {
+        let mut vol = SynthVolume::new(256, 32);
+        let lcn = vol.first_free_lcn();
+        let head = text(MAPPED_CLUSTERS * CLUSTER_SIZE, "head");
+        vol.write_clusters(lcn, &head);
+
+        let mut expected = head.clone();
+        expected.resize(FILE_SIZE, 0);
+
+        // 16 clusters is one full compression unit, stored as it is.
+        let runs = [Run::Data {
+            lcn: lcn as i64,
+            len: MAPPED_CLUSTERS as u64,
+        }];
+        vol.set_record(
+            ENTRY,
+            Record::file().attr(
+                NonResident {
+                    flags: if compressed { FLAG_COMPRESSED } else { 0 },
+                    compression_unit: if compressed { 4 } else { 0 },
+                    ..NonResident::data(1, FILE_SIZE as u64, &runs)
+                }
+                .build(),
+            ),
+        );
+        let fs = vol.into_fs();
+
+        assert!(
+            fs.read_file_default_stream(ENTRY).unwrap() == expected,
+            "read differs (compressed={compressed})"
+        );
+        assert_eq!(
+            fs.md5_file_stream(ENTRY, "").unwrap(),
+            hex::encode(Md5::digest(&expected)),
+            "md5 (compressed={compressed})"
+        );
+
+        let stream = fs.open_file_default_stream_read_at(ENTRY).unwrap();
+        assert_eq!(stream.len(), FILE_SIZE as u64);
+        let from = MAPPED_CLUSTERS * CLUSTER_SIZE - 10;
+        let mut buf = vec![0xAAu8; FILE_SIZE - from];
+        stream.read_exact_at(from as u64, &mut buf).unwrap();
+        assert_eq!(buf, expected[from..], "read_at (compressed={compressed})");
 
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("out.bin");
-        expect_size_error(
-            "export",
-            fs.export_file_default_stream_to_path(ENTRY, &out)
-                .unwrap_err(),
+        fs.export_file_default_stream_to_path(ENTRY, &out).unwrap();
+        assert!(
+            std::fs::read(&out).unwrap() == expected,
+            "export differs (compressed={compressed})"
         );
-        assert_eq!(std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0), 0);
     }
 }
 
