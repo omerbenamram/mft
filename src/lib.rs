@@ -18,13 +18,17 @@ pub use mft_reference::MftReference;
 
 pub mod attribute;
 pub mod bodyfile;
+pub mod boot;
 pub mod csv;
 pub mod entry;
 pub mod err;
 pub mod guid;
+pub mod indx;
 pub mod mft;
 pub mod mft_reference;
 pub mod ntfs;
+pub mod sds;
+pub mod usn;
 pub mod utf16;
 
 pub(crate) mod macros;
