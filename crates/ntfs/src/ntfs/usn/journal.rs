@@ -6,8 +6,8 @@
 //! - Treats `record_len == 0` as **end-of-block** and advances to the next block
 //! - Rejects invalid sizes **strictly** (no skipping, no placeholders)
 //!
-//! It intentionally does **not** parse record semantics. Use [`super::UsnRecord::parse`] (or
-//! [`super::UsnRecordV2::parse`]) on the returned bytes.
+//! It intentionally does **not** parse record semantics. Use [`super::UsnRecord::from_slice`] on
+//! the returned bytes.
 
 use crate::image::ReadAt;
 use crate::ntfs::{Error, Result};

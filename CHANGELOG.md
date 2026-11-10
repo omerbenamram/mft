@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Parse the USN change journal (`$Extend\$UsnJrnl:$J`) in the new `mft::usn` module: `UsnJournal` reads an extracted `$J` and yields `UsnRecord`s (`USN_RECORD_V2`, `V3` and the range-tracking `V4`), skipping the zeros of the sparse start and page padding. A run of bytes that don't parse gives one `Error::InvalidUsnRecord` and reading carries on after it. All 305,198 records of the Narcos (Windows 10) `$J` parse, each with its USN equal to its offset in the stream.
+- `mft_dump` dumps a `$J` as JSON, JSONL or CSV. It tells a `$J` from an `$MFT` by its first bytes (`--input-type mft|usn` overrides that), and `--mft <$MFT>` adds each file's full path (none for a 128-bit ReFS file id) and implies a `$J` input. `MftParser::get_full_path_in_directory` resolves such a path from a parent reference and a name.
 - `MftEntry::stored_record_number` returns the record number NTFS wrote inside the record (the 32-bit field at offset 0x2C, NTFS 3.1 and later). `header.record_number` is the position the record was read from, so comparing the two finds records that were moved, carved or never numbered.
+
+### Changed
+- **Breaking:** `Error` has a new `InvalidUsnRecord` variant, which breaks exhaustive matches.
+- The workspace's `ntfs` crate parses USN records with `mft::usn`, so `ntfs-info usn` now also reads v3 and v4 records, keeps flag bits without a name instead of failing on them, and prints the update time as a date. Its USN API changed with it: `UsnRecord` is `mft::usn::UsnRecord` (`UsnRecord::parse`, `UsnRecordV2` and the `V2` variant are gone), the flag constants carry their `USN_REASON_`/`USN_SOURCE_` prefixes, and invalid UTF-16 in a name is replaced rather than an error.
 
 ### Fixed
 - A name the host would read as an absolute path no longer replaces the directories above it in a resolved path: `/etc` on Unix, or `C:x` and `\x` on Windows, which volumes written by other NTFS drivers and crafted MFTs can hold. `A\/etc\passwd` used to come out as `/etc/passwd`. Such a name in the root directory is written after `.`, so the path stays relative.
