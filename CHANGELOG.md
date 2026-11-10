@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MftEntry::stored_record_number` returns the record number NTFS wrote inside the record (the 32-bit field at offset 0x2C, NTFS 3.1 and later). `header.record_number` is the position the record was read from, so comparing the two finds records that were moved, carved or never numbered.
 
 ### Fixed
+- A name the host would read as an absolute path no longer replaces the directories above it in a resolved path: `/etc` on Unix, or `C:x` and `\x` on Windows, which volumes written by other NTFS drivers and crafted MFTs can hold. `A\/etc\passwd` used to come out as `/etc/passwd`. Such a name in the root directory is written after `.`, so the path stays relative.
 - A zeroed (never used) record's `header.record_number` is the number it was read as, instead of always 0.
 - `Utf16LeStr::with_utf8` can be nested: converting or comparing another string inside the closure (`eq_utf8` with a non-ASCII string, `to_utf8_string`, `Display`) no longer panics with `RefCell already borrowed`.
 - `MftParser::get_entry` returns an error for an entry number whose byte offset overflows (such as `1 << 54` with 1 KiB records), instead of returning entry 0 labelled with that number in release builds and panicking in debug builds.
