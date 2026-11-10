@@ -91,8 +91,8 @@ fn stale_parent_path(reference: MftReference) -> PathBuf {
 /// Adds `name` to `path` as one more level.
 ///
 /// `PathBuf::push` replaces the path so far with a name the host reads as absolute: one that
-/// starts with `/` on Unix, or with `\\` or a drive such as `C:` on Windows. Windows doesn't
-/// create such names, but other NTFS drivers accept `:` and `\\` in them, and a crafted MFT can
+/// starts with `/` on Unix, or with `\` or a drive such as `C:` on Windows. Windows doesn't
+/// create such names, but other NTFS drivers accept `:` and `\` in them, and a crafted MFT can
 /// hold anything.
 ///
 /// Such a name in the root directory has no path to go after, so it goes after `.`, which keeps
