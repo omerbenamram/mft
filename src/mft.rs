@@ -130,12 +130,12 @@ fn orphaned_path(name: &str) -> PathBuf {
 }
 
 /// The path of `name` in the root directory.
-fn root_path(name: String) -> PathBuf {
-    if !looks_rooted(&name) {
+fn root_path(name: &str) -> PathBuf {
+    if !looks_rooted(name) {
         return PathBuf::from(name);
     }
     let mut path = PathBuf::with_capacity(2 + name.len());
-    push_name(&mut path, &name);
+    push_name(&mut path, name);
     path
 }
 
@@ -622,30 +622,36 @@ impl<T: Read + Seek> MftParser<T> {
     /// Gets the full path of a file under one of its names, such as one of its hard links, which
     /// [`MftParser::get_full_path_for_entry`] doesn't pick.
     pub fn get_full_path_for_name(&mut self, entry: &MftEntry, name: &FileNameAttr<'_>) -> PathBuf {
-        self.path_in_parent(
+        self.get_full_path_in_directory(
             entry.header.record_number,
-            name.name.to_utf8_string(),
+            &name.name.to_utf8_string(),
             name.parent,
         )
     }
 
-    /// The path of the file `entry_id` named `name` in the directory `parent` points at.
-    /// A stale `parent` (its record now holds another file) gives `[Orphaned]/<name>`.
-    fn path_in_parent(&mut self, entry_id: u64, name: String, parent: MftReference) -> PathBuf {
+    /// The path of the file `entry_id` named `name` in the directory `parent` points at, such as
+    /// the file a USN record describes. A stale `parent` (its record now holds another file)
+    /// gives `[Orphaned]/<name>`.
+    pub fn get_full_path_in_directory(
+        &mut self,
+        entry_id: u64,
+        name: &str,
+        parent: MftReference,
+    ) -> PathBuf {
         match parent.entry {
             // MFT entry 5 is the root path.
             5 => root_path(name),
             0 => {
                 trace!("Found orphaned entry ID {entry_id}");
-                orphaned_path(&name)
+                orphaned_path(name)
             }
             id if id == entry_id => {
                 trace!("Found self-referential file path, for entry ID {entry_id}");
-                orphaned_path(&name)
+                orphaned_path(name)
             }
             _ => {
                 let mut path = self.get_directory_path(parent, 1 + name.len());
-                push_name(&mut path, &name);
+                push_name(&mut path, name);
                 path
             }
         }
@@ -672,7 +678,9 @@ impl<T: Read + Seek> MftParser<T> {
         }
 
         match filename_header {
-            Some((name, parent)) => Ok(Some(self.path_in_parent(entry_id, name, parent))),
+            Some((name, parent)) => Ok(Some(
+                self.get_full_path_in_directory(entry_id, &name, parent),
+            )),
             None => match entry.header.base_reference.entry {
                 // I don't have a parent reference, and no X30 attribute. Though luck.
                 0 => Ok(None),
