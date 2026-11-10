@@ -70,7 +70,8 @@ enum InputType {
 impl InputType {
     /// Tells an `$MFT` (which starts with a `FILE` or `BAAD` record), an `$I30` (an `INDX`
     /// record), a `$LogFile` (an `RSTR` or `CHKD` restart page), a `$Boot` (`NTFS    ` at offset
-    /// 3) and an `$SDS` (an entry at offset 0 whose hash matches its descriptor) from a `$J`
+    /// 3) and an `$SDS` (an entry at offset 0 whose hash matches its descriptor, there or in the
+    /// copy of the first block) from a `$J`
     /// (whose first bytes that aren't zero are a USN record).
     /// The sparse start of a `$J` can run to gigabytes of zeros, so all of it is skipped. Anything
     /// else is read as an `$MFT`, as before `$J` support, such as an `$MFT` whose first record
@@ -89,7 +90,11 @@ impl InputType {
         if start.get(3..11) == Some(b"NTFS    ") {
             return Ok(InputType::Boot);
         }
-        if SdsEntry::from_slice(&start, 0).is_some_and(|entry| entry.valid_hash) {
+        // An `$SDS` whose first entry is damaged has it again in the copy of its first block.
+        let mut sds_mirror_start = Vec::new();
+        f.seek(SeekFrom::Start(mft::sds::SDS_BLOCK_SIZE as u64))?;
+        (&mut f).take(1 << 16).read_to_end(&mut sds_mirror_start)?;
+        if mft::sds::looks_like(&start, &sds_mirror_start) {
             return Ok(InputType::Sds);
         }
         f.rewind()?;
