@@ -11,6 +11,8 @@
 //! <https://flatcap.github.io/linux-ntfs/ntfs/files/logfile.html>,
 //! <https://github.com/libyal/libfsntfs/blob/main/documentation/New%20Technologies%20File%20System%20(NTFS).asciidoc#metadata_file_logfile>
 
+use std::ops::Range;
+
 use bitflags::bitflags;
 use serde::Serialize;
 
@@ -551,36 +553,42 @@ pub fn operation_name(operation: u16) -> Option<&'static str> {
 }
 
 impl NtfsLogRecord {
-    /// How many of the first bytes of a client data of `length` bytes [`Self::from_slice`] reads,
-    /// going by its first `NTFS_RECORD_HEADER_SIZE` bytes: the header, the LCNs, and the redo and
-    /// undo data that are inside the client data.
-    fn length_read(header: &[u8], length: usize) -> usize {
-        let field = |at| usize::from(read_u16(header, at).unwrap_or_default());
-        let part_end = |offset, part_length| {
-            let end = field(offset) + field(part_length);
-            if end <= length { end } else { 0 }
-        };
-        (NTFS_RECORD_HEADER_SIZE + 8 * field(0x0E))
-            .max(part_end(4, 6))
-            .max(part_end(8, 0x0A))
-            .min(length)
-    }
-
     /// Parses the client data of an NTFS client record.
     pub fn from_slice(data: &[u8]) -> Option<Self> {
+        Self::parse(data.len(), |range| Some(data[range].to_vec()))
+    }
+
+    /// Parses client data of `length` bytes, of which `read` gives the bytes of a range. It is
+    /// asked only for ranges inside the data: the header, the LCNs, and the redo and undo data,
+    /// so that a record with much more data than it uses costs no more than one with little.
+    fn parse(length: usize, read: impl Fn(Range<usize>) -> Option<Vec<u8>>) -> Option<Self> {
+        if length < NTFS_RECORD_HEADER_SIZE {
+            return None;
+        }
+        let header = read(0..NTFS_RECORD_HEADER_SIZE)?;
+        let data = header.as_slice();
         let field = |at| read_u16(data, at);
         let (redo_operation, undo_operation) = (field(0)?, field(2)?);
-        let part = |offset: u16, length: u16| {
+        // A part that isn't all inside the client data is left empty.
+        let part = |offset: u16, part_length: u16| {
             let start = usize::from(offset);
-            data.get(start..start + usize::from(length))
-                .unwrap_or_default()
-                .to_vec()
+            let range = start..start + usize::from(part_length);
+            if range.is_empty() || range.end > length {
+                return Some(Vec::new());
+            }
+            read(range)
         };
-        let redo_data = part(field(4)?, field(6)?);
-        let undo_data = part(field(8)?, field(0x0A)?);
+        let redo_data = part(field(4)?, field(6)?)?;
+        let undo_data = part(field(8)?, field(0x0A)?)?;
+        // As many of the LCNs as are whole inside the client data.
         let lcns_to_follow = usize::from(field(0x0E)?);
-        let lcns = (0..lcns_to_follow)
-            .map_while(|i| read_u64(data, NTFS_RECORD_HEADER_SIZE + 8 * i))
+        let lcns_fit = (length - NTFS_RECORD_HEADER_SIZE) / 8;
+        let lcns_end = NTFS_RECORD_HEADER_SIZE + 8 * lcns_to_follow.min(lcns_fit);
+        let lcns = read(NTFS_RECORD_HEADER_SIZE..lcns_end)?
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|lcn| u64::from_le_bytes(*lcn))
             .collect();
 
         // Adding an entry logs it to redo, removing one logs it to undo.
@@ -669,14 +677,13 @@ impl LogFile {
         if !self.client_data_fits(data_start, length, data_offset) {
             return None;
         }
-        // Only an NTFS client record's data is parsed, and only its header says how much of it:
-        // copying all of it for every record takes quadratic time on a log whose every record
-        // claims the rest of the file.
+        // Only an NTFS client record's data is parsed, and only the parts its header points at
+        // are copied: copying all of it for every record takes quadratic time on a log whose
+        // every record claims the rest of the file.
         let ntfs = if record_type == 1 {
-            let header =
-                self.client_data(data_start, length.min(NTFS_RECORD_HEADER_SIZE), data_offset)?;
-            let length_read = NtfsLogRecord::length_read(&header, length);
-            NtfsLogRecord::from_slice(&self.client_data(data_start, length_read, data_offset)?)
+            NtfsLogRecord::parse(length, |range| {
+                self.client_data(data_start, range, data_offset)
+            })
         } else {
             None
         };
@@ -730,11 +737,18 @@ impl LogFile {
             && last_page_start + data_offset + in_last_page <= self.data.len()
     }
 
-    /// `length` bytes of client data from `offset` on, continuing past the end of a page at the
-    /// data of the next one.
-    fn client_data(&self, mut offset: usize, length: usize, data_offset: usize) -> Option<Vec<u8>> {
-        let mut client_data = Vec::with_capacity(length);
-        while client_data.len() < length {
+    /// The bytes `range` of the client data that starts at `offset`, which continues past the
+    /// end of a page at the data of the next one.
+    fn client_data(
+        &self,
+        mut offset: usize,
+        range: Range<usize>,
+        data_offset: usize,
+    ) -> Option<Vec<u8>> {
+        let mut client_data = Vec::with_capacity(range.len());
+        // How much of the client data is before `offset`.
+        let mut passed = 0;
+        while passed < range.end {
             // A record whose header ends a page continues after the next page's header.
             // Record pages follow the restart pages, which needn't be a record page long.
             let page_start = offset - (offset - self.record_pages_start) % self.page_size;
@@ -745,10 +759,14 @@ impl LogFile {
             }
             offset = offset.max(page_start + data_offset);
             let page_end = page_start + self.page_size;
-            let n = (page_end - offset).min(length - client_data.len());
-            client_data.extend_from_slice(self.data.get(offset..offset + n)?);
+            let n = (page_end - offset).min(range.end - passed);
+            let skipped = range.start.saturating_sub(passed).min(n);
+            client_data.extend_from_slice(self.data.get(offset + skipped..offset + n)?);
+            passed += n;
             offset = page_end;
         }
+        #[cfg(test)]
+        tests::BYTES_COPIED.with(|copied| copied.set(copied.get() + client_data.len()));
         Some(client_data)
     }
 }
@@ -824,6 +842,12 @@ impl FlatLogRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// How many bytes of client data `LogFile::client_data` has copied on this thread.
+        pub(super) static BYTES_COPIED: Cell<usize> = const { Cell::new(0) };
+    }
 
     /// A restart page of `size` bytes with an `NTFS` client and the given current LSN.
     fn restart_page(size: usize, current_lsn: u64) -> Vec<u8> {
@@ -951,13 +975,42 @@ mod tests {
             seal_record_page(&mut data[page_start..page_start + 0x1000]);
         }
         let log = LogFile::from_buffer(data).unwrap();
-        let started = std::time::Instant::now();
+        BYTES_COPIED.set(0);
         let records: Vec<_> = log.records().collect();
-        let elapsed = started.elapsed();
         // The page headers on the way leave room for the claimed data only from the last page.
         assert_eq!(records.len(), 84);
         assert!(records.iter().all(|r| r.offset >= size as u64 - 0x1000));
-        assert!(elapsed.as_secs() < 10, "took {elapsed:?}");
+        // No more is copied than the NTFS header of each of them.
+        assert!(BYTES_COPIED.get() <= 84 * NTFS_RECORD_HEADER_SIZE);
+    }
+
+    #[test]
+    fn only_the_data_a_record_gives_is_copied() {
+        // A record header every 0x30 bytes again, each with 128 KiB of client data. The client
+        // data of a record starts at the header after it, whose LSN and previous LSN are made
+        // to read as an NTFS header with 0xFFFF bytes of redo and of undo data at 0xFFFF.
+        let size = 1 << 20;
+        let mut data = empty_log(size);
+        for page_start in (0x2000..size).step_by(0x1000) {
+            for offset in (page_start + 0x40..=page_start + 0x1000 - 0x30).step_by(0x30) {
+                put_record_header(&mut data, offset, 0x20000);
+                // The high half of the LSN is its sequence number, which can be anything.
+                data[offset + 4..offset + 12].fill(0xFF);
+            }
+            seal_record_page(&mut data[page_start..page_start + 0x1000]);
+        }
+        let log = LogFile::from_buffer(data).unwrap();
+        BYTES_COPIED.set(0);
+        let records: Vec<_> = log.records().collect();
+        let returned: usize = records
+            .iter()
+            .filter_map(|r| r.ntfs.as_ref())
+            .map(|n| NTFS_RECORD_HEADER_SIZE + n.redo_data.len() + n.undo_data.len())
+            .sum();
+        assert!(records.len() > 10_000);
+        assert!(returned > records.len() * 0x1FFFE);
+        // Each byte is copied once, into the record that gives it.
+        assert_eq!(BYTES_COPIED.get(), returned);
     }
 
     #[test]
@@ -1001,7 +1054,8 @@ mod tests {
         // Whether a record's data fits is worked out, not walked: both must agree, up to and
         // past the page that was never written and the end of the file.
         let log = with_length(0);
-        let walk = |offset: usize, length: usize| log.client_data(offset, length, 0x40).is_some();
+        let walk =
+            |offset: usize, length: usize| log.client_data(offset, 0..length, 0x40).is_some();
         for offset in [client, 0x3000, 0x3F00, 0x7000, 0x7FF8, 0x9000, 0x9FF8] {
             for length in (0..0x8000).step_by(8).chain([1, 0xFBF, 0xFC1, 0x10_0000]) {
                 assert_eq!(
