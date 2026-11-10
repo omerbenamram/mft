@@ -263,7 +263,7 @@ fn test_compressed_stream_hashes_and_exports_sparse_units_as_zeros() {
 /// so it opens and reads as zeros, but loading all of it into memory is refused instead of asking
 /// the allocator for 2^49 bytes (which aborted the process).
 #[test]
-fn test_stream_larger_than_image_is_not_loaded_into_memory() {
+fn test_huge_stream_is_not_loaded_into_memory() {
     const SPARSE_CLUSTERS: u64 = 1 << 40;
     const SIZE: u64 = SPARSE_CLUSTERS * CLUSTER_SIZE as u64;
 
@@ -281,7 +281,6 @@ fn test_stream_larger_than_image_is_not_loaded_into_memory() {
             .build(),
         ),
     );
-    let image_len = 256 * CLUSTER_SIZE as u64;
     let fs = vol.into_fs();
 
     let err = fs.read_file_default_stream(ENTRY).unwrap_err();
@@ -291,7 +290,8 @@ fn test_stream_larger_than_image_is_not_loaded_into_memory() {
     );
     assert!(
         err.to_string().contains(&format!(
-            "of {SIZE} bytes into memory: it is larger than the image ({image_len} bytes)"
+            "of {SIZE} bytes into memory: the limit is {} bytes",
+            ntfs::ntfs::filesystem::MAX_IN_MEMORY_STREAM_BYTES
         )),
         "unexpected error: {err}"
     );
@@ -378,4 +378,41 @@ fn test_record_size_larger_than_image_is_refused() {
             "field {field_offset:#x}: unexpected error: {err}"
         );
     }
+}
+
+/// The limit for in-memory reads does not depend on the image: a valid sparse or compressed file
+/// that is larger than a small (or partial) image still loads.
+#[test]
+fn test_sparse_stream_larger_than_the_image_loads_into_memory() {
+    const IMAGE_CLUSTERS: usize = 256;
+    const HOLE_CLUSTERS: u64 = 4 * IMAGE_CLUSTERS as u64;
+
+    let mut vol = SynthVolume::new(IMAGE_CLUSTERS, 32);
+    let lcn = vol.first_free_lcn();
+    let tail = text(2 * CLUSTER_SIZE, "tail");
+    vol.write_clusters(lcn, &tail);
+
+    let mut expected = vec![0u8; HOLE_CLUSTERS as usize * CLUSTER_SIZE];
+    expected.extend_from_slice(&tail);
+    assert!(expected.len() > IMAGE_CLUSTERS * CLUSTER_SIZE);
+
+    vol.set_record(
+        ENTRY,
+        Record::file().attr(
+            NonResident::data(
+                1,
+                expected.len() as u64,
+                &[
+                    Run::Sparse { len: HOLE_CLUSTERS },
+                    Run::Data {
+                        lcn: lcn as i64,
+                        len: 2,
+                    },
+                ],
+            )
+            .build(),
+        ),
+    );
+    let fs = vol.into_fs();
+    assert!(fs.read_file_default_stream(ENTRY).unwrap() == expected);
 }

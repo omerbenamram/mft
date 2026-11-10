@@ -27,7 +27,7 @@ use crate::ntfs::{Error, Result, Volume};
 use lru::LruCache;
 use mft::attribute::data_run::{DataRun, RunType};
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Largest compression unit the compressed stream reader accepts, in bytes.
 ///
@@ -180,7 +180,7 @@ pub struct CompressedDataRunsStream {
     /// Compression unit size in bytes (`unit_clusters * cluster_size`).
     unit_bytes: u64,
     /// LRU cache of decompressed units keyed by `unit_index`.
-    cache: Mutex<LruCache<u64, Vec<u8>>>,
+    cache: Mutex<LruCache<u64, Arc<[u8]>>>,
 }
 
 impl CompressedDataRunsStream {
@@ -282,7 +282,8 @@ impl CompressedDataRunsStream {
             .saturating_sub(offset)
     }
 
-    fn read_unit(&self, unit_index: u64) -> Result<Vec<u8>> {
+    /// Returns the decoded unit, shared with the cache: a hit costs no copy of the unit.
+    fn read_unit(&self, unit_index: u64) -> Result<Arc<[u8]>> {
         if let Some(hit) = self.cache.lock().expect("poisoned").get(&unit_index) {
             return Ok(hit.clone());
         }
@@ -368,10 +369,11 @@ impl CompressedDataRunsStream {
             unit_out.copy_from_slice(&decompressed);
         }
 
+        let unit_out: Arc<[u8]> = unit_out.into();
         self.cache
             .lock()
             .expect("poisoned")
-            .put(unit_index, unit_out.clone());
+            .put(unit_index, Arc::clone(&unit_out));
 
         Ok(unit_out)
     }
