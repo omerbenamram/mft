@@ -271,6 +271,21 @@ impl MftEntry {
         })
     }
 
+    /// The record number NTFS stored in the record itself, at offset 0x2C (NTFS 3.1 and later):
+    /// the low 32 bits of it, which is all the field holds.
+    ///
+    /// `header.record_number` is the position the record was read from. The two differ when a
+    /// record was copied or carved from somewhere else, and for records a formatter never
+    /// numbered. `None` for a zeroed record, and for one with the older layout that has no such
+    /// field (its update sequence array starts before offset 0x30).
+    pub fn stored_record_number(&self) -> Option<u32> {
+        // A zeroed record's update sequence array offset is 0.
+        if self.header.usa_offset < 0x30 {
+            return None;
+        }
+        crate::utils::read_u32(&self.data, 0x2C)
+    }
+
     /// Retrieves most human-readable representation of a file path entry.
     /// Will prefer `Win32` file name attributes, then `POSIX` ones, and fallback to `Dos` paths.
     ///
