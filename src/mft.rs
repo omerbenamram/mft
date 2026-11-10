@@ -982,6 +982,23 @@ mod tests {
     }
 
     #[test]
+    fn test_get_full_path_with_an_out_of_range_timestamp() {
+        // 6 is a directory whose `$FILE_NAME` has a timestamp past year 9999, which Windows
+        // allows. It and the file in it keep their names and paths.
+        let mut dir = synthetic_entry(true, Some(("A", 5)));
+        let created = 0x38 + 24 + 8;
+        dir[created..created + 8].copy_from_slice(&0x7000_0000_0000_0000u64.to_le_bytes());
+        let mft = mft_of([dir, synthetic_entry(false, Some(("f.txt", 6)))]);
+
+        let mut parser = MftParser::from_buffer(mft.clone()).unwrap();
+        let entry = parser.get_entry(6).unwrap();
+        let name = entry.find_best_name_attribute().unwrap();
+        assert_eq!(name.name, "A");
+        assert_eq!(name.created, crate::Timestamp::MAX);
+        assert_paths_in_any_order(&mft, &[(6, "A"), (7, "A/f.txt")]);
+    }
+
+    #[test]
     fn test_zeroed_first_entry_uses_next_entry_size() {
         let mut mft = vec![0u8; ENTRY_SIZE];
         mft.extend(synthetic_entry(false, Some(("f.txt", 5))));

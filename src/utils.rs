@@ -239,6 +239,34 @@ pub fn windows_filetime_to_timestamp(filetime_100ns: u64) -> crate::err::Result<
         .map_err(|_| crate::err::Error::FiletimeTimestampOutOfRange { filetime_100ns })
 }
 
+/// Converts a Windows FILETIME to a timestamp like [`windows_filetime_to_timestamp`], but gives
+/// `Timestamp::MAX` (`9999-12-30T22:00:00.999999999Z`) for a value past `jiff::Timestamp`'s range.
+///
+/// Windows accepts file times up to the year 30828, so a file can carry a timestamp that
+/// `jiff::Timestamp` can't hold. The attribute parsers use this so that such a file keeps its
+/// name, path and other timestamps instead of losing the whole attribute. The raw value is
+/// logged as a warning.
+pub(crate) fn windows_filetime_to_timestamp_saturating(filetime_100ns: u64) -> Timestamp {
+    #[cold]
+    fn out_of_range(filetime_100ns: u64) -> Timestamp {
+        log::warn!(
+            "FILETIME {filetime_100ns:#018x} is past the supported range, reading it as {}",
+            Timestamp::MAX
+        );
+        Timestamp::MAX
+    }
+
+    windows_filetime_to_timestamp(filetime_100ns).unwrap_or_else(|_| out_of_range(filetime_100ns))
+}
+
+/// Reads a FILETIME field of an attribute, with [`windows_filetime_to_timestamp_saturating`].
+pub(crate) fn read_filetime(reader: &mut impl std::io::Read) -> std::io::Result<Timestamp> {
+    use byteorder::ReadBytesExt;
+    Ok(windows_filetime_to_timestamp_saturating(
+        reader.read_u64::<LittleEndian>()?,
+    ))
+}
+
 pub fn to_hex_string(bytes: &[u8]) -> String {
     const LUT: &[u8; 16] = b"0123456789ABCDEF";
 

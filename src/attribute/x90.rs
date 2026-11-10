@@ -4,7 +4,7 @@ use crate::attribute::x50::sid;
 use crate::attribute::xc0::tag_name;
 use crate::err::{Error, Result};
 use crate::impl_serialize_for_bitflags;
-use crate::utils::{read_guid, read_u32, read_u64, windows_filetime_to_timestamp};
+use crate::utils::{read_guid, read_u32, read_u64, windows_filetime_to_timestamp_saturating};
 
 use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
 
@@ -376,12 +376,12 @@ impl<'a> ViewIndexValue<'a> {
                 version: read_u32(data, 0)?,
                 quota_flags: read_u32(data, 4)?,
                 bytes_used: read_u64(data, 8)?,
-                change_time: windows_filetime_to_timestamp(read_u64(data, 16)?).ok()?,
+                change_time: windows_filetime_to_timestamp_saturating(read_u64(data, 16)?),
                 warning_limit: read_u64(data, 24)? as i64,
                 hard_limit: read_u64(data, 32)? as i64,
                 exceeded_time: match read_u64(data, 40)? {
                     0 => None,
-                    t => Some(windows_filetime_to_timestamp(t).ok()?),
+                    t => Some(windows_filetime_to_timestamp_saturating(t)),
                 },
                 sid: match &data[48..] {
                     [] => None,
