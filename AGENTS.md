@@ -44,7 +44,7 @@ Each fix or feature gets its own pull request, so that it can be reviewed, descr
 5. **CI.** Every check is green. Fix the cause of a red check. Do not skip, disable or loosen a test to get there.
 6. **Merge.** Merge the pull request yourself. Do not wait for Omer. The exception is a `chore(release)` pull request, which merges only when he tells you to.
 
-Open the pull request as soon as the change is built, so that CI and Bugbot run while you review. If a review did not run, say so in the pull request and leave it open.
+Before you push, run the checks in "This repository" that match what you changed. A change to these instruction files alone needs none. Open the pull request as soon as the change is built, so that CI and Bugbot run while you review. If a review did not run, say so in the pull request and leave it open.
 
 A cloud session cannot re-run or dispatch a GitHub Actions job: the API answers 403. When a job failed for a reason outside the change, such as a runner or a network fault, check whether `master` has moved since. If it has, merging it into the branch starts a new run. If it has not, tell Omer which job needs a re-run, and carry on with other work while you wait.
 
@@ -74,23 +74,23 @@ Use plain words and full sentences: short ones, one idea each, in the active voi
 
 ## This repository
 
-`mft` is a Rust parser for the NTFS Master File Table (`$MFT`). The `mft` crate is in `src/`, and its command-line tool `mft_dump` is `src/bin/mft_dump.rs`. The crates under `crates/` (`forensic-image`, `aff`, `ewf`, `ntfs`, `dfxml`, `ntfs-explorer-gui`) are workspace members that are not published. `fuzz/` holds three cargo-fuzz targets, which no CI job builds. Only the paths in `include` in `Cargo.toml` go to crates.io, which accepts at most 10 MB. `samples/` is in that list and `testdata/` is not, so put a new fixture in `testdata/` unless a unit test in `src/` reads it. `Cargo.lock` is not tracked.
+`mft` is a Rust parser for the NTFS Master File Table (`$MFT`). The `mft` crate is in `src/`, and its command-line tool `mft_dump` is `src/bin/mft_dump.rs`. The crates under `crates/` (`forensic-image`, `aff`, `ewf`, `ntfs`, `dfxml`, `ntfs-explorer-gui`) are workspace members that are not published. `fuzz/` holds three cargo-fuzz targets. Only the paths in `include` in `Cargo.toml` go to crates.io, which accepts at most 10 MB: `samples/` is in that list and `testdata/` is not. `Cargo.lock` is not tracked.
 
 ### Checks
 
-`.github/workflows/test.yml` runs these on every pull request and on `master`, except the benchmark and the fuzz build. Before you push, run the ones that match what you changed. A change to these instruction files alone needs none.
+`.github/workflows/test.yml` runs these on every pull request and on `master`, except the benchmark and the fuzz build.
 
-- `git lfs pull`, once in each checkout. `.gitattributes` puts `*.E??`, `*.aff` and `*.dd` files, in either case, in Git LFS. Other image types, such as `.raw`, are not in LFS.
-- `cargo fmt --all -- --check`
+Run `git lfs pull` once in each checkout before you test `crates/`. `.gitattributes` puts `*.E??`, `*.aff` and `*.dd` files, in either case, in Git LFS. Other image types, such as `.raw`, are not in LFS.
+
+- `cargo fmt --all -- --check`. `pre-commit install` makes this run before each commit.
 - `cargo clippy --workspace --exclude ntfs-explorer-gui --all-targets --all-features -- -D warnings`
-- `cargo test --workspace --exclude ntfs-explorer-gui --all-targets --all-features`. This is the Linux job, and `--all-features` also builds the FUSE mount frontend. macOS and Windows run it without `--all-features`. CI sets `NTFS_TESTDATA_REQUIRED=1` and downloads two AFFLIBv3 fixtures first, with the `curl` commands in the workflow. Without that variable, a test in `crates/` whose fixture is missing is skipped without a word, so set it to run the tests as CI does.
+- `cargo test --workspace --exclude ntfs-explorer-gui --all-targets --all-features`. This is the Linux job, and `--all-features` also builds the FUSE mount frontend. macOS and Windows run it without `--all-features`.
+- To run the tests as CI does, set `NTFS_TESTDATA_REQUIRED=1` and fetch the two AFFLIBv3 fixtures with the `curl` commands in the workflow. Without that variable, a test in `crates/` whose fixture is missing is skipped without a word.
+- When you change dependencies or use a newer language or library feature: `cargo +1.90 check --workspace --exclude ntfs-explorer-gui --all-targets`. 1.90 is the minimum supported Rust version.
 - When you change `CHANGELOG.md` or `version` in `Cargo.toml`: `scripts/release-notes.sh <version in Cargo.toml>`. CI fails a pull request when the current version has no notes in `CHANGELOG.md`.
-- `cargo +1.90 check --workspace --exclude ntfs-explorer-gui --all-targets`. 1.90 is the minimum supported Rust version.
 - When you change `crates/ntfs-explorer-gui`: `cargo clippy -p ntfs-explorer-gui --all-targets -- -D warnings` and `cargo test -p ntfs-explorer-gui`. They need the webview packages that the `gui` job installs.
 - When you change a parsing hot path: `cargo bench --bench benchmark`, before and after.
-- When you change `MftEntry::from_buffer`, `decode_data_runs` or `MftParser`: check that the fuzz targets still build. `fuzz/README.md` has the commands.
-
-`.pre-commit-config.yaml` runs the format check before each commit, after `pre-commit install`.
+- When you change `MftEntry::from_buffer`, `decode_data_runs` or `MftParser`: `cargo +nightly fuzz build`, because no CI job builds the fuzz targets. In a cloud session, add `--target x86_64-unknown-linux-gnu`, because the `cargo-fuzz` installed there defaults to musl.
 
 A `macos-latest` job sometimes never gets a runner: it has no steps and no logs. Omer said that such a job does not block a merge. A job that ran and failed does block it.
 
@@ -102,9 +102,10 @@ A `macos-latest` job sometimes never gets a runner: it has no steps and no logs.
 - In library code, errors are explicit types made with `thiserror`, and logging goes through the `log` macros. The command-line tools use `anyhow` or `miette`, and the GUI logs with `tracing`. Return early with `?`.
 - Timestamps use `jiff`. Do not add `chrono`: Omer prefers `jiff`, and `chrono` is out of the dependency tree since #186.
 - Public API additions have short doc comments. Say so in the pull request when a change breaks binary compatibility or raises the minimum supported Rust version.
-- Unit tests sit beside the code in `#[cfg(test)]` modules, and end-to-end tests are in `tests/`. A unit test in `src/` reads only `samples/` (`src/tests/fixtures.rs` has the path), because `testdata/` is not published. A test in `tests/` uses the helpers in `tests/fixtures.rs`. Name a test after the behaviour that it checks. Snapshot tests use `insta`: review a changed snapshot with `cargo insta review` and accept only the changes that you intended.
+- Unit tests sit beside the code in `#[cfg(test)]` modules, and end-to-end tests are in `tests/`. Name a test after the behaviour that it checks.
+- A unit test in `src/` reads only `samples/` (`src/tests/fixtures.rs` has the path), because `testdata/` is not published. A test in `tests/` uses the helpers in `tests/fixtures.rs`. Put a new fixture in `testdata/` unless a unit test in `src/` reads it, keep it small, and give its origin and licence in the pull request.
+- Snapshot tests use `insta`. Review a changed snapshot with `cargo insta review`, and accept only the changes that you intended.
 - No test compiles the example in `README.md`: `tests/readme.rs` is meant to, but a doc test in an integration test never runs. Check the example by hand when you change the API that it uses.
-- Keep a new sample file small, and give its origin and licence in the pull request.
 - A pull request that changes behaviour adds an entry under `## [Unreleased]` in `CHANGELOG.md`, and marks a breaking change with **Breaking:**. Open pull requests therefore conflict in that file: merge `master` and keep both entries.
 - Commit subjects are short and imperative, and they describe the change that a user would see.
 
