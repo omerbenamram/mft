@@ -294,15 +294,6 @@ impl LogFile {
         record_pages.contains(&offset).then_some(offset)
     }
 
-    /// Where the record with this LSN would start, from its low bits alone, whatever its
-    /// sequence number; `None` past the end of the file.
-    fn lsn_file_offset(&self, lsn: u64) -> Option<u64> {
-        // A restart area that parses has its sequence number bits in `SEQ_NUMBER_BITS`.
-        let bits = self.restart_page().restart_area.seq_number_bits;
-        let offset = (lsn << bits) >> (bits - 3);
-        (offset < self.data.len() as u64).then_some(offset)
-    }
-
     /// The record pages that were written, in file order: a page that is all zeros or all
     /// `0xFF` is left out, and one without the `RCRD` signature, or cut short at the end of the
     /// file, is an error.
@@ -758,11 +749,10 @@ impl LogFile {
     /// over yet.
     ///
     /// Each page is scanned on every 8-byte boundary for a record header whose LSN gives its own
-    /// offset (its low bits, as in [`LogFile::lsn_offset`], but whatever its sequence number:
-    /// pages from passes long before the checkpoint's survive where the log hasn't reached
-    /// since), so a record is found even when the records before it are damaged, and the copies
-    /// of the log's tail in the buffer pages (whose LSNs give the offset of the original) aren't
-    /// found twice.
+    /// offset ([`LogFile::lsn_offset`], whatever its pass: pages from passes long before the
+    /// checkpoint's survive where the log hasn't reached since), so a record is found even when
+    /// the records before it are damaged, and the copies of the log's tail in the buffer pages
+    /// (whose LSNs give the offset of the original) aren't found twice.
     ///
     /// A record that continues into the next page is left out unless that page is a record
     /// page whose fixups all matched and that was written in the same pass of the log, no
@@ -801,8 +791,7 @@ impl LogFile {
         let record_type = read_u32(header, 0x20)?;
         let client_data_length = read_u32(header, 0x18)?;
         let length = client_data_length as usize;
-        if lsn == 0
-            || self.lsn_file_offset(lsn) != Some(offset as u64)
+        if self.lsn_offset(lsn) != Some(offset as u64)
             || !matches!(record_type, CLIENT_RECORD | CLIENT_RESTART_RECORD)
             || length > MAX_CLIENT_DATA_LENGTH
             || length > self.data.len() - offset - LOG_RECORD_HEADER_SIZE
