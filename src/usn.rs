@@ -702,9 +702,23 @@ mod tests {
         // One record of 62 bytes, and the input ends there rather than at its 8-byte padding.
         let mut j = v2(0, "a");
         j.truncate(V2_HEADER_SIZE + 2);
-        let results: Vec<_> = UsnJournal::new(Cursor::new(j)).collect();
+        assert_eq!(j.len() % 8, 6);
+        let results: Vec<_> = UsnJournal::new(Cursor::new(&j)).collect();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].as_ref().unwrap().name(), Some("a"));
+
+        // The same after a record that is padded.
+        let mut both = v2(0, "first");
+        let at = both.len();
+        both.extend_from_slice(&j);
+        let names: Vec<_> = UsnJournal::new(Cursor::new(&both))
+            .map(|r| r.unwrap())
+            .map(|r| (r.offset, r.name().unwrap().to_string()))
+            .collect();
+        assert_eq!(
+            names,
+            [(0, "first".to_string()), (at as u64, "a".to_string())]
+        );
     }
 
     #[test]
