@@ -55,24 +55,28 @@ enum InputType {
     Usn,
 }
 
-impl InputType {
-    /// Tells an `$MFT` (which starts with a `FILE` or `BAAD` record) from a `$J` (whose first
-    /// bytes that aren't zero are a USN record). The sparse start of a `$J` can run to gigabytes
-    /// of zeros, so all of it is skipped. Anything that isn't a `$J` is read as an `$MFT`, as
-    /// before `$J` support, such as an `$MFT` whose first record was wiped.
-    fn detect(path: &Path) -> Result<Self> {
-        let mut f = File::open(path)?;
-        let mut signature = [0u8; 4];
-        let read = f.read(&mut signature)?;
-        if read == 4 && matches!(&signature, b"FILE" | b"BAAD") {
-            return Ok(InputType::Mft);
-        }
-        f.rewind()?;
-        match UsnJournal::new(f).next() {
-            Some(Ok(_)) => Ok(InputType::Usn),
-            Some(Err(mft::err::Error::InvalidUsnRecord { .. })) | None => Ok(InputType::Mft),
-            Some(Err(error)) => Err(error.into()),
-        }
+/// A `$J` input: its journal, and the first record when detecting the input already read it.
+/// Keeping both means the sparse start of the `$J`, which can run to gigabytes of zeros, is read
+/// only once.
+type UsnInput = (UsnJournal<File>, Option<UsnRecord>);
+
+/// Tells an `$MFT` (which starts with a `FILE` or `BAAD` record) from a `$J` (whose first bytes
+/// that aren't zero are a USN record), giving the `$J`'s journal or `None` for an `$MFT`.
+/// Anything that isn't a `$J` is read as an `$MFT`, as before `$J` support, such as an `$MFT`
+/// whose first record was wiped.
+fn detect_usn(path: &Path) -> Result<Option<UsnInput>> {
+    let mut f = File::open(path)?;
+    let mut signature = [0u8; 4];
+    let read = f.read(&mut signature)?;
+    if read == 4 && matches!(&signature, b"FILE" | b"BAAD") {
+        return Ok(None);
+    }
+    f.rewind()?;
+    let mut journal = UsnJournal::new(f);
+    match journal.next() {
+        Some(Ok(first)) => Ok(Some((journal, Some(first)))),
+        Some(Err(mft::err::Error::InvalidUsnRecord { .. })) | None => Ok(None),
+        Some(Err(error)) => Err(error.into()),
     }
 }
 
@@ -202,10 +206,15 @@ impl MftDump {
             }
         };
 
-        let input_type = match matches.get_one::<String>("input-type").map(String::as_str) {
-            Some("mft") => Some(InputType::Mft),
-            Some("usn") => Some(InputType::Usn),
-            _ => None,
+        let input_type = match matches
+            .get_one::<String>("input-type")
+            .expect("has default")
+            .as_str()
+        {
+            "auto" => None,
+            "mft" => Some(InputType::Mft),
+            "usn" => Some(InputType::Usn),
+            other => unreachable!("clap only accepts the listed input types, not {other}"),
         };
         let paths_mft = matches.get_one::<String>("mft").map(PathBuf::from);
 
@@ -299,12 +308,19 @@ impl MftDump {
     pub fn run(&mut self) -> Result<()> {
         self.try_to_initialize_logging();
 
-        let input_type = match self.input_type {
-            Some(input_type) => input_type,
-            None => InputType::detect(&self.filepath)?,
+        let open_usn = |path: &Path| -> Result<Option<UsnInput>> {
+            Ok(Some((UsnJournal::new(File::open(path)?), None)))
         };
-        if input_type == InputType::Usn {
-            return self.run_usn();
+        let usn = match self.input_type {
+            Some(InputType::Mft) => None,
+            Some(InputType::Usn) => open_usn(&self.filepath)?,
+            // `--mft` only applies to a `$J`, so a `$J` whose first records are damaged is still
+            // read as one.
+            None if self.paths_mft.is_some() => open_usn(&self.filepath)?,
+            None => detect_usn(&self.filepath)?,
+        };
+        if let Some((journal, first)) = usn {
+            return self.run_usn(journal, first);
         }
         if self.paths_mft.is_some() {
             return Err(anyhow!("`--mft` only applies to a `$J` input"));
@@ -443,8 +459,9 @@ impl MftDump {
         Ok(())
     }
 
-    /// Dumps the records of a `$J` change journal.
-    fn run_usn(&mut self) -> Result<()> {
+    /// Dumps the records of a `$J` change journal, starting with `first` when detecting the
+    /// input already read it from `journal`.
+    fn run_usn(&mut self, journal: UsnJournal<File>, first: Option<UsnRecord>) -> Result<()> {
         if self.output_format == OutputFormat::Bodyfile {
             return Err(anyhow!("`-o bodyfile` doesn't apply to a `$J` input"));
         }
@@ -458,8 +475,11 @@ impl MftDump {
             Some(path) => Some(MftParser::from_path(path)?),
             None => None,
         };
-        let records =
-            UsnJournal::new(File::open(&self.filepath)?).filter_map(|record| match record {
+        let records = first
+            .map(Ok)
+            .into_iter()
+            .chain(journal)
+            .filter_map(|record| match record {
                 Ok(record) => Some(Ok(record)),
                 Err(error @ mft::err::Error::InvalidUsnRecord { .. }) => {
                     eprintln!("{error}");
@@ -468,6 +488,11 @@ impl MftDump {
                 Err(error) => Some(Err(error)),
             });
         let mut full_path = |record: &UsnRecord| {
+            // A 128-bit file id (ReFS) isn't an `$MFT` reference: its low 64 bits would name
+            // the wrong file.
+            if record.file_id_high.is_some() {
+                return None;
+            }
             let (parser, name) = (parser.as_mut()?, record.name()?);
             Some(parser.get_full_path_in_directory(
                 record.file_reference.entry,
@@ -483,7 +508,8 @@ impl MftDump {
             let mut writer = csv::Writer::from_writer(out);
             for record in records {
                 let record = record?;
-                writer.serialize(FlatUsnRecord::from_record(&record, full_path(&record)))?;
+                let path = full_path(&record);
+                writer.serialize(FlatUsnRecord::from_record(record, path))?;
             }
             writer.flush()?;
             return Ok(());
