@@ -10,7 +10,7 @@ use crate::MftReference;
 use lru::LruCache;
 use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File};
-use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
+use std::io::{self, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
@@ -238,7 +238,17 @@ impl<T: Read + Seek> MftParser<T> {
     /// Reads the raw bytes of an entry into `buffer`, which is one entry long.
     fn read_entry_bytes(&mut self, entry_number: u64, buffer: &mut [u8]) -> Result<()> {
         let entry_size = u64::from(self.entry_size);
-        let desired_offset = entry_number * entry_size;
+        // An entry number whose offset doesn't fit would wrap around to another entry's bytes.
+        let next_offset = entry_number
+            .checked_add(1)
+            .and_then(|n| n.checked_mul(entry_size))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("entry {entry_number} is past the end of any MFT"),
+                )
+            })?;
+        let desired_offset = next_offset - entry_size;
 
         // Avoid seeking when reading sequential entries; this keeps the BufReader hot and
         // removes a large number of __lseek syscalls in tight loops.
@@ -248,7 +258,7 @@ impl<T: Read + Seek> MftParser<T> {
             self.data.seek(SeekFrom::Start(desired_offset))?;
         }
         self.data.read_exact(buffer)?;
-        self.next_read_offset = Some(desired_offset + entry_size);
+        self.next_read_offset = Some(next_offset);
         Ok(())
     }
 
@@ -796,6 +806,16 @@ mod tests {
         // The failed read stopped halfway through entry 5, so reading it again has to seek.
         let entry = parser.get_entry(5).unwrap();
         assert_eq!(entry.find_best_name_attribute().unwrap().name, ".");
+    }
+
+    #[test]
+    fn test_get_entry_rejects_a_number_whose_offset_overflows() {
+        let mut parser = MftParser::from_buffer(cyclic_mft()).unwrap();
+
+        // 2^54 * 1024 wraps to offset 0, which used to return entry 0 under this number.
+        assert!(parser.get_entry(1 << 54).is_err());
+        assert!(parser.get_entry(u64::MAX).is_err());
+        assert_eq!(parser.get_entry(5).unwrap().header.record_number, 5);
     }
 
     #[test]
