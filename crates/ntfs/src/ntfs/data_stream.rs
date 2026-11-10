@@ -121,6 +121,8 @@ impl ReadAt for DataRunsStream {
     }
 
     fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        // The runs cover whole clusters, so they usually reach past the end of the stream. The
+        // bytes there are slack, not stream content.
         if offset.saturating_add(buf.len() as u64) > self.len {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -887,6 +889,31 @@ mod tests {
         assert_eq!(stream.sparse_len_at(16 * 1002), 16 * 4998);
         assert_eq!(stream.sparse_len_at(16 * 5000 + 3), 16 * 1000 - 3);
         assert_eq!(stream.sparse_len_at(16 * 6000), 0);
+    }
+
+    /// The last cluster of a stream usually has slack after the stream's last byte. A read
+    /// must not return it.
+    #[test]
+    fn data_runs_stream_does_not_read_cluster_slack_past_len() {
+        let cluster_size = 4u32;
+        let img = MemImage::new((0u8..64).collect());
+        let volume = test_volume(Arc::new(img), cluster_size);
+
+        let runs = vec![DataRun {
+            lcn_offset: 0,
+            lcn_length: 2, // 8 bytes of clusters
+            run_type: RunType::Standard,
+        }];
+        let stream = DataRunsStream::new(volume, runs, 6);
+
+        let mut buf = vec![0u8; 6];
+        stream.read_exact_at(0, &mut buf).unwrap();
+        assert_eq!(buf, [0, 1, 2, 3, 4, 5]);
+
+        let mut buf = vec![0u8; 2];
+        let err = stream.read_exact_at(5, &mut buf).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(stream.read_exact_at(6, &mut buf).is_err());
     }
 
     #[test]

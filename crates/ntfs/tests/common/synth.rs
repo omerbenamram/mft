@@ -8,6 +8,7 @@
 //! Geometry: 512-byte sectors, one sector per cluster, 1024-byte MFT records, 4096-byte index
 //! records. The `$MFT` starts at cluster [`MFT_LCN`] and is described by record 0.
 
+use md5::{Digest as _, Md5};
 use ntfs::image::ReadAt;
 use ntfs::ntfs::{FileSystem, Volume};
 use std::io;
@@ -491,4 +492,73 @@ fn lznt1_compress_chunk(chunk: &[u8]) -> Vec<u8> {
     }
 
     out
+}
+
+/// Readable, position-dependent test content of `len` bytes.
+pub fn text(len: usize, tag: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(len + 64);
+    let mut line = 0usize;
+    while out.len() < len {
+        out.extend_from_slice(
+            format!("{tag} line {line:06} at byte {:08}\r\n", out.len()).as_bytes(),
+        );
+        line += 1;
+    }
+    out.truncate(len);
+    out
+}
+
+/// Zero-pads `bytes` to a whole number of clusters, the way it sits on the volume.
+pub fn pad_to_cluster(mut bytes: Vec<u8>) -> Vec<u8> {
+    let padded = bytes.len().div_ceil(CLUSTER_SIZE) * CLUSTER_SIZE;
+    bytes.resize(padded, 0);
+    bytes
+}
+
+/// Checks every way of reading the unnamed stream of `entry` against `expected`.
+pub fn assert_all_readers_return(fs: &FileSystem, entry: u64, expected: &[u8], what: &str) {
+    let bytes = fs.read_file_default_stream(entry).unwrap();
+    assert!(
+        bytes == expected,
+        "{what}: read_file_default_stream differs"
+    );
+
+    assert_eq!(
+        fs.md5_file_stream(entry, "").unwrap(),
+        hex::encode(Md5::digest(expected)),
+        "{what}: md5_file_stream"
+    );
+
+    let stream = fs.open_file_default_stream_read_at(entry).unwrap();
+    assert_eq!(stream.len(), expected.len() as u64, "{what}: stream length");
+    let mut all = vec![0xAAu8; expected.len()];
+    stream.read_exact_at(0, &mut all).unwrap();
+    assert!(all == expected, "{what}: read_at (whole stream) differs");
+    // Small reads at odd offsets, including ones that straddle the valid data length.
+    let mut offset = 0usize;
+    while offset < expected.len() {
+        let n = 333.min(expected.len() - offset);
+        let mut buf = vec![0xAAu8; n];
+        stream.read_exact_at(offset as u64, &mut buf).unwrap();
+        assert!(
+            buf == expected[offset..offset + n],
+            "{what}: read_at at {offset} differs"
+        );
+        offset += n;
+    }
+    let mut past = [0u8; 2];
+    assert!(
+        stream
+            .read_exact_at(expected.len() as u64 - 1, &mut past)
+            .is_err(),
+        "{what}: a read past the end must fail"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.bin");
+    fs.export_file_default_stream_to_path(entry, &out).unwrap();
+    assert!(
+        std::fs::read(&out).unwrap() == expected,
+        "{what}: export differs"
+    );
 }
