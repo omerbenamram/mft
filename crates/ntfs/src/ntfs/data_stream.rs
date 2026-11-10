@@ -27,7 +27,17 @@ use crate::ntfs::{Error, Result, Volume};
 use lru::LruCache;
 use mft::attribute::data_run::{DataRun, RunType};
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+
+/// Largest compression unit the compressed stream reader accepts, in bytes.
+///
+/// NTFS compresses in units of 16 clusters and only on volumes with clusters of at most 4 KiB,
+/// so real units are 64 KiB or less. The limit leaves room for 16-cluster units on volumes with
+/// clusters of up to 1 MiB.
+pub const MAX_COMPRESSION_UNIT_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Memory budget for the decoded units a compressed stream keeps cached.
+const UNIT_CACHE_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 struct RunMapping {
@@ -170,7 +180,7 @@ pub struct CompressedDataRunsStream {
     /// Compression unit size in bytes (`unit_clusters * cluster_size`).
     unit_bytes: u64,
     /// LRU cache of decompressed units keyed by `unit_index`.
-    cache: Mutex<LruCache<u64, Vec<u8>>>,
+    cache: Mutex<LruCache<u64, Arc<[u8]>>>,
 }
 
 impl CompressedDataRunsStream {
@@ -203,6 +213,21 @@ impl CompressedDataRunsStream {
                     message: "unit size overflow".to_string(),
                 })?;
 
+        // Every read decodes whole units into memory, so the unit size (an on-disk field) has
+        // to be sane. NTFS itself only uses units of 16 clusters.
+        if unit_bytes > MAX_COMPRESSION_UNIT_BYTES {
+            return Err(Error::Unsupported {
+                what: format!(
+                    "compression unit of {unit_clusters} clusters ({unit_bytes} bytes); the limit is {MAX_COMPRESSION_UNIT_BYTES} bytes"
+                ),
+            });
+        }
+
+        // Keep the cache of decoded units within a fixed amount of memory.
+        let cached_units = usize::try_from(UNIT_CACHE_BYTES / unit_bytes)
+            .unwrap_or(1)
+            .clamp(1, 32);
+
         Ok(Self {
             volume,
             run_mappings: build_run_mappings(&data_runs),
@@ -211,7 +236,9 @@ impl CompressedDataRunsStream {
             cluster_size,
             unit_clusters,
             unit_bytes,
-            cache: Mutex::new(LruCache::new(NonZeroUsize::new(32).expect("32 > 0"))),
+            cache: Mutex::new(LruCache::new(
+                NonZeroUsize::new(cached_units).expect("clamped to at least 1"),
+            )),
         })
     }
 
@@ -255,7 +282,8 @@ impl CompressedDataRunsStream {
             .saturating_sub(offset)
     }
 
-    fn read_unit(&self, unit_index: u64) -> Result<Vec<u8>> {
+    /// Returns the decoded unit, shared with the cache: a hit costs no copy of the unit.
+    fn read_unit(&self, unit_index: u64) -> Result<Arc<[u8]>> {
         if let Some(hit) = self.cache.lock().expect("poisoned").get(&unit_index) {
             return Ok(hit.clone());
         }
@@ -341,10 +369,11 @@ impl CompressedDataRunsStream {
             unit_out.copy_from_slice(&decompressed);
         }
 
+        let unit_out: Arc<[u8]> = unit_out.into();
         self.cache
             .lock()
             .expect("poisoned")
-            .put(unit_index, unit_out.clone());
+            .put(unit_index, Arc::clone(&unit_out));
 
         Ok(unit_out)
     }

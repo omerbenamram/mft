@@ -718,7 +718,7 @@ impl FileSystem {
         let file_size = stream_size(&data_extents)?;
 
         if is_compressed {
-            let mut out = vec![0u8; file_size as usize];
+            let mut out = alloc_stream_buffer(file_size, "compressed $DATA stream")?;
             let stream = self.open_compressed_stream(&data_extents)?;
             stream.read_exact_at(0, &mut out).map_err(Error::Io)?;
             return Ok(out);
@@ -811,11 +811,8 @@ impl FileSystem {
 
     /// Reads the first `len` bytes of the uncompressed stream described by `extents` into memory.
     fn read_uncompressed_stream(&self, extents: &[DataExtent], len: u64) -> Result<Vec<u8>> {
-        let out_len = usize::try_from(len).map_err(|_| Error::Unsupported {
-            what: format!("requested stream length too large: {len}"),
-        })?;
         let stream = self.open_uncompressed_stream(extents, len)?;
-        let mut out = vec![0u8; out_len];
+        let mut out = alloc_stream_buffer(len, "$DATA stream")?;
         stream.read_exact_at(0, &mut out).map_err(Error::Io)?;
         Ok(out)
     }
@@ -1344,11 +1341,6 @@ fn read_efs_attribute_blob(volume: &Volume, entry: &mft::MftEntry) -> Result<Vec
             Ok(data.to_vec())
         }
         ResidentialHeader::NonResident(nr) => {
-            if nr.file_size > usize::MAX as u64 {
-                return Err(Error::Unsupported {
-                    what: format!("$EFS attribute too large: {}", nr.file_size),
-                });
-            }
             let runs = attr
                 .data
                 .as_data_runs()
@@ -1357,11 +1349,45 @@ fn read_efs_attribute_blob(volume: &Volume, entry: &mft::MftEntry) -> Result<Vec
                     message: "expected data runs for $EFS".to_string(),
                 })?
                 .data_runs;
-            let mut buf = vec![0u8; nr.file_size as usize];
+            let mut buf = alloc_stream_buffer(nr.file_size, "$EFS attribute")?;
             read_from_data_runs(volume, &runs, 0, &mut buf)?;
             Ok(buf)
         }
     }
+}
+
+/// Largest stream the in-memory readers ([`FileSystem::read_file_stream`] and its relatives)
+/// load: 1 GiB.
+///
+/// A stream's size is an on-disk field, and nothing on the volume bounds it: a sparse or
+/// compressed file can be far larger than the image it sits in, and so can a corrupt size. The
+/// in-memory readers therefore stop at this fixed size, whatever the image. A larger stream is
+/// read piece by piece through [`FileSystem::open_file_stream_read_at`], hashed with
+/// [`FileSystem::md5_file_stream`] or exported with
+/// [`FileSystem::export_file_default_stream_to_path`].
+pub const MAX_IN_MEMORY_STREAM_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Allocates a zeroed buffer to read `len` bytes of a stream into memory.
+///
+/// `len` comes from an on-disk size field, so it is held to [`MAX_IN_MEMORY_STREAM_BYTES`]. An
+/// allocation the system refuses is an error, not an abort.
+fn alloc_stream_buffer(len: u64, what: &str) -> Result<Vec<u8>> {
+    if len > MAX_IN_MEMORY_STREAM_BYTES {
+        return Err(Error::Unsupported {
+            what: format!(
+                "reading a {what} of {len} bytes into memory: the limit is {MAX_IN_MEMORY_STREAM_BYTES} bytes"
+            ),
+        });
+    }
+
+    let too_large = || Error::Unsupported {
+        what: format!("reading a {what} of {len} bytes into memory: allocation failed"),
+    };
+    let len = usize::try_from(len).map_err(|_| too_large())?;
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(len).map_err(|_| too_large())?;
+    buf.resize(len, 0);
+    Ok(buf)
 }
 
 fn md5_of_bytes_hex_lower(data: &[u8]) -> String {
