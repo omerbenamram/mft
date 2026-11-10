@@ -7,7 +7,8 @@
 //! written in 256 KiB blocks, each followed by a 256 KiB copy of itself.
 //!
 //! [`SdsEntries`] walks the blocks that aren't copies and yields each entry whose header gives
-//! its own offset.
+//! its own offset. Where an entry is damaged, it takes the entry from the block's copy instead,
+//! if it is intact there.
 //!
 //! <https://flatcap.github.io/linux-ntfs/ntfs/files/secure.html>
 
@@ -39,12 +40,32 @@ pub struct SdsEntry<'a> {
     pub length: u32,
     /// `None` when a SID or ACL of the descriptor runs past the entry.
     pub descriptor: Option<SecurityDescriptorAttr<'a>>,
+    /// Whether the entry was read from the copy of its block, 256 KiB after `offset`, because
+    /// it is missing or damaged at `offset`.
+    pub from_mirror: bool,
 }
 
 impl<'a> SdsEntry<'a> {
     /// Parses the entry at `offset` of `sds`, the whole stream. Returns `None` unless its header
     /// gives `offset` as its offset and the entry fits in the rest of its block.
     pub fn from_slice(sds: &'a [u8], offset: usize) -> Option<Self> {
+        Self::parse(sds, offset, false)
+    }
+
+    /// The copy of the entry at `offset`, from the copy of its block: the same bytes 256 KiB on,
+    /// so its header gives `offset` too. Returns `None` unless the copy's hash matches its
+    /// descriptor.
+    pub fn from_mirror(sds: &'a [u8], offset: usize) -> Option<Self> {
+        Self::parse(sds, offset, true).filter(|entry| entry.valid_hash)
+    }
+
+    /// Parses the entry that belongs at `offset`, where it is or in the copy of its block.
+    fn parse(sds: &'a [u8], own: usize, from_mirror: bool) -> Option<Self> {
+        let offset = if from_mirror {
+            own.checked_add(SDS_BLOCK_SIZE)?
+        } else {
+            own
+        };
         let hash = read_u32(sds, offset)?;
         let security_id = read_u32(sds, offset + 4)?;
         let own_offset = read_u64(sds, offset + 8)?;
@@ -52,7 +73,7 @@ impl<'a> SdsEntry<'a> {
 
         let block_end = (offset / SDS_BLOCK_SIZE + 1) * SDS_BLOCK_SIZE;
         let end = offset.checked_add(length as usize)?;
-        if own_offset != offset as u64 || (length as usize) < HEADER_SIZE || end > block_end {
+        if own_offset != own as u64 || (length as usize) < HEADER_SIZE || end > block_end {
             return None;
         }
         let value = sds.get(offset + HEADER_SIZE..end)?;
@@ -64,6 +85,7 @@ impl<'a> SdsEntry<'a> {
             valid_hash: descriptor_hash(value) == hash,
             length,
             descriptor: SecurityDescriptorAttr::from_slice(value),
+            from_mirror,
         })
     }
 }
@@ -77,6 +99,9 @@ pub fn descriptor_hash(value: &[u8]) -> u32 {
 }
 
 /// The entries of an `$SDS` stream, in the order they are stored.
+///
+/// An entry that is missing or whose hash doesn't match is taken from the copy of its block
+/// when it is intact there ([`SdsEntry::from_mirror`]).
 ///
 /// # Example
 ///
@@ -120,7 +145,12 @@ impl<'a> Iterator for SdsEntries<'a> {
                 self.offset = (self.offset / SDS_BLOCK_SIZE + 1) * SDS_BLOCK_SIZE;
                 continue;
             }
-            match SdsEntry::from_slice(self.sds, self.offset) {
+            // The copy of the block has the entry too, for when it is damaged here.
+            let entry = match SdsEntry::from_slice(self.sds, self.offset) {
+                Some(entry) if entry.valid_hash => Some(entry),
+                damaged => SdsEntry::from_mirror(self.sds, self.offset).or(damaged),
+            };
+            match entry {
                 Some(entry) => {
                     // A hash that doesn't match may mean a damaged length, which would skip the
                     // entries after it, so only a matching one is trusted to step over the entry.
@@ -198,6 +228,7 @@ pub struct FlatSdsEntry {
     pub security_id: u32,
     pub hash: String,
     pub valid_hash: bool,
+    pub from_mirror: bool,
     pub length: u32,
     pub owner: Option<String>,
     pub group: Option<String>,
@@ -213,6 +244,7 @@ impl FlatSdsEntry {
             security_id: entry.security_id,
             hash: format!("0x{:08x}", entry.hash),
             valid_hash: entry.valid_hash,
+            from_mirror: entry.from_mirror,
             length: entry.length,
             owner: descriptor.and_then(|d| d.owner.clone()),
             group: descriptor.and_then(|d| d.group.clone()),
@@ -288,6 +320,45 @@ mod tests {
         sds[64 + 20 + 28] = 0x13;
         let ids = SecurityIds::from_sds(&sds);
         assert_eq!(ids.get(0x100).unwrap().owner.as_deref(), Some("S-1-5-18"));
+    }
+
+    #[test]
+    fn a_damaged_entry_is_read_from_the_mirror_block() {
+        let mut sds = vec![0u8; 4 * SDS_BLOCK_SIZE];
+        for (i, offset) in [0, 64, 128, 2 * SDS_BLOCK_SIZE].into_iter().enumerate() {
+            put_entry(&mut sds, offset, 0x100 + i as u32);
+        }
+        sds.copy_within(..SDS_BLOCK_SIZE, SDS_BLOCK_SIZE);
+        sds.copy_within(2 * SDS_BLOCK_SIZE..3 * SDS_BLOCK_SIZE, 3 * SDS_BLOCK_SIZE);
+        let intact: Vec<_> = SdsEntries::new(&sds)
+            .map(|e| (e.offset, e.security_id, e.from_mirror))
+            .collect();
+        assert_eq!(intact.len(), 4);
+        assert!(intact.iter().all(|(_, _, from_mirror)| !from_mirror));
+
+        // The second entry is zeros, the third has a damaged descriptor, the fourth a damaged
+        // header.
+        sds[64..128].fill(0);
+        sds[128 + 20 + 28] = 0x13;
+        sds[2 * SDS_BLOCK_SIZE + 8] ^= 1;
+        let entries: Vec<_> = SdsEntries::new(&sds).collect();
+        let found: Vec<_> = entries
+            .iter()
+            .map(|e| (e.offset, e.security_id, e.from_mirror))
+            .collect();
+        let expected: Vec<_> = intact
+            .iter()
+            .map(|&(offset, id, _)| (offset, id, offset != 0))
+            .collect();
+        assert_eq!(found, expected);
+        assert!(entries.iter().all(|e| e.valid_hash));
+        assert_eq!(SecurityIds::from_sds(&sds).len(), 4);
+
+        // With the copy damaged too, the damaged entry is what there is.
+        sds[SDS_BLOCK_SIZE + 128 + 20 + 28] = 0x14;
+        let third = SdsEntries::new(&sds).nth(2).unwrap();
+        assert_eq!((third.security_id, third.valid_hash), (0x102, false));
+        assert!(!third.from_mirror);
     }
 
     #[test]
