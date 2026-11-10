@@ -1,0 +1,12 @@
+---
+source: tests/test_cli.rs
+expression: deleted
+---
+{
+    "DtcInstall.log",
+    "ShellComponents",
+    "ZZZZZZZZ.ZZZ",
+    "ZZZZZZZZZZZZZ.ZZZ",
+    "ZZZZZZ~1.ZZZ",
+    "setuperr.log",
+}

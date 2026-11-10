@@ -31,6 +31,7 @@ use crate::ewf2::section::{
     EWF2_SECTION_DESCRIPTOR_SIZE, Ewf2SectionDataFlags, Ewf2SectionType,
     make_ewf2_section_descriptor,
 };
+use crate::reader::{decode_chunk_v1, expected_chunk_len};
 use crate::util::{adler32_rfc1950, read_exact_at, read_file_range};
 use crate::{Error, Result};
 use flate2::{Compression, write::ZlibEncoder};
@@ -38,7 +39,7 @@ use md5::{Digest as _, Md5};
 use rand::Rng as _;
 use sha1::Sha1;
 use std::fs::File;
-use std::io::{self, Read as _, Seek, SeekFrom, Write as _};
+use std::io::{self, Seek, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 
 // --- EWF2 constants (EnCase 7 "EVF2"/".Ex01") ---
@@ -574,6 +575,7 @@ impl EwfWriter {
         // Flush a final partial chunk (padded with zeros on disk).
         if self.chunk_buf_len != 0 {
             self.chunk_buf[self.chunk_buf_len..].fill(0);
+            self.chunk_buf_len = self.chunk_size;
             self.flush_full_chunk()?;
         }
 
@@ -1290,6 +1292,7 @@ fn hash_prefix_from_parsed_segments(
     let mut sha1 = Sha1::new();
 
     let mut remaining = bytes_to_hash;
+    let mut chunk_index = 0u64;
     for seg in segments {
         for group in &seg.chunk_groups {
             for (i, _) in group.chunk_entries.iter().enumerate() {
@@ -1298,32 +1301,16 @@ fn hash_prefix_from_parsed_segments(
                 }
                 let (start, end, is_compressed) = chunk_range_v1(group, i)?;
                 let slice = read_file_range(&seg.file, seg.file_len, start, end)?;
-                let mut out = vec![0u8; chunk_size];
+                // The prefix ends inside its last chunk, like media that is not a chunk multiple.
+                let expected_len = expected_chunk_len(bytes_to_hash, chunk_size, chunk_index);
+                chunk_index += 1;
+                let out = decode_chunk_v1(&slice, is_compressed, chunk_size, expected_len)?;
 
-                if is_compressed {
-                    let cursor = io::Cursor::new(slice);
-                    let mut decoder = flate2::read::ZlibDecoder::new(cursor);
-                    decoder.read_exact(&mut out)?;
-                } else {
-                    if slice.len() < chunk_size + 4 {
-                        return Err(Error::Invalid("short uncompressed chunk".to_string()));
-                    }
-                    let data_part = &slice[..chunk_size];
-                    let checksum_part = &slice[chunk_size..chunk_size + 4];
-                    let stored = u32::from_le_bytes(checksum_part.try_into().expect("len=4"));
-                    let calculated = adler32_rfc1950(data_part);
-                    if stored != calculated {
-                        return Err(Error::Corrupt(
-                            "uncompressed chunk checksum mismatch".to_string(),
-                        ));
-                    }
-                    out.copy_from_slice(data_part);
-                }
-
-                let take = (remaining as usize).min(out.len());
-                md5.update(&out[..take]);
-                sha1.update(&out[..take]);
-                remaining = remaining.saturating_sub(take as u64);
+                // The decoded chunk holds at least the `expected_len` bytes that belong to the
+                // prefix.
+                md5.update(&out[..expected_len]);
+                sha1.update(&out[..expected_len]);
+                remaining = remaining.saturating_sub(expected_len as u64);
             }
         }
     }
@@ -2460,6 +2447,106 @@ mod tests {
         let mut out = vec![0u8; data.len()];
         r.read_exact_at(0, &mut out)?;
         assert_eq!(out, data);
+        Ok(())
+    }
+
+    /// Media that does not end on a chunk boundary: the writer pads the last chunk, and the
+    /// image must still read back as exactly the media, with the media's MD5 stored.
+    ///
+    /// `finish` used to hand the padded chunk on with its unpadded length, which tripped a
+    /// debug assertion, so this has to run in a debug build to mean anything.
+    #[test]
+    fn test_writer_roundtrip_ewf1_media_not_a_chunk_multiple() -> Result<()> {
+        // 4 sectors per chunk; 37 sectors leave 1 sector in the last chunk.
+        let data = (0..37 * 512usize)
+            .map(|i| (i % 251) as u8 ^ (i / 512) as u8)
+            .collect::<Vec<u8>>();
+        let md5: [u8; 16] = Md5::digest(&data).into();
+
+        for format in [Ewf1Format::E01, Ewf1Format::S01] {
+            for compression_level in [Ewf1CompressionLevel::None, Ewf1CompressionLevel::Fast] {
+                // One segment, and segments so small that the image is split.
+                for segment_file_size in [10 * 1024 * 1024u64, 6 * 1024] {
+                    let dir = tempfile::tempdir()?;
+                    let path = dir.path().join(match format {
+                        Ewf1Format::E01 => "out.E01",
+                        Ewf1Format::S01 => "out.s01",
+                    });
+
+                    let mut opts = EwfWriterOptions::new(format, data.len() as u64);
+                    opts.sectors_per_chunk = 4;
+                    opts.bytes_per_sector = 512;
+                    opts.segment_file_size = segment_file_size;
+                    opts.compression_level = compression_level;
+
+                    let mut w = EwfWriter::create(&path, opts)?;
+                    // Feed in pieces that line up with neither sectors nor chunks.
+                    for piece in data.chunks(1000) {
+                        let mut rest = piece;
+                        while !rest.is_empty() {
+                            let n = w.write(rest)?;
+                            assert!(n > 0, "writer.write made no progress");
+                            rest = &rest[n..];
+                        }
+                    }
+                    w.finish()?;
+
+                    let what = format!(
+                        "{format:?} {compression_level:?} segment_file_size={segment_file_size}"
+                    );
+                    let r = crate::reader::EwfReader::open(&path)?;
+                    assert_eq!(r.len(), data.len() as u64, "{what}");
+                    assert_eq!(r.chunk_count(), 10, "{what}");
+                    let mut out = vec![0u8; data.len()];
+                    r.read_exact_at(0, &mut out)?;
+                    assert!(out == data, "{what}: data differs");
+                    assert_eq!(r.image_metadata()?.digests.md5, Some(md5), "{what}");
+                    r.verify(crate::reader::VerifyOptions::default())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_writer_roundtrip_ex01_media_not_a_chunk_multiple() -> Result<()> {
+        let data = (0..37 * 512usize)
+            .map(|i| (i % 251) as u8 ^ (i / 512) as u8)
+            .collect::<Vec<u8>>();
+        let md5: [u8; 16] = Md5::digest(&data).into();
+
+        for compression_method in [Ewf2CompressionMethod::None, Ewf2CompressionMethod::Zlib] {
+            for segment_file_size in [10 * 1024 * 1024u64, 6 * 1024] {
+                let dir = tempfile::tempdir()?;
+                let path = dir.path().join("out.Ex01");
+
+                let mut opts = Ewf2WriterOptions::new(data.len() as u64);
+                opts.sectors_per_chunk = 4;
+                opts.bytes_per_sector = 512;
+                opts.segment_file_size = segment_file_size;
+                opts.compression_method = compression_method;
+
+                let mut w = Ewf2Writer::create(&path, opts)?;
+                for piece in data.chunks(1000) {
+                    let mut rest = piece;
+                    while !rest.is_empty() {
+                        let n = w.write(rest)?;
+                        assert!(n > 0, "writer.write made no progress");
+                        rest = &rest[n..];
+                    }
+                }
+                w.finish()?;
+
+                let what = format!("{compression_method:?} segment_file_size={segment_file_size}");
+                let r = crate::reader::EwfReader::open(&path)?;
+                assert_eq!(r.len(), data.len() as u64, "{what}");
+                let mut out = vec![0u8; data.len()];
+                r.read_exact_at(0, &mut out)?;
+                assert!(out == data, "{what}: data differs");
+                assert_eq!(r.image_metadata()?.digests.md5, Some(md5), "{what}");
+                r.verify(crate::reader::VerifyOptions::default())?;
+            }
+        }
         Ok(())
     }
 

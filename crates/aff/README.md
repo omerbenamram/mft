@@ -11,7 +11,7 @@ This crate provides **read-only** access to AFF containers with behavior closely
 
 ## Quick start
 
-```rust
+```rust,no_run
 use aff::AffOpenOptions;
 use forensic_image::ReadAt;
 

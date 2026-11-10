@@ -12,16 +12,17 @@
 
 use crate::format;
 use crate::{Error, Result};
-use flate2::read::ZlibDecoder;
 use forensic_image::ReadAt;
-use lru::LruCache;
 use std::collections::HashMap;
-use std::io::{self, Read};
+use std::io;
 use std::num::NonZeroUsize;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use super::backend::{Backend, ContainerKind, Segment};
+use super::page::{
+    PageCache, copy_page_bytes, decode_compressed_page, decoded_len_of_compressed_page,
+};
 
 #[derive(Debug, Clone, Copy)]
 struct PageEntry {
@@ -46,7 +47,8 @@ pub(crate) struct Aff1Image {
     image_size: u64,
     segments: HashMap<String, SegmentEntry>,
     pages: HashMap<u64, PageEntry>,
-    cache: Mutex<LruCache<u64, Vec<u8>>>,
+    /// Decoded ZLIB/LZMA pages. Each holds only the bytes the page decodes to.
+    cache: PageCache,
 }
 
 impl Aff1Image {
@@ -242,41 +244,10 @@ impl Aff1Image {
                         let count = u32::from_be_bytes(seg[0..4].try_into().expect("len=4")) as u64;
                         Ok(count.min(page_size as u64))
                     }
-                    format::AF_PAGE_COMP_ALG_ZLIB => {
-                        let cursor = io::Cursor::new(seg);
-                        let mut decoder = ZlibDecoder::new(cursor);
-                        let mut out = vec![0u8; page_size];
-                        let mut written = 0usize;
-                        while written < out.len() {
-                            let n = decoder.read(&mut out[written..])?;
-                            if n == 0 {
-                                break;
-                            }
-                            written += n;
-                        }
-                        Ok(written as u64)
-                    }
-                    format::AF_PAGE_COMP_ALG_LZMA => {
-                        #[cfg(feature = "lzma")]
-                        {
-                            let mut input = io::Cursor::new(seg);
-                            let mut out = vec![0u8; page_size];
-                            let mut output = io::Cursor::new(&mut out[..]);
-                            lzma_rs::lzma_decompress(&mut input, &mut output).map_err(|e| {
-                                Error::InvalidData {
-                                    message: format!("LZMA: {e}"),
-                                }
-                            })?;
-                            Ok(output.position())
-                        }
-                        #[cfg(not(feature = "lzma"))]
-                        {
-                            Err(Error::InvalidData {
-                                message:
-                                    "AFF page uses LZMA compression but feature `lzma` is disabled"
-                                        .to_string(),
-                            })
-                        }
+                    format::AF_PAGE_COMP_ALG_ZLIB | format::AF_PAGE_COMP_ALG_LZMA => {
+                        // Only the length is needed: decode without keeping the bytes, so a
+                        // made-up page size cannot size a buffer.
+                        Ok(decoded_len_of_compressed_page(entry.flags, seg, page_size)?)
                     }
                     _ => Err(Error::InvalidData {
                         message: "unsupported AFF page compression".to_string(),
@@ -300,7 +271,7 @@ impl Aff1Image {
             segments,
             pages,
             // Keep small: typical pages are large (MiBs).
-            cache: Mutex::new(LruCache::new(cache_pages)),
+            cache: PageCache::new(cache_pages),
         })
     }
 
@@ -308,22 +279,20 @@ impl Aff1Image {
         self.pages.keys().copied()
     }
 
-    fn blank_page(&self) -> Vec<u8> {
-        vec![0u8; self.page_size]
-    }
-
-    pub(crate) fn read_page(&self, page_index: u64) -> io::Result<Vec<u8>> {
-        if let Some(hit) = self.cache.lock().expect("poisoned").get(&page_index) {
-            return Ok(hit.clone());
-        }
-
+    /// Copies `buf.len()` bytes of page `page_index` into `buf`, starting `within` bytes into
+    /// the page. A page that is not stored reads as zeros.
+    ///
+    /// Stored bytes are copied straight from the file. Only ZLIB and LZMA pages are decoded,
+    /// and the decoded page is cached and shared, never copied as a whole.
+    pub(crate) fn read_page_into(
+        &self,
+        page_index: u64,
+        within: usize,
+        buf: &mut [u8],
+    ) -> io::Result<()> {
         let Some(entry) = self.pages.get(&page_index).copied() else {
-            let out = self.blank_page();
-            self.cache
-                .lock()
-                .expect("poisoned")
-                .put(page_index, out.clone());
-            return Ok(out);
+            buf.fill(0);
+            return Ok(());
         };
 
         let seg = self
@@ -331,64 +300,32 @@ impl Aff1Image {
             .get(entry.data_offset..entry.data_offset + entry.data_len)
             .ok_or_else(io_eof)?;
 
-        let mut out = self.blank_page();
         if (entry.flags & format::AF_PAGE_COMPRESSED) == 0 {
-            let take = seg.len().min(out.len());
-            out[..take].copy_from_slice(&seg[..take]);
-        } else {
-            match entry.flags & format::AF_PAGE_COMP_ALG_MASK {
-                format::AF_PAGE_COMP_ALG_ZERO => {
-                    if seg.len() != 4 {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "AFF ZERO-compressed page must have 4 bytes of data",
-                        ));
-                    }
-                    // Output remains all-zero.
-                }
-                format::AF_PAGE_COMP_ALG_ZLIB => {
-                    let cursor = io::Cursor::new(seg);
-                    let mut decoder = ZlibDecoder::new(cursor);
-                    let mut written = 0usize;
-                    while written < out.len() {
-                        let n = decoder.read(&mut out[written..])?;
-                        if n == 0 {
-                            break;
-                        }
-                        written += n;
-                    }
-                }
-                format::AF_PAGE_COMP_ALG_LZMA => {
-                    #[cfg(feature = "lzma")]
-                    {
-                        let mut input = io::Cursor::new(seg);
-                        let mut output = io::Cursor::new(&mut out[..]);
-                        lzma_rs::lzma_decompress(&mut input, &mut output).map_err(|e| {
-                            io::Error::new(io::ErrorKind::InvalidData, format!("LZMA: {e}"))
-                        })?;
-                    }
-                    #[cfg(not(feature = "lzma"))]
-                    {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "AFF page uses LZMA compression but feature `lzma` is disabled",
-                        ));
-                    }
-                }
-                _ => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "unsupported AFF page compression",
-                    ));
-                }
-            }
+            let stored = &seg[..seg.len().min(self.page_size)];
+            copy_page_bytes(stored, within, buf);
+            return Ok(());
         }
 
-        self.cache
-            .lock()
-            .expect("poisoned")
-            .put(page_index, out.clone());
-        Ok(out)
+        if (entry.flags & format::AF_PAGE_COMP_ALG_MASK) == format::AF_PAGE_COMP_ALG_ZERO {
+            if seg.len() != 4 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "AFF ZERO-compressed page must have 4 bytes of data",
+                ));
+            }
+            buf.fill(0);
+            return Ok(());
+        }
+
+        let page = match self.cache.get(page_index) {
+            Some(page) => page,
+            None => self.cache.insert(
+                page_index,
+                decode_compressed_page(entry.flags, seg, self.page_size)?,
+            ),
+        };
+        copy_page_bytes(&page, within, buf);
+        Ok(())
     }
 }
 
@@ -410,9 +347,8 @@ impl ReadAt for Aff1Image {
             let page_index = cur / self.page_size as u64;
             let within = (cur % self.page_size as u64) as usize;
 
-            let page = self.read_page(page_index)?;
             let take = remaining.min(self.page_size - within);
-            buf[out_pos..out_pos + take].copy_from_slice(&page[within..within + take]);
+            self.read_page_into(page_index, within, &mut buf[out_pos..out_pos + take])?;
 
             out_pos += take;
             remaining -= take;
@@ -744,6 +680,96 @@ mod tests {
         let mut out = vec![0xAAu8; page_size];
         img.read_exact_at(0, &mut out).unwrap();
         assert_eq!(out, vec![0u8; page_size]);
+    }
+
+    /// The page size is whatever the `pagesize` segment says, up to 4 GiB. Reads must not size
+    /// any buffer by it: a page costs what its segment holds.
+    #[test]
+    fn test_huge_page_size_reads_stored_bytes_and_zeros() {
+        let page_size = u32::MAX;
+        let image_size = 6 * u64::from(page_size);
+
+        let text = b"0123456789".repeat(100);
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(&text).unwrap();
+        let text_z = enc.finish().unwrap();
+
+        let bytes = build_aff1_file(vec![
+            aff_segment("pagesize", &[], page_size),
+            aff_segment("imagesize", &aff_quad_u64(image_size), 2),
+            aff_segment("page0", b"ABCDEFGH", 0),
+            aff_segment(
+                "page3",
+                &text_z,
+                format::AF_PAGE_COMPRESSED | format::AF_PAGE_COMP_ALG_ZLIB,
+            ),
+            aff_segment(
+                "page5",
+                &page_size.to_be_bytes(),
+                format::AF_PAGE_COMPRESSED | format::AF_PAGE_COMP_ALG_ZERO,
+            ),
+        ]);
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), bytes).unwrap();
+        let img = Aff1Image::open_with(tmp.path(), 2).unwrap();
+        assert_eq!(img.len(), image_size);
+
+        let page = |n: u64| n * u64::from(page_size);
+        // Many small reads: each used to build and copy a whole 4 GiB page.
+        for round in 0..2000u64 {
+            let mut buf = [0xAAu8; 16];
+            img.read_exact_at(4, &mut buf).unwrap();
+            assert_eq!(&buf, b"EFGH\0\0\0\0\0\0\0\0\0\0\0\0");
+
+            // Page 1 is not stored.
+            img.read_exact_at(page(1) + round, &mut buf).unwrap();
+            assert_eq!(buf, [0u8; 16]);
+
+            // The end of the ZLIB page's data and the zeros after it.
+            img.read_exact_at(page(3) + 990, &mut buf).unwrap();
+            assert_eq!(&buf, b"0123456789\0\0\0\0\0\0");
+
+            img.read_exact_at(page(5) + round, &mut buf).unwrap();
+            assert_eq!(buf, [0u8; 16]);
+
+            img.read_exact_at(image_size - 16, &mut buf).unwrap();
+            assert_eq!(buf, [0u8; 16]);
+        }
+
+        // A read that crosses from the last byte of page 2 (not stored) into page 3.
+        let mut buf = [0xAAu8; 5];
+        img.read_exact_at(page(3) - 1, &mut buf).unwrap();
+        assert_eq!(&buf, b"\x000123");
+    }
+
+    /// Without an `imagesize` segment the size is the last page's offset plus what that page
+    /// decodes to. Finding that length must not allocate a page either.
+    #[test]
+    fn test_imagesize_inferred_with_huge_page_size() {
+        let page_size = u32::MAX;
+
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(b"tail").unwrap();
+        let tail_z = enc.finish().unwrap();
+
+        let bytes = build_aff1_file(vec![
+            aff_segment("pagesize", &[], page_size),
+            aff_segment(
+                "page7",
+                &tail_z,
+                format::AF_PAGE_COMPRESSED | format::AF_PAGE_COMP_ALG_ZLIB,
+            ),
+        ]);
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), bytes).unwrap();
+        let img = Aff1Image::open_with(tmp.path(), 2).unwrap();
+        assert_eq!(img.len(), 7 * u64::from(page_size) + 4);
+
+        let mut buf = [0u8; 4];
+        img.read_exact_at(img.len() - 4, &mut buf).unwrap();
+        assert_eq!(&buf, b"tail");
     }
 
     #[test]

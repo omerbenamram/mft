@@ -74,7 +74,7 @@ Use plain words and full sentences: short ones, one idea each, in the active voi
 
 ## This repository
 
-`mft` is a Rust parser for the NTFS Master File Table (`$MFT`). The `mft` crate is in `src/`, and its command-line tool `mft_dump` is `src/bin/mft_dump.rs`. The crates under `crates/` (`forensic-image`, `aff`, `ewf`, `ntfs`, `dfxml`, `ntfs-explorer-gui`) are workspace members that are not published. `fuzz/` holds three cargo-fuzz targets. Only the paths in `include` in `Cargo.toml` go to crates.io, which accepts at most 10 MB: `samples/` is in that list and `testdata/` is not. `Cargo.lock` is not tracked.
+`mft` is a Rust parser for the NTFS Master File Table (`$MFT`). It also parses the USN change journal (`$UsnJrnl:$J`), INDX index records, the boot sector and `$Secure:$SDS`. The `mft` crate is in `src/`, and its command-line tool `mft_dump` is `src/bin/mft_dump.rs`. The crates under `crates/` (`forensic-image`, `aff`, `ewf`, `ntfs`, `dfxml`, `ntfs-explorer-gui`) are workspace members that are not published. `fuzz/` holds three cargo-fuzz targets. Only the paths in `include` in `Cargo.toml` go to crates.io, which accepts at most 10 MB: `samples/` is in that list and `testdata/` is not. `Cargo.lock` is not tracked.
 
 ### Checks
 
@@ -85,6 +85,7 @@ Run `git lfs pull` once in each checkout before you test `crates/`. `.gitattribu
 - `cargo fmt --all -- --check`. `pre-commit install` makes this run before each commit.
 - `cargo clippy --workspace --exclude ntfs-explorer-gui --all-targets --all-features -- -D warnings`
 - `cargo test --workspace --exclude ntfs-explorer-gui --all-targets --all-features`. This is the Linux job, and `--all-features` also builds the FUSE mount frontend. macOS and Windows run it without `--all-features`.
+- `cargo test --workspace --exclude ntfs-explorer-gui --doc --all-features`, because `--all-targets` leaves out the doc tests. They include the Rust examples of each `README.md`.
 - To run the tests as CI does, set `NTFS_TESTDATA_REQUIRED=1` and fetch the two AFFLIBv3 fixtures with the `curl` commands in the workflow. Without that variable, a test in `crates/` whose fixture is missing is skipped without a word.
 - When you change dependencies or use a newer language or library feature: `cargo +1.90 check --workspace --exclude ntfs-explorer-gui --all-targets`. 1.90 is the minimum supported Rust version.
 - When you change `CHANGELOG.md` or `version` in `Cargo.toml`: `scripts/release-notes.sh <version in Cargo.toml>`. CI fails a pull request when the current version has no notes in `CHANGELOG.md`.
@@ -105,7 +106,7 @@ A `macos-latest` job sometimes never gets a runner: it has no steps and no logs.
 - Unit tests sit beside the code in `#[cfg(test)]` modules, and end-to-end tests are in `tests/`. Name a test after the behaviour that it checks.
 - A unit test in `src/` reads only `samples/` (`src/tests/fixtures.rs` has the path), because `testdata/` is not published. A test in `tests/` uses the helpers in `tests/fixtures.rs`. Put a new fixture in `testdata/` unless a unit test in `src/` reads it, keep it small, and give its origin and licence in the pull request.
 - Snapshot tests use `insta`. Review a changed snapshot with `cargo insta review`, and accept only the changes that you intended.
-- No test compiles the example in `README.md`: `tests/readme.rs` is meant to, but a doc test in an integration test never runs. Check the example by hand when you change the API that it uses.
+- The Rust examples in each `README.md` are doc tests of their crate, through the `cfg_attr(doctest, ...)` line at the top of its `src/lib.rs`. Give a new crate with a `README.md` the same line.
 - A pull request that changes behaviour adds an entry under `## [Unreleased]` in `CHANGELOG.md`, and marks a breaking change with **Breaking:**. Open pull requests therefore conflict in that file: merge `master` and keep both entries.
 - Commit subjects are short and imperative, and they describe the change that a user would see.
 

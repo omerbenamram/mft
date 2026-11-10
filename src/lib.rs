@@ -2,6 +2,8 @@
 #![deny(unused_must_use)]
 // Don't allow dbg! prints in release.
 #![cfg_attr(not(debug_assertions), deny(clippy::dbg_macro))]
+// Makes the Rust examples of README.md doc tests of this crate.
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
 
 #[macro_use]
 extern crate num_derive;
@@ -18,13 +20,17 @@ pub use mft_reference::MftReference;
 
 pub mod attribute;
 pub mod bodyfile;
+pub mod boot;
 pub mod csv;
 pub mod entry;
 pub mod err;
 pub mod guid;
+pub mod indx;
 pub mod mft;
 pub mod mft_reference;
 pub mod ntfs;
+pub mod sds;
+pub mod usn;
 pub mod utf16;
 
 pub(crate) mod macros;
