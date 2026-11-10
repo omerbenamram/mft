@@ -232,7 +232,7 @@ impl<T: Read + Seek> MftParser<T> {
         const MAX_PROBES: u64 = 64;
 
         fn is_plausible(entry_size: u32) -> bool {
-            entry_size.is_power_of_two() && (512..=65536).contains(&entry_size)
+            crate::ntfs::is_valid_page_size(entry_size as usize)
         }
 
         data.rewind()?;
