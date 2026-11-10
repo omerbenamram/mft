@@ -197,7 +197,13 @@ impl IndxRecord {
             let flags = IndexEntryFlags::from_bits_retain(u32::from(
                 read_u16(&self.data, at + 12).expect("in the node"),
             ));
-            if flags.contains(IndexEntryFlags::INDEX_ENTRY_END) {
+            // An end entry has no key, but NTFS leaves its key length undefined: the end flag
+            // ends the entries unless the entry says it has a key and is long enough to hold
+            // a `$FILE_NAME` one. A named entry with a stray end flag is read as an entry.
+            let key_length = read_u16(&self.data, at + 10).expect("in the node");
+            if flags.contains(IndexEntryFlags::INDEX_ENTRY_END)
+                && (key_length == 0 || length < ENTRY_HEADER_SIZE + FILE_NAME_HEADER_SIZE)
+            {
                 // A bogus length here mustn't push the slack past the node's entries.
                 let slack_start = (at + length.max(ENTRY_HEADER_SIZE)).min(self.entries_end);
                 return LiveWalk {
@@ -234,13 +240,14 @@ impl IndxRecord {
                 flags: Some(flags),
                 file_name,
             });
-            at += length;
+            // Entries start on 8-byte boundaries, whatever a damaged length says.
+            at = (at + length).next_multiple_of(8);
         }
         // No end entry: whatever is left of the node is scanned like slack.
         LiveWalk {
             entries,
             error: None,
-            slack_start: at,
+            slack_start: at.min(self.entries_end),
         }
     }
 
@@ -691,6 +698,142 @@ mod tests {
             slack_names(&record),
             [("deleted.txt".to_string(), Some(MftReference::new(0x41, 2)))]
         );
+    }
+
+    /// Records whose live entries are `a.txt`, `b.txt`, `c.txt` and `d.txt`, after `damage` to
+    /// the second. The third names `$MFT`, as in a root directory.
+    fn with_second_entry_damaged(damage: impl Fn(&mut Vec<u8>)) -> IndxRecord {
+        let mut live = live_entries(&["a.txt", "b.txt", "c.txt", "d.txt"]);
+        damage(&mut live[1]);
+        live[2][..8].copy_from_slice(&0x0001_0000_0000_0000u64.to_le_bytes());
+        IndxRecord::from_buffer(record(&live, &[]), 0).unwrap()
+    }
+
+    /// Entries for `names` in use, the first for MFT entry 0x40, the next for 0x41, and so on.
+    fn live_entries(names: &[&str]) -> Vec<Vec<u8>> {
+        (0x40..)
+            .zip(names)
+            .map(|(entry_id, name)| entry(0x0001_0000_0000_0000 | entry_id, name, 0))
+            .collect()
+    }
+
+    fn names(entries: &[IndxEntry]) -> Vec<String> {
+        entries
+            .iter()
+            .map(|e| e.file_name.name.to_utf8_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_damaged_entry_does_not_hide_the_entries_after_it() {
+        // A length of zero: the damaged entry's own name is still found, without its header.
+        let record = with_second_entry_damaged(|e| e[8..10].fill(0));
+        assert!(record.entries().is_err());
+        let (entries, error) = record.entries_until_error();
+        assert_eq!(names(&entries), ["a.txt"]);
+        assert!(error.is_some());
+        // The entries after it are found by the slack scan. `c.txt`'s header names entry 0,
+        // which the scan takes for an overwritten header.
+        assert_eq!(
+            slack_names(&record),
+            [
+                ("b.txt".to_string(), None),
+                ("c.txt".to_string(), None),
+                ("d.txt".to_string(), Some(MftReference::new(0x43, 1))),
+            ]
+        );
+
+        // A name longer than the entry: the damaged entry is lost, the rest isn't.
+        let record = with_second_entry_damaged(|e| e[ENTRY_HEADER_SIZE + 0x40] = 200);
+        let (entries, error) = record.entries_until_error();
+        assert_eq!(names(&entries), ["a.txt"]);
+        assert!(error.is_some());
+        assert_eq!(
+            slack_names(&record),
+            [
+                ("c.txt".to_string(), None),
+                ("d.txt".to_string(), Some(MftReference::new(0x43, 1))),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_end_flag_alone_does_not_end_the_entries() {
+        let end = IndexEntryFlags::INDEX_ENTRY_END.bits() as u8;
+
+        // An end entry has no key, so an entry with the flag and a name is still an entry.
+        let flagged = with_second_entry_damaged(|e| e[12] |= end);
+        let entries = flagged.entries().unwrap();
+        assert_eq!(names(&entries), ["a.txt", "b.txt", "c.txt", "d.txt"]);
+        let flags = entries[1].flags.as_ref().unwrap();
+        assert!(flags.contains(IndexEntryFlags::INDEX_ENTRY_END));
+        // The entries after it aren't taken for slack.
+        assert!(flagged.slack_entries().is_empty());
+
+        // With a damaged name too, it is a damaged entry, and the scan goes on after it.
+        let damaged = with_second_entry_damaged(|e| {
+            e[12] |= end;
+            e[ENTRY_HEADER_SIZE + 0x40] = 200;
+        });
+        let (entries, error) = damaged.entries_until_error();
+        assert_eq!(names(&entries), ["a.txt"]);
+        assert!(error.is_some());
+        assert_eq!(names(&damaged.slack_entries()), ["c.txt", "d.txt"]);
+    }
+
+    #[test]
+    fn an_end_entry_with_a_stale_key_length_ends_the_entries() {
+        // NTFS leaves an end entry's key length undefined. One too short for a key still ends
+        // the entries, with or without a child node's VCN.
+        for (length, flags) in [(0x10u16, 0x2u16), (0x18, 0x3)] {
+            let mut end = vec![0u8; usize::from(length)];
+            end[8..10].copy_from_slice(&length.to_le_bytes());
+            end[10..12].copy_from_slice(&0x5Au16.to_le_bytes());
+            end[12..14].copy_from_slice(&flags.to_le_bytes());
+            let mut r = record(&live_entries(&["a.txt"]), &[]);
+            // `record` writes its own end entry after the live ones; replace it.
+            let at = 0x40 + 0x60;
+            r[at..at + end.len()].copy_from_slice(&end);
+            let end_of_entries = (at + end.len() - 0x18) as u32;
+            r[0x1C..0x20].copy_from_slice(&end_of_entries.to_le_bytes());
+            let record = IndxRecord::from_buffer(r, 0).unwrap();
+            assert_eq!(names(&record.entries().unwrap()), ["a.txt"], "{flags:#x}");
+            assert!(record.slack_entries().is_empty());
+        }
+    }
+
+    #[test]
+    fn the_scan_after_a_damaged_entry_keeps_only_plausible_entries() {
+        // The third entry has the times of 1601, which the slack scan takes for garbage, so
+        // only the entry after it is found.
+        let mut live = live_entries(&["a.txt", "b.txt", "c.txt", "d.txt"]);
+        live[1][ENTRY_HEADER_SIZE + 0x40] = 200;
+        live[2][ENTRY_HEADER_SIZE + 8..ENTRY_HEADER_SIZE + 40].fill(0);
+        let record = IndxRecord::from_buffer(record(&live, &[]), 0).unwrap();
+        assert_eq!(names(&record.entries_until_error().0), ["a.txt"]);
+        assert_eq!(names(&record.slack_entries()), ["d.txt"]);
+    }
+
+    #[test]
+    fn a_length_that_is_not_a_multiple_of_8_is_rounded_up() {
+        let mut live = live_entries(&["a.txt", "b.txt", "c.txt"]);
+        // 0x60 became 0x5C, which still holds the name. The next entry is where it was.
+        assert_eq!(live[1][8], 0x60);
+        live[1][8] = 0x5C;
+        let rounded = IndxRecord::from_buffer(record(&live, &[]), 0).unwrap();
+        assert_eq!(rounded.entries().unwrap().len(), 3);
+        assert!(rounded.slack_entries().is_empty());
+
+        // A walk that is off the 8-byte boundaries, 4 bytes before the second entry: the scan
+        // after the damage starts at the boundary right after, where that entry is.
+        live[1][8] = 0x60;
+        let mut unaligned = IndxRecord::from_buffer(record(&live, &[]), 0).unwrap();
+        unaligned.entries_start = 0x40 + 0x60 - 4;
+        let (entries, error) = unaligned.entries_until_error();
+        assert!(entries.is_empty());
+        assert!(error.is_some());
+        let offsets: Vec<_> = unaligned.slack_entries().iter().map(|e| e.offset).collect();
+        assert_eq!(offsets, [0x40 + 0x60, 0x40 + 0xC0]);
     }
 
     #[test]
