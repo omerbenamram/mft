@@ -110,17 +110,9 @@ cargo build --release --bin mft_dump
 hyperfine --warmup 3 --runs 20 \
   './target/release/mft_dump samples/MFT -o jsonl -f /dev/null --no-confirm-overwrite' \
   './target/release/mft_dump samples/MFT -o csv -f /dev/null --no-confirm-overwrite'
-
-# A CPU profile of the same run, to open in the Firefox Profiler.
-mkdir -p target/samply
-samply record --save-only --unstable-presymbolicate \
-  -o target/samply/mft_dump_jsonl.profile.json.gz \
-  --iteration-count 200 -- \
-  ./target/release/mft_dump samples/MFT -o jsonl -f /dev/null --no-confirm-overwrite
-samply load target/samply/mft_dump_jsonl.profile.json.gz
 ```
 
-In the profiler, the **Call Tree** tab with **Invert call stack** on shows the functions where time is spent, and with it off shows inclusive time from the top down. **Filter stack** narrows the view to `mft::` or `mft_dump::` frames. [`PERF.md`](PERF.md) has the full protocol and the log of what was tried.
+To profile a run, and for the log of what was tried, see [`PERF.md`](PERF.md).
 
 ## Resources
  - https://docs.microsoft.com/en-us/windows/desktop/DevNotes/master-file-table
