@@ -17,7 +17,7 @@ What it reads:
 
 | File | What you get |
 | --- | --- |
-| `$MFT` | Every file and folder with its full path, sizes, flags, and the timestamps of both `$STANDARD_INFORMATION` and `$FILE_NAME`. Deleted files too, until their record is reused. |
+| `$MFT` | A record for every file and folder, with its full path, sizes, flags, and the timestamps of both `$STANDARD_INFORMATION` and `$FILE_NAME`. Deleted files too, until their record is reused. |
 | `$Extend\$UsnJrnl:$J` | The change journal: each create, write, rename and delete, with its time |
 | `$I30` | A folder's index records, with the entries of deleted files recovered from slack space |
 | `$LogFile` | The transaction log: the redo and undo operation of each record |
@@ -36,16 +36,16 @@ The crate has no `unsafe` code and runs wherever Rust's standard library does. T
 ```bash
 mft_dump '$MFT'                                  # JSON, every attribute of every record
 mft_dump -o jsonl '$MFT'                         # the same, one record per line
-mft_dump -o csv '$MFT'                           # one row per file, for Timeline Explorer or a spreadsheet
+mft_dump -o csv '$MFT'                           # one row per MFT record, for Timeline Explorer or a spreadsheet
 mft_dump -o csv --hard-link-rows --stream-rows '$MFT'   # plus a row for each hard link and each alternate data stream
 mft_dump -o bodyfile '$MFT'                      # Sleuth Kit bodyfile lines, for mactime
 mft_dump -r 0-15,30 '$MFT'                       # only these record numbers
-mft_dump -e streams/ -o json -f /dev/null --no-confirm-overwrite '$MFT'   # write resident data streams to streams/
+mft_dump -e streams/ -o csv -f /dev/null --no-confirm-overwrite '$MFT'   # write resident data streams to streams/
 ```
 
 Quote `'$MFT'` in a Unix shell, or it expands to nothing. `mft_dump --help` lists every option.
 
-A resident stream is one small enough to be stored inside the MFT record, up to about 700 bytes. `-e` gets those back without the disk image: `Zone.Identifier` streams, small scripts, `desktop.ini` files. Each is written with a `.dontrun` extension.
+A resident stream is one small enough to be stored inside the MFT record, up to about 700 bytes in the usual 1024-byte record. `-e` gets those back without the disk image: `Zone.Identifier` streams, small scripts, `desktop.ini` files. Each is written with a `.dontrun` extension.
 
 The other NTFS files go through the same command. `mft_dump` tells them apart by their first bytes, and `--input-type` overrides that:
 
@@ -99,7 +99,7 @@ fn main() {
 
 ## Performance
 
-`mft_dump -o csv` reads the 13 MB sample in this repository (`samples/MFT`, 13,068 records) in about 45 ms on a 4-core machine, and a 124 MB `$MFT` with 127,480 records in about half a second.
+`mft_dump -o csv` reads the 13 MB sample in this repository (`samples/MFT`, 13,068 records) in about 30 ms on a 4-core machine.
 
 If you work on the parser, measure before and after on that sample:
 
